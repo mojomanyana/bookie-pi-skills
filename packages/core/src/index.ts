@@ -35,3 +35,23 @@ export type {
   SourcePosition,
   SourceRange,
 } from "./concept-loader.js";
+
+export {
+  amendConcept,
+  computeConceptSourceHash,
+  createConcept,
+} from "./concept-mutation.js";
+export type {
+  AmendConceptRequest,
+  ConceptMutationCoordinator,
+  ConceptMutationFailure,
+  ConceptMutationOptions,
+  ConceptMutationResult,
+  ConceptMutationSuccess,
+  ConceptSourceHash,
+  CreateConceptRequest,
+  FrontmatterEdit,
+  FrontmatterPathSegment,
+  MutationDiagnostic,
+  MutationDiagnosticCode,
+} from "./concept-mutation.js";

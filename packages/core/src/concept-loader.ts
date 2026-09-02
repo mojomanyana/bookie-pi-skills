@@ -1,6 +1,9 @@
+import { Document } from "yaml";
+
 import {
   parseStrictYamlMapping,
   type ReadonlyYamlMapping,
+  type ReadonlyYamlValue,
 } from "./strict-yaml.js";
 
 export type {
@@ -79,10 +82,21 @@ interface FrontmatterEnvelope {
 }
 
 interface LoadedConceptState {
-  readonly document: object;
+  readonly document: Document;
   readonly envelope: FrontmatterEnvelope;
   readonly sourceBytes: Uint8Array;
 }
+
+export type ConceptMutationEditInternal =
+  | {
+      readonly op: "set";
+      readonly path: readonly (string | number)[];
+      readonly value: ReadonlyYamlValue;
+    }
+  | {
+      readonly op: "remove";
+      readonly path: readonly (string | number)[];
+    };
 
 const loadedConceptStates = new WeakMap<LoadedConcept, LoadedConceptState>();
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
@@ -299,7 +313,7 @@ export function loadConcept(
     bodyText: source.slice(envelope.bodyStart),
   }) as LoadedConcept;
   loadedConceptStates.set(concept, {
-    document: parsed.document,
+    document: parsed.document as Document,
     envelope,
     sourceBytes,
   });
@@ -315,4 +329,57 @@ export function serializeConcept(concept: LoadedConcept): Uint8Array {
     );
   }
   return Uint8Array.from(state.sourceBytes);
+}
+
+function withLineEnding(source: string, lineEnding: "\n" | "\r\n"): string {
+  return lineEnding === "\n" ? source : source.replaceAll("\n", "\r\n");
+}
+
+export function createConceptSourceInternal(
+  frontmatter: ReadonlyYamlMapping,
+  bodyText: string,
+): Uint8Array {
+  const document = new Document(frontmatter, {
+    schema: "core",
+    version: "1.2",
+  });
+  const yaml = document.toString();
+  return encoder.encode(`---\n${yaml}---\n${bodyText}`);
+}
+
+export function renderConceptSourceInternal(
+  concept: LoadedConcept,
+  edits: readonly ConceptMutationEditInternal[],
+  bodyText: string | undefined,
+): Uint8Array {
+  const state = loadedConceptStates.get(concept);
+  if (state === undefined) {
+    throw new TypeError(
+      "renderConceptSourceInternal requires a concept returned by loadConcept",
+    );
+  }
+
+  const document = state.document.clone();
+  for (const edit of edits) {
+    if (edit.op === "set") document.setIn(edit.path, edit.value);
+    else document.deleteIn(edit.path);
+  }
+
+  const lineEnding = concept.rawText.startsWith("---\r\n") ? "\r\n" : "\n";
+  const renderedFrontmatter = withLineEnding(document.toString(), lineEnding);
+  const prefix = concept.rawText.slice(0, state.envelope.contentStart);
+  let suffix: string;
+  if (bodyText === undefined) {
+    suffix = concept.rawText.slice(state.envelope.contentEnd);
+  } else {
+    let closingDelimiter = concept.rawText.slice(
+      state.envelope.contentEnd,
+      state.envelope.bodyStart,
+    );
+    if (bodyText.length > 0 && !closingDelimiter.endsWith("\n")) {
+      closingDelimiter += lineEnding;
+    }
+    suffix = `${closingDelimiter}${bodyText}`;
+  }
+  return encoder.encode(`${prefix}${renderedFrontmatter}${suffix}`);
 }

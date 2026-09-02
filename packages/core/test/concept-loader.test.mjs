@@ -390,7 +390,11 @@ test("loader ownership is nominal in TypeScript", () => {
 });
 
 test("public declarations do not expose parser-specific AST types", () => {
-  const declarations = ["index.d.ts", "concept-loader.d.ts"].map((name) =>
+  const declarations = [
+    "index.d.ts",
+    "concept-loader.d.ts",
+    "concept-mutation.d.ts",
+  ].map((name) =>
     readFileSync(join(dirname(fixtures), "..", "dist", name), "utf8"),
   );
   for (const declaration of declarations) {
