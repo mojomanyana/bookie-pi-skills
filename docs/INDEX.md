@@ -53,6 +53,7 @@ This page is the stable entry point for product and engineering context.
 - [Core concept loader](../packages/core/src/concept-loader.ts) and [tests](../packages/core/test/concept-loader.test.mjs)
 - [Core vault validator](../packages/core/src/vault-validator.ts), [Git-base policy](../packages/core/src/vault-git-base.ts), and [tests](../packages/core/test/git-base-validation.test.mjs)
 - [Core evidence capture](../packages/core/src/evidence-capture.ts) and [tests](../packages/core/test/evidence-capture.test.mjs)
+- [Core filesystem search and inspect](../packages/core/src/filesystem-query.ts) and [tests](../packages/core/test/filesystem-query.test.mjs)
 - [Core concept mutation](../packages/core/src/concept-mutation.ts) and [tests](../packages/core/test/concept-mutation.test.mjs)
 - [Example vault](../examples/vault/)
 - [Repository contract tests](../test/repository.test.mjs)

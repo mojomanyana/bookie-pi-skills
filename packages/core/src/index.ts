@@ -42,6 +42,31 @@ export {
   createConcept,
 } from "./concept-mutation.js";
 export { captureEvidence } from "./evidence-capture.js";
+export {
+  DEFAULT_MAX_INSPECT_CONTENT_BYTES,
+  DEFAULT_MAX_SEARCH_EXCERPT_BYTES,
+  DEFAULT_MAX_SEARCH_RESULTS,
+  DEFAULT_MAX_SEARCH_TEXT_BYTES,
+  inspectConcept,
+  MAX_FILESYSTEM_QUERY_BYTES,
+  searchVault,
+} from "./filesystem-query.js";
+export type {
+  FilesystemConceptSignals,
+  FilesystemConceptSource,
+  FilesystemQueryOptions,
+  FilesystemSearchFilters,
+  FilesystemSearchHit,
+  FilesystemSensitivityClassification,
+  InspectConceptFailure,
+  InspectConceptOptions,
+  InspectConceptResult,
+  InspectConceptSelector,
+  InspectConceptSuccess,
+  SearchVaultOptions,
+  SearchVaultRequest,
+  SearchVaultResult,
+} from "./filesystem-query.js";
 export type {
   CaptureEvidenceFailure,
   CaptureEvidenceOptions,

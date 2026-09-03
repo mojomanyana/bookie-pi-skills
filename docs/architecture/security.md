@@ -32,7 +32,7 @@ Git permissions authorize canonical writes. The Bookie service authorizes retrie
 
 **Threat:** a retrieved concept instructs an agent to ignore policy, expose secrets, or call tools.
 
-**Controls:** label all retrieved text as untrusted data; delimit it from system instructions; include source and trust state; cap automatic context; never derive authorization or tool policy from corpus text; add adversarial retrieval fixtures.
+**Controls:** label all retrieved text as untrusted data; delimit it from system instructions; include source and trust state; cap automatic context; never derive authorization or tool policy from corpus text; add adversarial retrieval fixtures. Core filesystem hits and exact inspection results carry `untrusted: true`, bounded source/excerpts, explicit truncation, working-tree state, and no invented commit or trust score.
 
 ### Path traversal and arbitrary file access
 
@@ -80,7 +80,7 @@ Git-base validation reads only local commit objects through bounded, argument-ve
 
 ## Sensitivity policy
 
-The profile supports deployment-specific classes such as `public`, `internal`, and `confidential`. A deployment declares which classes may be indexed by each embedding provider; a class without provider approval fails closed at that provider boundary. Classes listed in `policy.sensitivity.excluded_classes` are excluded from indexing, checkpointing, logging, and export under REQ-026. Runtime behavior for a missing, reserved, or undeclared record class remains unresolved under OQ-007. Secrets are never a supported class.
+The profile supports deployment-specific classes such as `public`, `internal`, and `confidential`. A deployment declares which classes may be indexed by each embedding provider; a class without provider approval fails closed at that provider boundary. Classes listed in `policy.sensitivity.excluded_classes` are excluded from indexing, checkpointing, logging, and export under REQ-026 and never participate in filesystem search hits, matched counts, or result truncation. Exact direct inspection may return such a record only with `handling: "excluded"`; downstream callers must not log, index, checkpoint, or export it. Local filesystem results label missing or undeclared classes without granting provider approval. Behavior at indexing/provider and other later operation boundaries remains unresolved under OQ-007. Secrets are never a supported class.
 
 Project membership and `bookie.scope: shared` are retrieval metadata, not confidentiality boundaries. Shared Research remains confined to its vault; cross-vault access still requires the explicit authorization design in REQ-024.
 
