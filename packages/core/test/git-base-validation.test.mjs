@@ -224,6 +224,24 @@ test("Git-base validation treats referenced Markdown as exact resource bytes", a
   assert.equal(result.baseCommit, baseCommit);
 });
 
+test("generic Evidence cannot classify Markdown in the Git base as resource bytes", async (t) => {
+  const root = await copyGitVault(t);
+  const hiddenPath = join(root, "references/files/hidden.md");
+  await writeFile(hiddenPath, "# Missing frontmatter\n");
+  await writeFile(
+    join(root, "generic-evidence.md"),
+    "---\ntype: Evidence\nresource: /references/files/hidden.md\n---\nGeneric OKF content.\n",
+  );
+  git(root, ["add", "-A"]);
+  git(root, ["commit", "-q", "--no-gpg-sign", "-m", "generic Evidence"]);
+
+  const result = await validateVault(root, { baseRef: "HEAD" });
+  assert.equal(result.valid, false);
+  assert.equal(result.complete, false);
+  assert.ok(diagnosticCodes(result).includes("FRONTMATTER-OPEN"));
+  assert.ok(diagnosticCodes(result).includes("GIT-BASE"));
+});
+
 test("Git-base validation accepts every valid base/proposed fixture", async (t) => {
   const fixtures = JSON.parse(
     await readFile(join(policyFixtureRoot, "valid/cases.json"), "utf8"),
@@ -246,6 +264,15 @@ test("base-aware validation requires local refs and tracked ordinary files", asy
   const valid = await validateVault(root, { baseRef: "HEAD" });
   assert.equal(valid.valid, true, JSON.stringify(valid.diagnostics));
   assert.equal(valid.baseCommit, baseCommit);
+  const uppercaseOid = await validateVault(root, {
+    baseRef: baseCommit.toUpperCase(),
+  });
+  assert.equal(
+    uppercaseOid.valid,
+    true,
+    JSON.stringify(uppercaseOid.diagnostics),
+  );
+  assert.equal(uppercaseOid.baseCommit, baseCommit);
 
   await writeFile(
     join(root, "untracked.md"),
@@ -408,6 +435,11 @@ test("hexadecimal base IDs must match the repository object format", async (t) =
 
   const full = await validateVault(root, { baseRef: commit });
   assert.equal(full.valid, true, JSON.stringify(full.diagnostics));
+  const uppercase = await validateVault(root, {
+    baseRef: commit.toUpperCase(),
+  });
+  assert.equal(uppercase.valid, true, JSON.stringify(uppercase.diagnostics));
+  assert.equal(uppercase.baseCommit, commit);
   const abbreviated = await validateVault(root, {
     baseRef: commit.slice(0, 40),
   });

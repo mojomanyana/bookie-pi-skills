@@ -224,6 +224,77 @@ test("captureEvidence publishes exact binary bytes before a valid descriptor", a
   await noCaptureTemporaries(root);
 });
 
+test("a coordinator cannot substitute the completed capture result", async (t) => {
+  const { parent, root } = await temporaryVault(t);
+  const source = join(parent, "source.bin");
+  await writeFile(source, "coordinator result");
+
+  await assert.rejects(
+    captureEvidence(root, await request(source, root), {
+      runExclusive: async (_path, mutation) => ({ ...(await mutation()) }),
+    }),
+    /evidence capture completed/u,
+  );
+  assert.deepEqual(
+    await readFile(join(root, "references/files/captured.bin")),
+    Buffer.from("coordinator result"),
+  );
+  assert.equal(
+    loadConcept(
+      await readFile(join(root, "projects/fixture/evidence/captured.md")),
+      { file: "/projects/fixture/evidence/captured.md" },
+    ).ok,
+    true,
+  );
+});
+
+test("a coordinator cannot hide a duplicate capture callback", async (t) => {
+  const { parent, root } = await temporaryVault(t);
+  const source = join(parent, "source.bin");
+  await writeFile(source, "duplicate callback");
+
+  await assert.rejects(
+    captureEvidence(root, await request(source, root), {
+      runExclusive: async (_path, mutation) => {
+        const result = await mutation();
+        try {
+          await mutation();
+          assert.fail("duplicate callback unexpectedly succeeded");
+        } catch (error) {
+          assert.match(error.message, /only once/u);
+        }
+        return result;
+      },
+    }),
+    /evidence capture completed/u,
+  );
+});
+
+test("a coordinator cannot return before the capture callback completes", async (t) => {
+  const { parent, root } = await temporaryVault(t);
+  const source = join(parent, "source.bin");
+  await writeFile(source, "early coordinator result");
+  let callback;
+
+  try {
+    await assert.rejects(
+      captureEvidence(root, await request(source, root), {
+        runExclusive: async (_path, mutation) => {
+          callback = mutation();
+          return { early: true };
+        },
+      }),
+      /evidence capture completed/u,
+    );
+  } finally {
+    await callback;
+  }
+  assert.deepEqual(
+    await readFile(join(root, "references/files/captured.bin")),
+    Buffer.from("early coordinator result"),
+  );
+});
+
 test("descriptor collision reports the already durable resource as an orphan", async (t) => {
   const { parent, root } = await temporaryVault(t);
   const source = join(parent, "source.bin");

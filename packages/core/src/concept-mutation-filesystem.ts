@@ -15,6 +15,7 @@ import {
   utf8ByteLength,
 } from "./concept-mutation-model.js";
 import type {
+  ConceptMutationCoordinator,
   ConceptMutationOptions,
   ConceptMutationResult,
   ConceptSourceHash,
@@ -700,42 +701,97 @@ export async function withRootMutationQueue<T>(
   }
 }
 
+export async function runCoordinatedOperation<T extends object>(
+  targetPath: string,
+  root: string,
+  signal: AbortSignal | undefined,
+  coordinator: ConceptMutationCoordinator | undefined,
+  operation: () => Promise<T>,
+  failureResult: () => T,
+  completedOperation: string,
+): Promise<T> {
+  const runExclusive =
+    coordinator ??
+    (async <R>(_path: string, work: () => Promise<R>): Promise<R> => work());
+  let invoked = false;
+  let coordinatorSettled = false;
+  let contractViolation: TypeError | undefined;
+  let completed: T | undefined;
+  let callbackCompletion: Promise<T> | undefined;
+  try {
+    const coordinated = await runExclusive(targetPath, () => {
+      if (coordinatorSettled) {
+        contractViolation = new TypeError(
+          "mutation callback ran after runExclusive settled",
+        );
+        throw contractViolation;
+      }
+      if (invoked) {
+        contractViolation = new TypeError(
+          "mutation callback may run only once",
+        );
+        throw contractViolation;
+      }
+      invoked = true;
+      callbackCompletion = withRootMutationQueue(root, signal, operation).then(
+        (result) => {
+          completed = result;
+          return result;
+        },
+      );
+      return callbackCompletion;
+    });
+    coordinatorSettled = true;
+    if (callbackCompletion !== undefined && completed === undefined) {
+      await callbackCompletion;
+      throw new TypeError(
+        `runExclusive returned before ${completedOperation} completed.`,
+      );
+    }
+    if (contractViolation !== undefined) throw contractViolation;
+    if (completed === undefined) return failureResult();
+    if (coordinated !== completed) {
+      throw new TypeError(
+        `runExclusive must return ${completedOperation} result unchanged.`,
+      );
+    }
+    return completed;
+  } catch (error) {
+    coordinatorSettled = true;
+    if (callbackCompletion !== undefined && completed === undefined) {
+      try {
+        await callbackCompletion;
+      } catch (callbackError) {
+        if (isAbortError(callbackError)) throw callbackError;
+      }
+    }
+    if (completed !== undefined) {
+      throw new Error(
+        `runExclusive failed after ${completedOperation} completed.`,
+        { cause: error },
+      );
+    }
+    if (isAbortError(error)) throw error;
+    return failureResult();
+  }
+}
+
 export async function runCoordinatedMutation(
   operation: MutationOperation,
   target: ResolvedMutationTarget,
   options: ConceptMutationOptions,
   mutation: () => Promise<ConceptMutationResult>,
 ): Promise<ConceptMutationResult> {
-  const runExclusive =
-    options.runExclusive ??
-    (async <T>(_path: string, work: () => Promise<T>): Promise<T> => work());
-  let invoked = false;
-  let completed: ConceptMutationResult | undefined;
-  try {
-    await runExclusive(target.target, async () => {
-      if (invoked) throw new TypeError("mutation callback may run only once");
-      invoked = true;
-      completed = await withRootMutationQueue(
-        target.root,
-        options.signal,
-        mutation,
-      );
-      return completed;
-    });
-    if (completed !== undefined) return completed;
-    return failure(operation, [
-      mutationDiagnostic("MUTATION-IO", target.bundlePath),
-    ]);
-  } catch (error) {
-    if (completed !== undefined) {
-      throw new Error(
-        "runExclusive failed after the concept mutation completed.",
-        { cause: error },
-      );
-    }
-    if (isAbortError(error)) throw error;
-    return failure(operation, [
-      mutationDiagnostic("MUTATION-IO", target.bundlePath),
-    ]);
-  }
+  return runCoordinatedOperation(
+    target.target,
+    target.root,
+    options.signal,
+    options.runExclusive,
+    mutation,
+    () =>
+      failure(operation, [
+        mutationDiagnostic("MUTATION-IO", target.bundlePath),
+      ]),
+    "the concept mutation",
+  );
 }

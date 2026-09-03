@@ -666,12 +666,14 @@ async function resolveGitBase(
     throw new GitFailure();
   }
   const objectIdLength = objectFormat === "sha1" ? 40 : 64;
-  if (/^[A-Fa-f0-9]+$/u.test(baseRef) && baseRef.length < objectIdLength) {
-    throw new GitFailure();
-  }
-  const exactOid = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u.test(baseRef);
+  const hexadecimal = /^[A-Fa-f0-9]+$/u.test(baseRef);
+  if (hexadecimal && baseRef.length < objectIdLength) throw new GitFailure();
+  const exactOid =
+    hexadecimal && (baseRef.length === 40 || baseRef.length === 64);
+  let resolvedRef = baseRef;
   if (exactOid) {
     if (baseRef.length !== objectIdLength) throw new GitFailure();
+    resolvedRef = baseRef.toLowerCase();
   } else {
     const symbolic = decodeGitLine(
       await runGitBuffered(
@@ -699,7 +701,7 @@ async function resolveGitBase(
   const commit = decodeGitLine(
     await runGitBuffered(
       root,
-      ["rev-parse", "--verify", "--end-of-options", `${baseRef}^{commit}`],
+      ["rev-parse", "--verify", "--end-of-options", `${resolvedRef}^{commit}`],
       signal,
       128,
     ),
@@ -948,13 +950,6 @@ export async function validateGitBase(
       });
       if (!loaded.ok) throw new GitFailure();
       const frontmatter = loaded.concept.frontmatter;
-      if (
-        frontmatter.type === "Evidence" &&
-        typeof frontmatter.resource === "string" &&
-        frontmatter.resource.startsWith("/")
-      ) {
-        evidenceResourceFiles.add(frontmatter.resource.slice(1));
-      }
       if (insideEvidenceRoot) throw new GitFailure();
       const type = frontmatter.type;
       const rawBookie = isObject(frontmatter.bookie)
@@ -975,6 +970,13 @@ export async function validateGitBase(
         throw new GitFailure();
       }
       const bookie = toBookieData(frontmatter);
+      if (
+        type === "Evidence" &&
+        typeof frontmatter.resource === "string" &&
+        frontmatter.resource.startsWith("/")
+      ) {
+        evidenceResourceFiles.add(frontmatter.resource.slice(1));
+      }
       if (baseByUid.has(bookie.uid)) throw new GitFailure();
       const record: BaseRecord = {
         path: `/${entry.path}`,

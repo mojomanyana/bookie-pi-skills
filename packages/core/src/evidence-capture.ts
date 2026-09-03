@@ -9,11 +9,11 @@ import {
   publishStagedCandidate,
   resolveMutationTarget,
   resolveRelatedMutationFileTarget,
+  runCoordinatedOperation,
   stageTemporary,
   syncMutationDirectory,
   targetState,
   verifyParent,
-  withRootMutationQueue,
 } from "./concept-mutation-filesystem.js";
 import type {
   ResolvedMutationTarget,
@@ -582,38 +582,18 @@ async function runCoordinatedCapture(
   limits: CaptureLimits,
   options: CaptureEvidenceOptions,
 ): Promise<CaptureEvidenceResult> {
-  const runExclusive =
-    options.runExclusive ??
-    (async <T>(_path: string, work: () => Promise<T>): Promise<T> => work());
-  let invoked = false;
-  let completed: CaptureEvidenceResult | undefined;
-  try {
-    await runExclusive(descriptor.target, async () => {
-      if (invoked) throw new TypeError("mutation callback may run only once");
-      invoked = true;
-      completed = await withRootMutationQueue(
-        descriptor.root,
-        options.signal,
-        () =>
-          performCapture(descriptor, resource, request, limits, options.signal),
-      );
-      return completed;
-    });
-    return (
-      completed ??
-      captureFailure([mutationDiagnostic("MUTATION-IO", descriptor.bundlePath)])
-    );
-  } catch (error) {
-    if (completed !== undefined) {
-      throw new Error("runExclusive failed after evidence capture completed.", {
-        cause: error,
-      });
-    }
-    if (isAbortError(error)) throw error;
-    return captureFailure([
-      mutationDiagnostic("MUTATION-IO", descriptor.bundlePath),
-    ]);
-  }
+  return runCoordinatedOperation(
+    descriptor.target,
+    descriptor.root,
+    options.signal,
+    options.runExclusive,
+    () => performCapture(descriptor, resource, request, limits, options.signal),
+    () =>
+      captureFailure([
+        mutationDiagnostic("MUTATION-IO", descriptor.bundlePath),
+      ]),
+    "the evidence capture",
+  );
 }
 
 export async function captureEvidence(
