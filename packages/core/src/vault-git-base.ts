@@ -482,13 +482,16 @@ function parseTreeEntries(records: readonly string[]): readonly GitEntry[] {
 function parseTrackedDebugEntries(
   bytes: Uint8Array,
   maximumRecords: number,
+  excludes: readonly string[],
 ): ReadonlyMap<string, string> {
   const input = Buffer.from(bytes);
   const decoder = new TextDecoder("utf-8", { fatal: true });
   const tracked = new Map<string, string>();
   let offset = 0;
+  let recordCount = 0;
   while (offset < input.byteLength) {
-    if (tracked.size >= maximumRecords) throw new GitFailure();
+    recordCount += 1;
+    if (recordCount > maximumRecords) throw new GitFailure();
     const tab = input.indexOf(0x09, offset);
     const nul = tab === -1 ? -1 : input.indexOf(0, tab + 1);
     if (
@@ -502,18 +505,8 @@ function parseTrackedDebugEntries(
     const header = input.subarray(offset, tab).toString("ascii");
     const match = /^([0-7]{6}) ([a-f0-9]{40,64}) ([0-3])$/u.exec(header);
     const path = decoder.decode(input.subarray(tab + 1, nul));
-    if (match === null || !validGitPath(path) || tracked.has(path)) {
-      throw new GitFailure();
-    }
+    if (match === null || !validGitPath(path)) throw new GitFailure();
     const [, mode, oid, stage] = match;
-    if (
-      mode === undefined ||
-      oid === undefined ||
-      stage !== "0" ||
-      /^0+$/u.test(oid)
-    ) {
-      throw new GitFailure();
-    }
     offset = nul + 1;
     let flagsLine = "";
     for (let lineIndex = 0; lineIndex < 5; lineIndex += 1) {
@@ -525,8 +518,17 @@ function parseTrackedDebugEntries(
     }
     const flagsMatch = /\bflags: ([0-9a-f]+)$/u.exec(flagsLine);
     if (flagsMatch?.[1] === undefined) throw new GitFailure();
+    if (matchesExcludedPath(path, excludes)) continue;
     const flags = Number.parseInt(flagsMatch[1], 16);
-    if (!Number.isSafeInteger(flags) || (flags & 0x20000000) !== 0) {
+    if (
+      mode === undefined ||
+      oid === undefined ||
+      stage !== "0" ||
+      /^0+$/u.test(oid) ||
+      tracked.has(path) ||
+      !Number.isSafeInteger(flags) ||
+      (flags & 0x20000000) !== 0
+    ) {
       throw new GitFailure();
     }
     tracked.set(path, mode);
@@ -537,6 +539,7 @@ function parseTrackedDebugEntries(
 async function readTrackedEntries(
   root: string,
   limits: ValidationLimits,
+  excludes: readonly string[],
   signal: AbortSignal | undefined,
 ): Promise<ReadonlyMap<string, string>> {
   const maximumBytes = Math.min(
@@ -551,6 +554,7 @@ async function readTrackedEntries(
       maximumBytes,
     ),
     limits.maxEntries,
+    excludes,
   );
 }
 
@@ -819,7 +823,12 @@ export async function validateGitBase(
     ) {
       throw new GitFailure();
     }
-    initialTracking = await readTrackedEntries(root, limits, signal);
+    initialTracking = await readTrackedEntries(
+      root,
+      limits,
+      currentManifest?.policy.exclude ?? [],
+      signal,
+    );
     if (!currentTrackingIsComplete(entries, initialTracking)) {
       throw new GitFailure();
     }
@@ -1138,7 +1147,12 @@ export async function validateGitBase(
       }
     }
 
-    const finalTracking = await readTrackedEntries(root, limits, signal);
+    const finalTracking = await readTrackedEntries(
+      root,
+      limits,
+      currentManifest?.policy.exclude ?? [],
+      signal,
+    );
     if (
       !trackingMatches(initialTracking, finalTracking) ||
       !currentTrackingIsComplete(entries, finalTracking)

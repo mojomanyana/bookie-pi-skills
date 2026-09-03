@@ -7,6 +7,7 @@ import {
   readFile,
   readdir,
   rm,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -301,6 +302,23 @@ test("base-aware validation requires local refs and tracked ordinary files", asy
     assert.equal(rejected.complete, false, baseRef);
     assert.ok(diagnosticCodes(rejected).includes("GIT-BASE"), baseRef);
   }
+});
+
+test("Git-base validation ignores tracked nonordinary entries under excluded paths", async (t) => {
+  const root = await copyGitVault(t);
+  await mkdir(join(root, "exports"));
+  await symlink("../index.md", join(root, "exports/ignored-link.md"));
+  git(root, ["add", "exports/ignored-link.md"]);
+
+  const filesystemOnly = await validateVault(root);
+  assert.equal(
+    filesystemOnly.valid,
+    true,
+    JSON.stringify(filesystemOnly.diagnostics),
+  );
+  const baseAware = await validateVault(root, { baseRef: "HEAD" });
+  assert.equal(baseAware.valid, true, JSON.stringify(baseAware.diagnostics));
+  assert.equal(baseAware.complete, true);
 });
 
 test("Git-base validation rejects an abbreviated OID even when a branch has that name", async (t) => {
