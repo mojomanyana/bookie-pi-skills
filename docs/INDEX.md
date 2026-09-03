@@ -52,6 +52,7 @@ This page is the stable entry point for product and engineering context.
 - [YAML decision evidence](../test/yaml-roundtrip-decision.test.mjs)
 - [Core concept loader](../packages/core/src/concept-loader.ts) and [tests](../packages/core/test/concept-loader.test.mjs)
 - [Core vault validator](../packages/core/src/vault-validator.ts) and [tests](../packages/core/test/vault-validator.test.mjs)
+- [Core concept mutation](../packages/core/src/concept-mutation.ts) and [tests](../packages/core/test/concept-mutation.test.mjs)
 - [Example vault](../examples/vault/)
 - [Repository contract tests](../test/repository.test.mjs)
 

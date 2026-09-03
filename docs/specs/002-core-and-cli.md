@@ -2,7 +2,7 @@
 
 ## Status
 
-In progress — BK-007 vault validation complete; BK-008 safe mutation ready
+In progress — BK-007 vault validation merged and verified; BK-008 safe mutation implementation candidate under review
 
 Owner: unassigned  
 Target release: 0.1  
@@ -59,7 +59,84 @@ Stable BK-006 diagnostic codes are:
 | `YAML-UNSUPPORTED`  | The document uses an unsupported version, tag, alias, or unsafe integer. |
 | `YAML-ROOT`         | The parsed document root is not a mapping.                               |
 
-Schema, profile, and current-tree cross-file diagnostics are introduced by BK-007. Mutation diagnostics remain BK-008, and Git-base diagnostics remain BK-009.
+Schema, profile, and current-tree cross-file diagnostics are introduced by BK-007. Git-base diagnostics remain BK-009.
+
+## Safe mutation contract
+
+BK-008 adds `createConcept(root, request, options?)`, `amendConcept(root, request, options?)`, and pure `computeConceptSourceHash(bytes)`. `root` is an explicit filesystem path or file URL. Request paths are canonical vault-relative POSIX concept paths such as `projects/demo/tasks/task.md`: host-absolute paths, a leading slash, empty or dot segments, backslashes, percent-encoded input, controls, query/fragment syntax, any case variant of a `.git` segment, reserved `index.md`/`log.md` basenames, manifest-excluded paths, and non-Markdown targets are rejected. Mutation paths contain at most 64 segments and 4,096 UTF-8 bytes total, with at most 255 UTF-8 bytes per segment; these lexical bounds are checked before the coordinator receives a queue key. Relation, project, and support values inside frontmatter retain their separate bundle-absolute `/...md` contract.
+
+The public request shapes are:
+
+```ts
+type ConceptSourceHash = `sha256:${string}`;
+type FrontmatterPathSegment = string | number;
+
+type FrontmatterEdit =
+  | {
+      readonly op: "set";
+      readonly path: readonly [
+        FrontmatterPathSegment,
+        ...FrontmatterPathSegment[],
+      ];
+      readonly value: ReadonlyYamlValue;
+    }
+  | {
+      readonly op: "remove";
+      readonly path: readonly [
+        FrontmatterPathSegment,
+        ...FrontmatterPathSegment[],
+      ];
+    };
+
+interface CreateConceptRequest {
+  readonly path: string;
+  readonly frontmatter: ReadonlyYamlMapping;
+  readonly bodyText: string;
+}
+
+interface AmendConceptRequest {
+  readonly path: string;
+  readonly expectedSourceHash: ConceptSourceHash;
+  readonly edits: readonly FrontmatterEdit[];
+  readonly bodyText?: string;
+}
+
+interface ConceptMutationOptions {
+  readonly maxConceptBytes?: number;
+  readonly maxYamlDepth?: number;
+  readonly signal?: AbortSignal;
+  readonly runExclusive?: ConceptMutationCoordinator;
+}
+
+type ConceptMutationCoordinator = <T>(
+  absoluteTargetPath: string,
+  mutation: () => Promise<T>,
+) => Promise<T>;
+```
+
+`bodyText` is the exact UTF-8 text after the closing frontmatter delimiter line. Create emits LF delimiters and does not add, remove, or normalize body text. Amend applies at most 256 non-overlapping frontmatter paths to a clone of the retained ADR-0005 YAML Document; set may replace an existing value or add a mapping key, remove requires an existing value, and numeric segments address existing sequence elements. Duplicate and ancestor/descendant edit paths are rejected so result semantics do not depend on edit order. The UTF-8 bytes across edit path segments, set values, and changed body text share the per-concept preparation budget. Omitting `bodyText` preserves the original body bytes. A body-only amendment preserves the original frontmatter and delimiter bytes exactly, and a semantically no-op request returns unchanged without serializing or replacing the file. Only changed frontmatter may undergo the serializer normalization accepted by ADR-0005, while unknown nodes, comments, key order, scalar styles, and untouched body bytes remain preserved. The collision scan uses the BK-007 ceilings of 100,000 entries, 50,000 concepts, 512 MiB aggregate concept bytes, and 1,000 diagnostics; mutation options may lower, but not raise, the 1 MiB per-concept and depth-64 parser bounds.
+
+Create requires a complete schema-valid profile 1.0 Bookie frontmatter mapping, a type allowed by `bookie.yaml`, a correctly prefixed caller-generated ULID not already present in the vault, an existing safe parent directory, and an absent target. It does not generate identity or timestamps; the caller remains responsible for global UID uniqueness beyond the scanned vault. Amend requires an existing singly linked regular target and a source hash from the exact bytes previously read; it may not change `type`, `bookie.profile`, or `bookie.uid`. Both operations validate the complete proposed target document and perform a bounded safe vault scan for UID collision. They do not claim that separately authored relation inverses or other multi-file changes are complete; callers run `validateVault()` after the related mutation set and before submission.
+
+`ConceptSourceHash` is lowercase SHA-256 over exact source bytes with the `sha256:` prefix. Amend checks the expected token after its initial no-follow read and again immediately before publication. A mismatch returns a conflict and never retries or overwrites silently. The result is a discriminated union: success has `ok: true`, `operation`, `outcome: "created" | "amended" | "unchanged"`, canonical bundle path, exact resulting `sourceHash`, optional `previousSourceHash`, an empty diagnostic list, and `changedPaths` containing the one bundle path only when bytes changed; failure has `ok: false`, `operation`, `conflict`, and one or more static `MutationDiagnostic` values. Conflict results do not return current bytes or a replacement token: callers must reread before retrying.
+
+Core serializes its own mutations per resolved real vault root. `runExclusive`, when supplied, is called exactly once with the resolved absolute target and wraps the complete target read, manifest/UID checks, candidate preparation, final conflict check, temporary write, and publication. A coordinator must invoke the callback exactly once and await and return its result unchanged. A coordinator failure before the callback completes returns `MUTATION-IO`; a contract violation after it completes throws a static error that explicitly says the mutation completed rather than returning a false failure. The Pi extension MUST pass `(path, mutation) => withFileMutationQueue(path, mutation)` so Bookie participates in Pi's shared per-file queue; wrapping only the final rename is invalid. Initial lexical request validation and real-root resolution happen before the callback so unsafe input is never offered as a queue key, and all filesystem assumptions are rechecked inside it.
+
+Writes use an exclusively created temporary regular file in the existing target directory, flush and close it, recheck the root, parent chain, target state, and expected source hash, then rename on the same filesystem. Under the required coordinator this gives no partial target and no lost update among participating writers. An uncoordinated external process is outside that lock contract, but changes observed before publication still fail closed. Cancellation is honored through the final pre-publication check; after atomic publication starts, the operation completes and reports its committed result rather than returning an ambiguous cancellation. No mutation invokes Git, a network service, or a process exit.
+
+Stable BK-008-only diagnostic codes are:
+
+| Code                  | Meaning                                                                 |
+| --------------------- | ----------------------------------------------------------------------- |
+| `MUTATION-INPUT`      | The body, frontmatter value, edit set, or source-hash token is invalid. |
+| `MUTATION-PATH`       | The requested path is non-canonical, reserved, excluded, or unsafe.     |
+| `MUTATION-TARGET`     | Create found an existing target, or amend found no safe regular target. |
+| `MUTATION-IDENTITY`   | Amend attempted to change stable type, profile, or UID identity.        |
+| `MUTATION-CONFLICT`   | Exact target bytes no longer match the expected source hash.            |
+| `MUTATION-BOUNDS`     | Candidate preparation or the collision scan reached a fixed bound.     |
+| `MUTATION-IO`         | Safe staging, cleanup, or atomic publication could not complete.        |
+
+Candidate format/schema failures reuse BK-006 concept codes plus `CONCEPT-SCHEMA`, `TYPE-ALLOWED`, and `UID-UNIQUE`; an invalid explicit root reuses `VAULT-ROOT`; manifest failures reuse `MANIFEST-MISSING`, `MANIFEST-SIZE`, `MANIFEST-SYNTAX`, and `MANIFEST-SCHEMA`. Invalid programmer limits throw `TypeError`, cancellation rejects with `AbortError`, and expected content, conflict, path, target, bounds, and I/O failures return the failure union rather than throwing parser or filesystem messages.
 
 ## Vault validation contract
 
@@ -110,7 +187,7 @@ bookie export jsonl --output <file>
 bookie inspect <uid-or-path> [--format yaml|json]
 ```
 
-Commands that mutate require an explicit vault and report every changed path. Interactive prompting is deferred to the Pi extension.
+Commands that mutate require an explicit vault and report every changed path. Interactive prompting is deferred to the Pi extension. Before BK-012 exposes a mutating command, [OQ-009](../planning/open-questions.md#oq-009-pre-write-secret-detection-policy) must pin deterministic pre-write secret detection and redacted failure behavior; CLI diagnostics and logs must also omit excluded-sensitivity identifiers and content under REQ-026.
 
 Exit codes:
 

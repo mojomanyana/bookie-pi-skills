@@ -394,7 +394,7 @@ export async function hashSafeBoundedFile(
   return hashed;
 }
 
-function matchesExcludedPath(
+export function matchesExcludedPath(
   path: string,
   patterns: readonly string[],
 ): boolean {

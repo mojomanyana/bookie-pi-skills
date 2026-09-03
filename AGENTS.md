@@ -100,6 +100,14 @@ Before changing the extension, read the installed Pi documentation for extension
 - Avoid unrelated cleanup in focused changes.
 - If a decision is still open, stop at the seam rather than guessing across it.
 
+## Session closeout
+
+- Reconcile README status, specification status, backlog state, and completion evidence with what actually merged; a branch name alone is not delivery evidence.
+- Record the merged PR and CI result in the completed backlog item's evidence before moving to its dependent item.
+- Do not mark a `Ready` item `Done`, or claim production behavior, merely because its branch was created or required reading was completed.
+- Leave a clean worktree when possible. Otherwise list every uncommitted file and the exact next command or decision needed.
+- Report the current branch, its base/divergence, the last verified command and result, and the next accepted backlog item.
+
 ## Handoff format
 
 Every implementation handoff must report:
