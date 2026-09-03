@@ -53,10 +53,11 @@ Open questions are not permission to guess. Resolve them by the listed deadline,
 
 ## OQ-007: Indexable sensitivity classes
 
-- **State:** Open; blocks production indexing of non-public data.
+- **State:** Partially resolved for canonical export on 2026-09-03; provider approval remains open and blocks production indexing of non-public data.
 - **Question:** Which classes may be sent to each cloud provider or local model, and who approves changes?
-- **Current direction:** BK-010 local filesystem reads label missing or undeclared classes and omit vault-global exclusions without treating either as provider approval. At indexing/provider boundaries, unknown classes fail closed; local models may receive a broader approved set but are not automatically trusted.
-- **Decision deadline:** Before the first real vault is indexed.
+- **Export decision:** BK-011 exports only records with a sensitivity class declared by the source commit's manifest and not listed in `excluded_classes`. Any otherwise exportable Bookie record with missing or undeclared sensitivity fails the complete export before output with a static redacted diagnostic. Excluded records are omitted; an included record that would expose an excluded UID or path also fails rather than being silently rewritten.
+- **Current provider direction:** BK-010 local filesystem reads label missing or undeclared classes and omit vault-global exclusions without treating either as provider approval. At indexing/provider boundaries, unknown classes fail closed; local models may receive a broader approved set but are not automatically trusted.
+- **Decision deadline:** Export behavior is resolved before BK-011; provider approval remains due before the first real vault is indexed.
 - **Owner:** Data owner/security reviewer.
 
 ## OQ-008: First destination adapter
@@ -69,8 +70,9 @@ Open questions are not permission to guess. Resolve them by the listed deadline,
 
 ## OQ-009: Pre-write secret detection policy
 
-- **State:** Open; does not block the low-level BK-008/BK-009 write primitives, but blocks CLI or Pi mutation exposure.
+- **State:** Partially resolved for BK-011 canonical export on 2026-09-03; write policy remains open and blocks CLI or Pi mutation exposure.
 - **Question:** Which deterministic local detectors, approval/override rules, and stable redacted diagnostic should guard complete create/amend candidates and captured Evidence resources before publication?
-- **Current direction:** Scan the complete candidate or bounded Evidence byte stream before publication, fail closed on high-confidence credential material, never echo a matched value, and keep detection independent of network providers. BK-008/BK-009 remain policy-neutral low-level primitives until this write-facing boundary is accepted.
+- **Export decision:** Canonical export uses fixed deterministic high-confidence signatures by default, returns only static `EXPORT-SECRET` at `<redacted>` on a match, and permits the low-level exact option `secretPolicy: "allow-unchecked"`. The selected policy is reported, no environment variable can opt out, and sensitivity exclusions remain mandatory. BK-011 does not expose the opt-out through CLI or Pi.
+- **Current write direction:** Scan the complete candidate or bounded Evidence byte stream before publication, fail closed on high-confidence credential material, never echo a matched value, and keep detection independent of network providers. BK-008/BK-009 remain policy-neutral low-level primitives until this write-facing boundary is accepted.
 - **Decision deadline:** Before BK-012.
 - **Owner:** Product owner and security reviewer.

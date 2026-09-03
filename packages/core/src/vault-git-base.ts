@@ -23,7 +23,7 @@ import type {
 } from "./vault-model.js";
 import { parseStrictYamlMapping } from "./strict-yaml.js";
 
-interface GitEntry {
+export interface GitEntry {
   readonly path: string;
   readonly mode: string;
   readonly type: "blob" | "tree" | "commit";
@@ -65,7 +65,8 @@ const MAX_GIT_RECORD_BYTES = MAX_GIT_PATH_BYTES + 256;
 const MAX_BASE_REF_BYTES = 255;
 const ordinaryModes = new Set(["100644", "100755"]);
 
-class GitFailure extends Error {}
+export class GitFailure extends Error {}
+export class GitBoundsFailure extends GitFailure {}
 
 function gitEnvironment(): NodeJS.ProcessEnv {
   const environment = { ...process.env };
@@ -217,8 +218,8 @@ async function runGitRecords(
     }
     const completed = await monitored.completion;
     throwIfAborted(signal);
-    if (!completed || overflow || pending.byteLength !== 0)
-      throw new GitFailure();
+    if (overflow) throw new GitBoundsFailure();
+    if (!completed || pending.byteLength !== 0) throw new GitFailure();
     return records;
   } catch (error) {
     child.kill("SIGKILL");
@@ -287,7 +288,7 @@ class GitByteReader {
   }
 }
 
-class GitBatchReader {
+export class GitBatchReader {
   readonly #child: ChildProcessWithoutNullStreams;
   readonly #reader: GitByteReader;
   readonly #completion: Promise<boolean>;
@@ -444,7 +445,7 @@ function validGitPath(path: string): boolean {
 }
 
 function hasGitMetadataSegment(path: string): boolean {
-  return path.split("/").some((segment) => segment === ".git");
+  return path.split("/").some((segment) => segment.toLowerCase() === ".git");
 }
 
 function parseTreeEntries(records: readonly string[]): readonly GitEntry[] {
@@ -748,6 +749,164 @@ function normalizeTreeEntries(
   return normalized;
 }
 
+export interface LocalGitCommitRoot {
+  readonly commit: string;
+  readonly prefix: string;
+  readonly entries: readonly GitEntry[];
+}
+
+export interface LocalGitCommitTree {
+  readonly commit: string;
+  readonly entries: readonly GitEntry[];
+}
+
+function requireUniquePaths(
+  entries: readonly GitEntry[],
+  paths: Set<string>,
+): void {
+  for (const entry of entries) {
+    if (paths.has(entry.path)) throw new GitFailure();
+    paths.add(entry.path);
+  }
+}
+
+export async function readLocalGitCommitRoot(
+  root: string,
+  sourceRef: string,
+  maximumEntries: number,
+  signal: AbortSignal | undefined,
+): Promise<LocalGitCommitRoot> {
+  const resolved = await resolveGitBase(root, sourceRef, signal);
+  if (resolved.prefix !== "" && hasGitMetadataSegment(resolved.prefix)) {
+    throw new GitFailure();
+  }
+  const pathspec =
+    resolved.prefix === "" ? "." : `:(top,literal)${resolved.prefix}/`;
+  const records = await runGitRecords(
+    root,
+    ["ls-tree", "-z", "-l", "--full-tree", resolved.commit, "--", pathspec],
+    signal,
+    maximumEntries,
+  );
+  const entries = normalizeTreeEntries(
+    parseTreeEntries(records),
+    resolved.prefix,
+  );
+  const paths = new Set<string>();
+  requireUniquePaths(entries, paths);
+  return {
+    commit: resolved.commit,
+    prefix: resolved.prefix,
+    entries,
+  };
+}
+
+const MAX_TREE_PATHS_PER_GIT_CALL = 128;
+const MAX_TREE_PATHSPEC_BYTES_PER_GIT_CALL = 32_768;
+
+export async function expandLocalGitCommitTree(
+  root: string,
+  source: LocalGitCommitRoot,
+  maximumEntries: number,
+  exclusions: readonly string[],
+  signal: AbortSignal | undefined,
+): Promise<readonly GitEntry[]> {
+  const paths = new Set<string>();
+  requireUniquePaths(source.entries, paths);
+  let traversedEntries = source.entries.length;
+  if (traversedEntries > maximumEntries) throw new GitBoundsFailure();
+  const entries: GitEntry[] = [];
+  const pendingDirectories: string[] = [];
+
+  const include = (entry: GitEntry): void => {
+    if (matchesExcludedPath(entry.path, exclusions)) return;
+    if (hasGitMetadataSegment(entry.path)) throw new GitFailure();
+    entries.push(entry);
+    if (entry.type === "tree") {
+      if (entry.mode !== "040000") throw new GitFailure();
+      pendingDirectories.push(entry.path);
+    }
+  };
+  for (const entry of source.entries) include(entry);
+
+  let directoryIndex = 0;
+  while (directoryIndex < pendingDirectories.length) {
+    throwIfAborted(signal);
+    const directories: string[] = [];
+    const pathspecs: string[] = [];
+    let pathspecBytes = 0;
+    while (
+      directoryIndex < pendingDirectories.length &&
+      directories.length < MAX_TREE_PATHS_PER_GIT_CALL
+    ) {
+      const directory = pendingDirectories[directoryIndex];
+      if (directory === undefined) break;
+      const repositoryPath =
+        source.prefix === "" ? directory : `${source.prefix}/${directory}`;
+      const pathspec = `:(top,literal)${repositoryPath}/`;
+      const bytes = Buffer.byteLength(pathspec, "utf8") + 1;
+      if (
+        pathspecs.length > 0 &&
+        pathspecBytes + bytes > MAX_TREE_PATHSPEC_BYTES_PER_GIT_CALL
+      ) {
+        break;
+      }
+      directories.push(directory);
+      pathspecs.push(pathspec);
+      pathspecBytes += bytes;
+      directoryIndex += 1;
+    }
+    if (pathspecs.length === 0) throw new GitFailure();
+
+    const remaining = maximumEntries - traversedEntries;
+    const records = await runGitRecords(
+      root,
+      ["ls-tree", "-z", "-l", "--full-tree", source.commit, "--", ...pathspecs],
+      signal,
+      remaining,
+    );
+    const children = normalizeTreeEntries(
+      parseTreeEntries(records),
+      source.prefix,
+    );
+    const parents = new Set(directories);
+    for (const child of children) {
+      const separator = child.path.lastIndexOf("/");
+      const parent = separator === -1 ? "" : child.path.slice(0, separator);
+      if (!parents.has(parent)) throw new GitFailure();
+    }
+    requireUniquePaths(children, paths);
+    traversedEntries += children.length;
+    if (traversedEntries > maximumEntries) throw new GitBoundsFailure();
+    for (const child of children) include(child);
+  }
+  return entries;
+}
+
+export async function readLocalGitCommitTree(
+  root: string,
+  sourceRef: string,
+  maximumEntries: number,
+  signal: AbortSignal | undefined,
+): Promise<LocalGitCommitTree> {
+  const source = await readLocalGitCommitRoot(
+    root,
+    sourceRef,
+    maximumEntries,
+    signal,
+  );
+  return {
+    commit: source.commit,
+    entries: await expandLocalGitCommitTree(
+      root,
+      source,
+      maximumEntries,
+      [],
+      signal,
+    ),
+  };
+}
+
 function trackingMatches(
   left: ReadonlyMap<string, string>,
   right: ReadonlyMap<string, string>,
@@ -800,19 +959,16 @@ export async function validateGitBase(
   let treeEntries: readonly GitEntry[] = [];
   let initialTracking: ReadonlyMap<string, string>;
   try {
-    const resolvedBase = await resolveGitBase(root, baseRef, signal);
-    baseCommit = resolvedBase.commit;
-    const treeRecords = await runGitRecords(
+    const tree = await readLocalGitCommitTree(
       root,
-      ["ls-tree", "-r", "-t", "-z", "-l", "--full-tree", baseCommit, "--", "."],
+      baseRef,
+      limits.maxEntries,
       signal,
-      limits.maxEntries + 65,
     );
-    treeEntries = normalizeTreeEntries(
-      parseTreeEntries(treeRecords),
-      resolvedBase.prefix,
-    ).filter((entry) => !hasGitMetadataSegment(entry.path));
-    if (treeEntries.length > limits.maxEntries) throw new GitFailure();
+    baseCommit = tree.commit;
+    treeEntries = tree.entries.filter(
+      (entry) => !hasGitMetadataSegment(entry.path),
+    );
     if (
       treeEntries.some(
         (entry) =>

@@ -27,7 +27,11 @@ export type VaultDiagnosticCode =
   | "EVIDENCE-SUPPORT"
   | "INSPECT-INPUT"
   | "INSPECT-NOT-FOUND"
-  | "INSPECT-AMBIGUOUS";
+  | "INSPECT-AMBIGUOUS"
+  | "EXPORT-SOURCE"
+  | "EXPORT-SENSITIVITY"
+  | "EXPORT-SECRET"
+  | "EXPORT-OUTPUT";
 
 export interface VaultDiagnostic {
   readonly code: VaultDiagnosticCode;
@@ -73,6 +77,12 @@ const messages: Record<
   "INSPECT-INPUT": "Inspect selector is not a canonical path or UID.",
   "INSPECT-NOT-FOUND": "No Bookie concept matches the exact selector.",
   "INSPECT-AMBIGUOUS": "More than one Bookie concept matches the exact UID.",
+  "EXPORT-SOURCE":
+    "Canonical export could not read one exact local Git commit.",
+  "EXPORT-SENSITIVITY":
+    "Canonical export eligibility is unclassified or would expose excluded data.",
+  "EXPORT-SECRET": "Canonical export rejected possible credential material.",
+  "EXPORT-OUTPUT": "Canonical export output could not be written completely.",
 };
 
 const remediations: Record<
@@ -128,6 +138,14 @@ const remediations: Record<
     "Use the exact path or UID of a schema-valid Bookie concept in this vault.",
   "INSPECT-AMBIGUOUS":
     "Resolve duplicate UIDs before inspecting a concept by UID.",
+  "EXPORT-SOURCE":
+    "Use a canonical local ref or full object ID in the containing Git worktree.",
+  "EXPORT-SENSITIVITY":
+    "Assign every included record a declared class and remove excluded identity references.",
+  "EXPORT-SECRET":
+    "Remove or redact credential material, or explicitly select the audited unchecked export policy.",
+  "EXPORT-OUTPUT":
+    "Discard any output prefix, repair the caller-owned sink, and retry the same commit.",
 };
 
 export function compareText(left: string, right: string): number {

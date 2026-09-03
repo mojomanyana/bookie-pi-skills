@@ -2,7 +2,7 @@
 
 ## Status
 
-In progress — lossless loading, current/Git-base validation, safe mutation, Evidence capture, and bounded filesystem search/inspect through BK-010 are merged and verified; BK-011 deterministic canonical JSONL export is next
+In progress — behavior through BK-010 is merged and verified; BK-011 deterministic exact-commit canonical JSONL export is in implementation
 
 Owner: unassigned  
 Target release: 0.1  
@@ -367,6 +367,96 @@ The BK-010 diagnostic additions are:
 | `INSPECT-NOT-FOUND` | No schema-valid Bookie concept matches the exact selector.     |
 | `INSPECT-AMBIGUOUS` | More than one schema-valid concept has the selected exact UID. |
 
+## Canonical JSONL export contract
+
+BK-011 adds `exportCanonicalJsonl(root, request, options?)`. Per ADR-0006 and REQ-016, it exports one exact local Git commit rather than mutable filesystem bytes. `root` is an explicit filesystem path or file URL locating the vault inside a containing non-bare worktree. `sourceRef` uses the BK-009 canonical-ref/full-object-ID grammar, resolves once to a lowercase full SHA-1 or SHA-256 commit, and never appears unsanitized in diagnostics. Core reads only that commit's bounded object tree through the BK-009 sanitized local argument-vector Git boundary; it does not read staged or working-tree concept bytes, fetch, invoke hooks or filters, use replacement objects, commit, push, or access a network service.
+
+```ts
+interface CanonicalJsonlExportRequest {
+  readonly sourceRef: string;
+  readonly write: CanonicalJsonlSink;
+}
+
+type CanonicalJsonlSink = (
+  completeLine: Uint8Array,
+) => void | Promise<void>;
+
+type CanonicalExportSecretPolicy =
+  | "reject-detected"
+  | "allow-unchecked";
+
+interface CanonicalJsonlExportOptions {
+  readonly secretPolicy?: CanonicalExportSecretPolicy;
+  readonly maxManifestBytes?: number;
+  readonly maxConceptBytes?: number;
+  readonly maxYamlDepth?: number;
+  readonly maxEntries?: number;
+  readonly maxConcepts?: number;
+  readonly maxTotalConceptBytes?: number;
+  readonly maxTotalResourceBytes?: number;
+  readonly maxDiagnostics?: number;
+  readonly maxOutputBytes?: number;
+  readonly signal?: AbortSignal;
+}
+
+interface CanonicalJsonlExportSuccess {
+  readonly ok: true;
+  readonly format: "bookie-canonical-jsonl";
+  readonly schemaVersion: "1.0";
+  readonly root: string;
+  readonly sourceCommit: string;
+  readonly secretPolicy: CanonicalExportSecretPolicy;
+  readonly recordCount: number;
+  readonly byteLength: number;
+  readonly outputHash: ConceptSourceHash;
+  readonly complete: true;
+  readonly diagnostics: readonly [];
+  readonly diagnosticsTruncated: false;
+}
+
+interface CanonicalJsonlExportFailure {
+  readonly ok: false;
+  readonly format: "bookie-canonical-jsonl";
+  readonly schemaVersion: "1.0";
+  readonly root: string;
+  readonly sourceCommit?: string;
+  readonly secretPolicy: CanonicalExportSecretPolicy;
+  readonly reason:
+    | "invalid-source"
+    | "invalid-vault"
+    | "sensitivity-policy"
+    | "secret-policy"
+    | "incomplete"
+    | "output-error";
+  readonly complete: boolean;
+  readonly diagnostics: readonly VaultDiagnostic[];
+  readonly diagnosticsTruncated: boolean;
+  readonly possiblyWrittenRecords: number;
+  readonly possiblyWrittenBytes: number;
+}
+```
+
+The exact line schema is [`schemas/export/1.0/canonical-record.schema.json`](../../schemas/export/1.0/canonical-record.schema.json). Every record has `schema_version`, resolved `source_commit`, exact-blob `source_hash`, profile, UID, canonical bundle-absolute `.md` path, type, title, the complete decoded `frontmatter` mapping, and exact decoded `body_markdown`. Complete frontmatter retains lifecycle, workflow, typed relations, sources, Evidence metadata, external IDs, explicit empty values, and unknown extensions. Dates/timestamps retain their already schema-valid strings. YAML comments, quoting, and key presentation are not JSON data; the exact source hash keeps the original blob attributable.
+
+Canonical serialization recursively sorts every object key using ECMAScript UTF-16 code-unit comparison, preserves array order, uses ordinary ECMAScript JSON scalar escaping/number spelling, emits no insignificant whitespace or BOM, and terminates every record with one LF. Records sort by exact stable UID. Duplicate UIDs invalidate the snapshot. Empty valid exports emit zero bytes. The returned `outputHash` is lowercase SHA-256 with the `sha256:` prefix over the exact concatenated JSONL bytes.
+
+Before invoking `write`, core completely reads and validates the same immutable commit: manifest and OKF bundle metadata, concept envelopes/schemas and allowed types, canonical paths and unique UIDs, CommonMark local links, cross-file policy, Evidence resource modes/sizes/digests, sensitivity policy, all configured limits, every encoded line size, and aggregate output size. Manifest-excluded paths are ignored. Generic OKF remains valid but is not an export record. The source snapshot may contain up to the existing 100,000 entries, 50,000 concepts, 512 MiB aggregate concept bytes, 2 GiB streamed Evidence bytes, and 1,000 diagnostics; `maxOutputBytes` defaults to and cannot exceed 512 MiB. Caller options may lower but never raise defaults.
+
+A record assigned a class in `policy.sensitivity.excluded_classes` is validated but omitted before sorting, counting, hashing, or output. A schema-valid Bookie record with missing or undeclared sensitivity returns `sensitivity-policy`, a static `EXPORT-SENSITIVITY` diagnostic whose file is `<unclassified>`, and zero sink calls. If any canonical field of an included record contains an omitted record's exact UID or path, including through a resolved relative local link, export fails the same way rather than leaking or silently rewriting the included record. Export emits no logs.
+
+`secretPolicy` is an explicit two-value policy and defaults to `"reject-detected"`. The default scans all canonical string fields of every included record before output using deterministic local high-confidence signatures: private-key PEM headers; known AWS, GitHub, OpenAI, Slack, Stripe, and Google token prefixes/shapes; credential-bearing URI userinfo; and credential-named structured fields or text assignments with non-placeholder values. A match returns `secret-policy` with one static `EXPORT-SECRET` diagnostic at `<redacted>` and zero sink calls; matched keys, values, paths, and bodies are never returned. `"allow-unchecked"` skips only this heuristic and is echoed in every result. It does not bypass schema validation, sensitivity exclusions, excluded-identity checks, or other policy. No environment variable or implicit fallback can select it, and BK-011 does not expose it through CLI or Pi.
+
+Invalid programmer request/option types, unknown secret policies, and above-default limits throw `TypeError`. Cancellation rejects with `AbortError`, including while an asynchronous sink remains pending; a later sink rejection is consumed rather than becoming unhandled. Source, vault, sensitivity, secret, and bound failures return before the sink is called and report zero possibly written bytes. Once emission starts, sink calls are sequential and each receives one complete line. A rejecting/throwing sink returns `output-error` with static `EXPORT-OUTPUT` and conservatively counts the attempted line in `possiblyWrittenRecords`/`possiblyWrittenBytes`; no raw sink error is exposed. Cancellation after emission starts can likewise leave a prefix. Callers must discard any prefix after non-success; BK-012's file command stages to an absent temporary and publishes only after success.
+
+The BK-011 diagnostic additions are:
+
+| Code                 | Meaning                                                                    |
+| -------------------- | -------------------------------------------------------------------------- |
+| `EXPORT-SOURCE`      | The exact local source commit could not be resolved or read safely.        |
+| `EXPORT-SENSITIVITY` | Export eligibility is unclassified or would expose an excluded identity.  |
+| `EXPORT-SECRET`      | Default secret detection found possible credential material.              |
+| `EXPORT-OUTPUT`      | The caller-owned byte sink did not accept the complete deterministic data. |
+
 ## CLI contract
 
 Initial commands:
@@ -378,7 +468,7 @@ bookie create --type <type> --project <path> [--input <json-file>]
 bookie amend <uid-or-path> --input <json-file>
 bookie evidence add <file> --project <path> --supports <path...>
 bookie search <query> [filters] [--format text|json]
-bookie export jsonl --output <file>
+bookie export jsonl --ref <git-ref> --output <file>
 bookie inspect <uid-or-path> [--format yaml|json]
 ```
 
@@ -399,25 +489,29 @@ Exit codes:
 - Concurrent writes detect source-hash conflicts rather than silently overwrite.
 - Evidence capture verifies staged exact bytes, makes the resource durable before descriptor publication, never overwrites a raced target, and reports every canonical path that a failure may have published.
 - Filesystem search reports degraded/local mode and respects project, type, lifecycle, workflow, and sensitivity filters.
-- JSONL export is byte-for-byte deterministic across repeated runs.
+- JSONL export resolves one exact local commit and is byte-for-byte deterministic with an exact output hash across repeated runs, regardless of worktree changes after that commit.
+- Every schema-valid initial type, complete unknown decoded metadata, accepted Unicode/date/empty values, and exact Markdown body survives canonical JSONL 1.0 mapping.
+- Invalid/incomplete snapshots, output bounds, and missing/undeclared sensitivity produce zero sink calls.
 - A mixed-sensitivity export retains included records but omits records assigned a class in `policy.sensitivity.excluded_classes`; excluded UIDs, paths, and marker content appear in neither JSONL nor export diagnostics or logs.
 - CLI stdout is machine-safe in JSON mode and diagnostics go to stderr.
 - No core test requires Pi, Redis, Docker, or a network connection.
 
 ## Test strategy
 
-- Unit tests for path resolution, normalization, diagnostics, identity, hashing, filters, and deterministic serialization.
+- Unit tests for path resolution, normalization, diagnostics, identity, hashing, filters, canonical JSON serialization, exact-commit provenance, and sink accounting.
 - Golden round-trip fixtures with comments, unknown fields, multiline YAML, Unicode, and Markdown links.
 - Boundary tests for empty vaults, large concepts, duplicate IDs, broken links, malformed YAML, symlink escapes, and interrupted writes.
 - Integration tests in temporary Git repositories for base-ref immutability.
 - CLI process tests covering output, stderr, exit codes, cancellation, and no-partial-write behavior.
-- Mixed-sensitivity JSONL fixtures assert positive inclusion and excluded UID, path, content, diagnostic, and log omission.
+- Mixed-sensitivity JSONL fixtures assert positive inclusion, fail-closed missing/undeclared classes, and excluded UID, path, content, diagnostic, and log omission.
+- Export tests cover all initial types, recursive key ordering, duplicate UIDs, malformed/unsafe commit trees, refs that move after resolution, worktree divergence, exact and one-over limits, cancellation, sink failure, packaged schema availability, and a 50,000-record scale probe.
 
 ## Dependencies
 
 - [SPEC-001](001-canonical-ledger.md)
 - [ADR-0004](../architecture/decisions/0004-typescript-monorepo.md)
 - [ADR-0005](../architecture/decisions/0005-yaml-document-ast.md)
+- [ADR-0006](../architecture/decisions/0006-exact-commit-streaming-export.md)
 - [Security architecture](../architecture/security.md)
 
 ## Delivery notes

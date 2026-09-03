@@ -39,7 +39,7 @@ A dedicated Git repository contains OKF concepts, Bookie profile metadata, refer
 
 ### Core library
 
-A TypeScript package owns parsing, normalization, profile validation, typed relations, hashing, lifecycle policy, filesystem search, and the canonical export model. Per ADR-0005 it combines a private YAML v2 Document AST with retained source bytes so no-op concept loading is lossless. It contains no Pi, HTTP server, Redis, or provider-specific behavior.
+A TypeScript package owns parsing, normalization, profile validation, typed relations, hashing, lifecycle policy, filesystem search, and the canonical export model. Per ADR-0005 it combines a private YAML v2 Document AST with retained source bytes so no-op concept loading is lossless. Per ADR-0006 canonical JSONL reads one exact local Git commit and writes bounded deterministic lines through a caller-owned byte sink. Core contains no Pi, HTTP server, Redis, or provider-specific behavior.
 
 ### CLI
 
@@ -120,3 +120,5 @@ This architecture does not provide live multi-user editing, per-record ACLs insi
 - [ADR-0002](decisions/0002-redis-derived-retrieval.md)
 - [ADR-0003](decisions/0003-provider-neutral-embeddings.md)
 - [ADR-0004](decisions/0004-typescript-monorepo.md)
+- [ADR-0005](decisions/0005-yaml-document-ast.md)
+- [ADR-0006](decisions/0006-exact-commit-streaming-export.md)

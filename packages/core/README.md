@@ -1,6 +1,6 @@
 # `@bookie/core`
 
-Pure canonical-domain package for Bookie. It implements OKF/Profile lossless parsing, current-tree and Git-base validation, lifecycle/immutability policy, Evidence hashing and capture, conflict-safe atomic concept creation/amendment, and bounded local filesystem query. A later SPEC-002 slice adds canonical export.
+Pure canonical-domain package for Bookie. It implements OKF/Profile lossless parsing, current-tree and Git-base validation, lifecycle/immutability policy, Evidence hashing and capture, conflict-safe atomic concept creation/amendment, bounded local filesystem query, and deterministic exact-commit JSONL export.
 
 It must not depend on Pi, Redis, an HTTP framework, or a concrete embedding provider. Implement against [SPEC-001](../../docs/specs/001-canonical-ledger.md) and [SPEC-002](../../docs/specs/002-core-and-cli.md).
 
@@ -42,4 +42,12 @@ Search omits every record assigned a manifest-excluded sensitivity class from hi
 
 `inspectConcept(root, { path } | { uid }, options?)` resolves one exact schema-valid Bookie record without fallback or fuzzy matching. It returns a bounded exact UTF-8 source prefix, full/returned byte counts, the complete-source hash, and explicit truncation. Exact inspection may return excluded content with `handling: "excluded"`; callers must not log, index, checkpoint, or export it. Ambiguous UIDs, malformed selectors, invalid concepts, missing targets, bounds, and raced snapshots return no source text. Query APIs never invoke Git, Redis, Pi, a network service, commit, push, or process exit.
 
-The package declares Node `>=24`; `npm pack` builds code, declarations, and canonical schema assets from a clean source checkout. `npm run benchmark:vault --workspace @bookie/core -- 50000` and `npm run benchmark:query --workspace @bookie/core -- 50000` reproduce the bounded scale probes.
+## Canonical JSONL export
+
+`exportCanonicalJsonl(root, { sourceRef, write }, options?)` resolves one local ref once, reads and completely validates only the exact commit's Git objects, and sends UID-sorted canonical JSONL 1.0 lines sequentially to the caller's byte sink. It never mixes worktree/index bytes into commit provenance, fetches, runs hooks or filters, writes canonical files, commits, pushes, or calls a network service. Success reports the resolved commit, selected secret policy, record/byte counts, and exact output SHA-256.
+
+Each line contains stable identity, canonical path, exact concept-blob hash, complete decoded frontmatter including unknown extensions, and exact Markdown body. Recursive object keys are deterministic; arrays and accepted scalar/date/empty values retain their semantics. Source traversal, parsing, Evidence hashing, diagnostics, output, and cancellation are bounded before the sink is invoked.
+
+Declared excluded records are validated but omitted. Missing/undeclared sensitivity or any included canonical field that exposes an excluded UID or path fails before output with static redaction. Secret detection is optional but defaults to `secretPolicy: "reject-detected"`; fixed local high-confidence signatures fail with static `EXPORT-SECRET` before output. The explicit `"allow-unchecked"` policy skips only that heuristic, is reported in the result, and never weakens sensitivity rules. Invalid, incomplete, or oversized snapshots likewise invoke the sink zero times. Once output starts, cancellation or a sink failure can leave a caller-owned prefix; discard it. File callers must stage privately and publish only after success.
+
+The package declares Node `>=24`; `npm pack` builds code, declarations, and canonical schema assets from a clean source checkout. `npm run benchmark:vault --workspace @bookie/core -- 50000`, `npm run benchmark:query --workspace @bookie/core -- 50000`, and `npm run benchmark:export --workspace @bookie/core -- 50000` reproduce the bounded scale probes. Append `mixed` to the export benchmark to alternate included and excluded records at the same scale.

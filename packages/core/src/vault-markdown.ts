@@ -138,16 +138,10 @@ function localLinkTarget(
   return relative(root, target).split(sep).join("/").replace(/\/$/u, "");
 }
 
-export async function validateMarkdownLinks(
+export async function analyzeBoundedMarkdown(
   body: string,
-  sourceHostPath: string,
-  displayFile: string,
-  root: string,
-  entries: VaultEntries,
-  collector: DiagnosticCollector,
   signal: AbortSignal | undefined,
-  onLocalTarget?: (target: string) => void,
-): Promise<void> {
+): Promise<MarkdownAnalysis | undefined> {
   let analysis: MarkdownAnalysis | undefined;
   try {
     analysis = hasSuspiciousContainerComplexity(body)
@@ -158,10 +152,24 @@ export async function validateMarkdownLinks(
     void error;
   }
   throwIfAborted(signal);
-  if (
-    analysis === undefined ||
-    analysis.maximumContainerDepth > MAX_MARKDOWN_CONTAINER_DEPTH
-  ) {
+  return analysis !== undefined &&
+    analysis.maximumContainerDepth <= MAX_MARKDOWN_CONTAINER_DEPTH
+    ? analysis
+    : undefined;
+}
+
+export async function validateMarkdownLinks(
+  body: string,
+  sourceHostPath: string,
+  displayFile: string,
+  root: string,
+  entries: VaultEntries,
+  collector: DiagnosticCollector,
+  signal: AbortSignal | undefined,
+  onLocalTarget?: (target: string) => void,
+): Promise<void> {
+  const analysis = await analyzeBoundedMarkdown(body, signal);
+  if (analysis === undefined) {
     collector.add(createDiagnostic("MARKDOWN-LINK", displayFile));
     collector.markIncomplete();
     return;

@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:bookie:schema:export:canonical-record:1.0",
+  "title": "Bookie canonical JSONL record 1.0",
+  "description": "One deterministic, commit-backed export record containing complete decoded profile metadata and exact Markdown body text.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "source_commit",
+    "source_hash",
+    "profile",
+    "uid",
+    "path",
+    "type",
+    "title",
+    "frontmatter",
+    "body_markdown"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "source_commit": {
+      "description": "The exact lowercase SHA-1 or SHA-256 commit object containing this record.",
+      "type": "string",
+      "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})(?![\\s\\S])"
+    },
+    "source_hash": {
+      "description": "Lowercase SHA-256 over the exact concept Markdown blob bytes.",
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}(?![\\s\\S])"
+    },
+    "profile": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "uid": {
+      "$ref": "urn:bookie:schema:common:1.0#/$defs/prefixedUlid"
+    },
+    "path": {
+      "$ref": "urn:bookie:schema:common:1.0#/$defs/conceptPath"
+    },
+    "type": {
+      "enum": [
+        "Project",
+        "Task",
+        "Document",
+        "Research",
+        "Decision",
+        "Activity",
+        "Evidence",
+        "Person"
+      ]
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "frontmatter": {
+      "oneOf": [
+        { "$ref": "urn:bookie:schema:type:project:1.0" },
+        { "$ref": "urn:bookie:schema:type:task:1.0" },
+        { "$ref": "urn:bookie:schema:type:document:1.0" },
+        { "$ref": "urn:bookie:schema:type:research:1.0" },
+        { "$ref": "urn:bookie:schema:type:decision:1.0" },
+        { "$ref": "urn:bookie:schema:type:activity:1.0" },
+        { "$ref": "urn:bookie:schema:type:evidence:1.0" },
+        { "$ref": "urn:bookie:schema:type:person:1.0" }
+      ]
+    },
+    "body_markdown": {
+      "type": "string"
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "type": { "const": "Project" } } },
+      "then": {
+        "properties": {
+          "frontmatter": { "$ref": "urn:bookie:schema:type:project:1.0" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "Task" } } },
+      "then": {
+        "properties": {
+          "frontmatter": { "$ref": "urn:bookie:schema:type:task:1.0" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "Document" } } },
+      "then": {
+        "properties": {
+          "frontmatter": { "$ref": "urn:bookie:schema:type:document:1.0" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "Research" } } },
+      "then": {
+        "properties": {
+          "frontmatter": { "$ref": "urn:bookie:schema:type:research:1.0" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "Decision" } } },
+      "then": {
+        "properties": {
+          "frontmatter": { "$ref": "urn:bookie:schema:type:decision:1.0" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "Activity" } } },
+      "then": {
+        "properties": {
+          "frontmatter": { "$ref": "urn:bookie:schema:type:activity:1.0" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "Evidence" } } },
+      "then": {
+        "properties": {
+          "frontmatter": { "$ref": "urn:bookie:schema:type:evidence:1.0" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "Person" } } },
+      "then": {
+        "properties": {
+          "frontmatter": { "$ref": "urn:bookie:schema:type:person:1.0" }
+        }
+      }
+    }
+  ]
+}
