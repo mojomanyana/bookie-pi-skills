@@ -286,13 +286,13 @@ export function prepareAmendment(
     hasBody && request.bodyText !== concept.bodyText
       ? request.bodyText
       : undefined;
-  if (
-    changedBody !== undefined &&
-    utf8ByteLength(changedBody) > limits.maxConceptBytes
-  ) {
+  const changedBodyBytes =
+    changedBody === undefined ? 0 : utf8ByteLength(changedBody);
+  if (changedBodyBytes > limits.maxConceptBytes) {
     return { ok: false, code: "MUTATION-BOUNDS" };
   }
 
+  let remainingPreparationBytes = limits.maxConceptBytes - changedBodyBytes;
   const requestedPaths: FrontmatterPathSegment[][] = [];
   for (const requestedEdit of request.edits as readonly unknown[]) {
     if (!isObject(requestedEdit)) {
@@ -314,15 +314,19 @@ export function prepareAmendment(
     ) {
       return { ok: false, code: "MUTATION-INPUT" };
     }
+    for (const segment of path) {
+      const segmentBytes =
+        typeof segment === "string" ? utf8ByteLength(segment) + 1 : 16;
+      if (segmentBytes > remainingPreparationBytes) {
+        return { ok: false, code: "MUTATION-BOUNDS" };
+      }
+      remainingPreparationBytes -= segmentBytes;
+    }
     requestedPaths.push([...path]);
   }
 
   const edits: ConceptMutationEditInternal[] = [];
-  const editBudget: CloneBudget = {
-    remaining:
-      limits.maxConceptBytes -
-      (changedBody === undefined ? 0 : utf8ByteLength(changedBody)),
-  };
+  const editBudget: CloneBudget = { remaining: remainingPreparationBytes };
   for (const edit of request.edits) {
     const parent = valueAtPath(concept.frontmatter, edit.path.slice(0, -1));
     if (!parent.exists || parent.value === undefined) {

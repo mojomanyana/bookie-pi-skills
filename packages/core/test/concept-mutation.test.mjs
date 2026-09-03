@@ -105,7 +105,7 @@ function nextMutationTemporary(directory) {
 
 async function writeCommentedTask(vault, name = "commented.md") {
   const path = join(vault, "projects/fixture/tasks", name);
-  const source = `---\n# leading concept comment\ntype: Task # inline type comment\ntitle: 'Original title'\nunknown_extension:\n  nested: yes # unknown comment\n  remove_me: old\ndescription: |-\n  literal line one\n  literal line two\nsummary: >+\n  folded line one\n  folded line two\n\ntags: [alpha, "beta"]\nstatus: draft\ngenerated:\n  by: "human:mutation-test"\n  at: 2026-09-02T20:00:00Z\nbookie:\n  profile: "1.0"\n  uid: ${taskUidA}\n  project: /projects/fixture/project.md\n  state: ready\n  created_at: 2026-09-02T20:00:00Z\n---\n\n# Exact body Δ\n\nDo not normalize this body.\n`;
+  const source = `---\n# leading concept comment\ntype: Task # inline type comment\ntitle   : 'Original title'\nunknown_extension:\n  nested: yes # unknown comment\n  remove_me: old\ndescription: |-\n  literal line one\n  literal line two\nsummary: >+\n  folded line one\n  folded line two\n\ntags: [alpha, "beta"]\nstatus: draft\ngenerated:\n  by: "human:mutation-test"\n  at: 2026-09-02T20:00:00Z\nbookie:\n  profile: "1.0"\n  uid: ${taskUidA}\n  project: /projects/fixture/project.md\n  state: ready\n  created_at: 2026-09-02T20:00:00Z\n---\n\n# Exact body Δ\n\nDo not normalize this body.\n`;
   await writeFile(path, source);
   return {
     path,
@@ -179,9 +179,9 @@ test("create publishes one complete validated concept through the supplied queue
   assert.equal(validated.valid, true, JSON.stringify(validated.diagnostics));
 });
 
-test("create supports a canonical target basename near filesystem limits", async (t) => {
+test("create supports the portable target basename byte limit", async (t) => {
   const { vault } = await temporaryVault(t);
-  const name = `${"x".repeat(240)}.md`;
+  const name = `${"x".repeat(252)}.md`;
   const path = `projects/fixture/tasks/${name}`;
   const result = await createConcept(vault, {
     path,
@@ -191,10 +191,125 @@ test("create supports a canonical target basename near filesystem limits", async
 
   assert.equal(result.ok, true, JSON.stringify(result));
   assert.equal(result.path, `/${path}`);
+  assert.equal(Buffer.byteLength(name), 255);
   assert.equal(
     (await readFile(join(vault, ...path.split("/")))).byteLength > 0,
     true,
   );
+});
+
+test("Git metadata and excessive paths are rejected before coordination", async (t) => {
+  const { vault } = await temporaryVault(t);
+  await mkdir(join(vault, ".git/refs/heads"), { recursive: true });
+  await mkdir(join(vault, "projects/.GiT"), { recursive: true });
+
+  const exactTotalPath = [
+    ...Array.from({ length: 16 }, () => "d".repeat(254)),
+    `${"f".repeat(13)}.md`,
+  ].join("/");
+  const overTotalPath = [
+    ...Array.from({ length: 16 }, () => "d".repeat(254)),
+    `${"f".repeat(14)}.md`,
+  ].join("/");
+  const overUtf8TotalPath = [
+    ...Array.from({ length: 16 }, () => "é".repeat(126)),
+    `${"f".repeat(48)}.md`,
+  ].join("/");
+  const exactSegmentsPath = [
+    ...Array.from({ length: 63 }, () => "d"),
+    "target.md",
+  ].join("/");
+  const excessiveSegments = [
+    ...Array.from({ length: 64 }, () => "d"),
+    "target.md",
+  ].join("/");
+  assert.equal(exactSegmentsPath.split("/").length, 64);
+  assert.equal(excessiveSegments.split("/").length, 65);
+  assert.equal(Buffer.byteLength(exactTotalPath), 4_096);
+  assert.equal(Buffer.byteLength(overTotalPath), 4_097);
+  assert.equal(Buffer.byteLength(overUtf8TotalPath), 4_099);
+
+  let coordinated = 0;
+  const options = {
+    async runExclusive(_path, mutation) {
+      coordinated += 1;
+      return mutation();
+    },
+  };
+  const invalidPaths = [
+    ".git/refs/heads/bookie-review.md",
+    "projects/.GiT/bookie-review.md",
+    `projects/fixture/tasks/${"x".repeat(253)}.md`,
+    `projects/fixture/tasks/${"é".repeat(127)}.md`,
+    overTotalPath,
+    overUtf8TotalPath,
+    excessiveSegments,
+  ];
+
+  for (const path of invalidPaths) {
+    const created = await createConcept(
+      vault,
+      {
+        path,
+        frontmatter: taskFrontmatter(taskUidA),
+        bodyText: "",
+      },
+      options,
+    );
+    assertRejected(created, "MUTATION-PATH");
+    assert.ok(
+      created.diagnostics.every((diagnostic) => diagnostic.file.length < 32),
+    );
+
+    const amended = await amendConcept(
+      vault,
+      {
+        path,
+        expectedSourceHash: computeConceptSourceHash(Buffer.from("absent")),
+        edits: [{ op: "set", path: ["title"], value: "changed" }],
+      },
+      options,
+    );
+    assertRejected(amended, "MUTATION-PATH");
+    assert.ok(
+      amended.diagnostics.every((diagnostic) => diagnostic.file.length < 32),
+    );
+  }
+  assert.equal(coordinated, 0);
+  await assert.rejects(
+    readFile(join(vault, ".git/refs/heads/bookie-review.md")),
+    { code: "ENOENT" },
+  );
+  await assert.rejects(
+    readFile(join(vault, "projects/.GiT/bookie-review.md")),
+    {
+      code: "ENOENT",
+    },
+  );
+
+  const boundary = await createConcept(
+    vault,
+    {
+      path: exactTotalPath,
+      frontmatter: taskFrontmatter(taskUidA),
+      bodyText: "",
+    },
+    options,
+  );
+  assertRejected(boundary, "MUTATION-PATH");
+  assert.equal(coordinated, 1);
+
+  const segmentBoundary = await createConcept(
+    vault,
+    {
+      path: exactSegmentsPath,
+      frontmatter: taskFrontmatter(taskUidA),
+      bodyText: "",
+    },
+    options,
+  );
+  assertRejected(segmentBoundary, "MUTATION-PATH");
+  assert.equal(coordinated, 2);
 });
 
 test("a coordinator error after publication explicitly reports that mutation completed", async (t) => {
@@ -448,6 +563,88 @@ test("amend preserves unknown YAML structure and untouched body bytes", async (t
 
   const validated = await validateVault(vault);
   assert.equal(validated.valid, true, JSON.stringify(validated.diagnostics));
+});
+
+test("a body-only amendment preserves frontmatter bytes exactly", async (t) => {
+  const { vault } = await temporaryVault(t);
+  const fixture = await writeCommentedTask(vault, "body-only.md");
+  const before = await readFile(fixture.path);
+  const loaded = loadConcept(before, { file: fixture.bundlePath });
+  assert.equal(loaded.ok, true, JSON.stringify(loaded.diagnostics));
+  const prefixBytes =
+    before.byteLength - Buffer.byteLength(loaded.concept.bodyText, "utf8");
+  const bodyText = "replacement body without a final newline";
+
+  const result = await amendConcept(vault, {
+    path: "projects/fixture/tasks/body-only.md",
+    expectedSourceHash: computeConceptSourceHash(before),
+    edits: [],
+    bodyText,
+  });
+
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const after = await readFile(fixture.path);
+  assert.deepEqual(
+    after,
+    Buffer.concat([before.subarray(0, prefixBytes), Buffer.from(bodyText)]),
+  );
+});
+
+test("sequence edits target original indices independent of request order", async (t) => {
+  const cases = [
+    {
+      edits: [
+        { op: "remove", path: ["tags", 0] },
+        { op: "remove", path: ["tags", 1] },
+      ],
+      expected: ["gamma"],
+    },
+    {
+      edits: [
+        { op: "remove", path: ["tags", 1] },
+        { op: "remove", path: ["tags", 0] },
+      ],
+      expected: ["gamma"],
+    },
+    {
+      edits: [
+        { op: "remove", path: ["tags", 0] },
+        { op: "set", path: ["tags", 2], value: "changed-gamma" },
+      ],
+      expected: ["beta", "changed-gamma"],
+    },
+    {
+      edits: [
+        { op: "set", path: ["tags", 2], value: "changed-gamma" },
+        { op: "remove", path: ["tags", 0] },
+      ],
+      expected: ["beta", "changed-gamma"],
+    },
+  ];
+
+  for (const [index, scenario] of cases.entries()) {
+    const { vault } = await temporaryVault(t);
+    const fixture = await writeCommentedTask(vault, `sequence-${index}.md`);
+    const source = Buffer.from(
+      fixture.source
+        .toString("utf8")
+        .replace('tags: [alpha, "beta"]', 'tags: [alpha, "beta", gamma]'),
+    );
+    await writeFile(fixture.path, source);
+
+    const result = await amendConcept(vault, {
+      path: `projects/fixture/tasks/sequence-${index}.md`,
+      expectedSourceHash: computeConceptSourceHash(source),
+      edits: scenario.edits,
+    });
+
+    assert.equal(result.ok, true, JSON.stringify(result));
+    const loaded = loadConcept(await readFile(fixture.path), {
+      file: fixture.bundlePath,
+    });
+    assert.equal(loaded.ok, true, JSON.stringify(loaded.diagnostics));
+    assert.deepEqual(loaded.concept.frontmatter.tags, scenario.expected);
+  }
 });
 
 test("amend round-trips every initial profile type", async (t) => {
@@ -878,6 +1075,20 @@ test("mutation content and option bounds fail without writing", async (t) => {
     ],
   });
   assertRejected(aggregateResult, "MUTATION-BOUNDS");
+  assert.deepEqual(await readFile(fixture.path), before);
+
+  const editPathResult = await amendConcept(vault, {
+    path: "projects/fixture/tasks/aggregate-bounds.md",
+    expectedSourceHash: computeConceptSourceHash(before),
+    edits: [
+      {
+        op: "set",
+        path: ["x".repeat(1_048_576)],
+        value: "bounded",
+      },
+    ],
+  });
+  assertRejected(editPathResult, "MUTATION-BOUNDS");
   assert.deepEqual(await readFile(fixture.path), before);
 
   await assert.rejects(

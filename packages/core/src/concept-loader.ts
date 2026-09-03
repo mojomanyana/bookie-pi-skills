@@ -335,6 +335,56 @@ function withLineEnding(source: string, lineEnding: "\n" | "\r\n"): string {
   return lineEnding === "\n" ? source : source.replaceAll("\n", "\r\n");
 }
 
+function compareEditPaths(
+  left: readonly (string | number)[],
+  right: readonly (string | number)[],
+): number {
+  for (let index = 0; index < Math.min(left.length, right.length); index += 1) {
+    const leftSegment = left[index]!;
+    const rightSegment = right[index]!;
+    if (leftSegment === rightSegment) continue;
+    if (typeof leftSegment === "number" && typeof rightSegment === "number") {
+      return leftSegment - rightSegment;
+    }
+    if (typeof leftSegment === "number") return -1;
+    if (typeof rightSegment === "number") return 1;
+    return leftSegment < rightSegment ? -1 : 1;
+  }
+  return left.length - right.length;
+}
+
+function sameEditParent(
+  left: readonly (string | number)[],
+  right: readonly (string | number)[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.slice(0, -1).every((segment, index) => segment === right[index])
+  );
+}
+
+function compareMutationEdits(
+  left: ConceptMutationEditInternal,
+  right: ConceptMutationEditInternal,
+): number {
+  if (left.op !== right.op) return left.op === "set" ? -1 : 1;
+  if (left.op === "remove" && right.op === "remove") {
+    if (left.path.length !== right.path.length) {
+      return right.path.length - left.path.length;
+    }
+    const leftIndex = left.path.at(-1);
+    const rightIndex = right.path.at(-1);
+    if (
+      typeof leftIndex === "number" &&
+      typeof rightIndex === "number" &&
+      sameEditParent(left.path, right.path)
+    ) {
+      return rightIndex - leftIndex;
+    }
+  }
+  return compareEditPaths(left.path, right.path);
+}
+
 export function createConceptSourceInternal(
   frontmatter: ReadonlyYamlMapping,
   bodyText: string,
@@ -359,14 +409,16 @@ export function renderConceptSourceInternal(
     );
   }
 
-  const document = state.document.clone();
-  for (const edit of edits) {
-    if (edit.op === "set") document.setIn(edit.path, edit.value);
-    else document.deleteIn(edit.path);
-  }
-
   const lineEnding = concept.rawText.startsWith("---\r\n") ? "\r\n" : "\n";
-  const renderedFrontmatter = withLineEnding(document.toString(), lineEnding);
+  let renderedFrontmatter = concept.frontmatterText;
+  if (edits.length > 0) {
+    const document = state.document.clone();
+    for (const edit of edits.toSorted(compareMutationEdits)) {
+      if (edit.op === "set") document.setIn(edit.path, edit.value);
+      else document.deleteIn(edit.path);
+    }
+    renderedFrontmatter = withLineEnding(document.toString(), lineEnding);
+  }
   const prefix = concept.rawText.slice(0, state.envelope.contentStart);
   let suffix: string;
   if (bodyText === undefined) {

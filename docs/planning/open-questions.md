@@ -66,3 +66,11 @@ Open questions are not permission to guess. Resolve them by the listed deadline,
 - **Current direction:** Select from an actual target workspace and representative records after JSONL is stable.
 - **Decision deadline:** Before BK-022.
 - **Owner:** Product owner.
+
+## OQ-009: Pre-write secret detection policy
+
+- **State:** Open; does not block the low-level BK-008 mutation primitive, but blocks CLI or Pi mutation exposure.
+- **Question:** Which deterministic local detectors, approval/override rules, and stable redacted diagnostic should guard complete create/amend candidates before publication?
+- **Current direction:** Scan the complete candidate before staging, fail closed on high-confidence credential material, never echo a matched value, and keep detection independent of network providers.
+- **Decision deadline:** Before BK-012.
+- **Owner:** Product owner and security reviewer.

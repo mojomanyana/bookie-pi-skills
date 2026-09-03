@@ -12,6 +12,7 @@ import {
   isAbortError,
   mutationDiagnostic,
   reusedDiagnostic,
+  utf8ByteLength,
 } from "./concept-mutation-model.js";
 import type {
   ConceptMutationOptions,
@@ -58,6 +59,14 @@ interface StagedTemporary {
 }
 
 const rootMutationTails = new Map<string, Promise<void>>();
+const MAX_MUTATION_PATH_BYTES = 4_096;
+const MAX_MUTATION_PATH_SEGMENT_BYTES = 255;
+const MAX_MUTATION_PATH_SEGMENTS = 64;
+
+interface CanonicalConceptPath {
+  readonly relativePath: string;
+  readonly segments: readonly string[];
+}
 
 function hasInvalidPathCharacter(value: string): boolean {
   for (const character of value) {
@@ -74,20 +83,30 @@ function hasInvalidPathCharacter(value: string): boolean {
   return false;
 }
 
-function canonicalRelativeConceptPath(path: unknown): string | undefined {
+function canonicalRelativeConceptPath(
+  path: unknown,
+): CanonicalConceptPath | undefined {
   if (
     typeof path !== "string" ||
     path.length === 0 ||
+    path.length > MAX_MUTATION_PATH_BYTES ||
     path.startsWith("/") ||
     path.endsWith("/") ||
-    hasInvalidPathCharacter(path)
+    hasInvalidPathCharacter(path) ||
+    utf8ByteLength(path) > MAX_MUTATION_PATH_BYTES
   ) {
     return undefined;
   }
   const segments = path.split("/");
   if (
+    segments.length > MAX_MUTATION_PATH_SEGMENTS ||
     segments.some(
-      (segment) => segment.length === 0 || segment === "." || segment === "..",
+      (segment) =>
+        segment.length === 0 ||
+        segment === "." ||
+        segment === ".." ||
+        segment.toLowerCase() === ".git" ||
+        utf8ByteLength(segment) > MAX_MUTATION_PATH_SEGMENT_BYTES,
     )
   ) {
     return undefined;
@@ -102,7 +121,7 @@ function canonicalRelativeConceptPath(path: unknown): string | undefined {
   ) {
     return undefined;
   }
-  return path;
+  return { relativePath: path, segments };
 }
 
 function isInside(root: string, target: string): boolean {
@@ -120,8 +139,8 @@ export async function resolveMutationTarget(
   | { readonly ok: true; readonly target: ResolvedMutationTarget }
   | { readonly ok: false; readonly diagnostic: MutationDiagnostic }
 > {
-  const relativePath = canonicalRelativeConceptPath(requestPath);
-  if (relativePath === undefined) {
+  const canonicalPath = canonicalRelativeConceptPath(requestPath);
+  if (canonicalPath === undefined) {
     return {
       ok: false,
       diagnostic: mutationDiagnostic("MUTATION-PATH", "<invalid>"),
@@ -160,7 +179,10 @@ export async function resolveMutationTarget(
   }
   throwIfAborted(signal);
 
-  const target = resolve(root, ...relativePath.split("/"));
+  const { relativePath } = canonicalPath;
+  let target = root;
+  for (const segment of canonicalPath.segments)
+    target = resolve(target, segment);
   if (!isInside(root, target)) {
     return {
       ok: false,
