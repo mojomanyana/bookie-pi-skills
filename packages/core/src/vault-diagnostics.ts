@@ -24,7 +24,10 @@ export type VaultDiagnosticCode =
   | "EVIDENCE-IMMUTABLE"
   | "EVIDENCE-RESOURCE"
   | "EVIDENCE-DIGEST"
-  | "EVIDENCE-SUPPORT";
+  | "EVIDENCE-SUPPORT"
+  | "INSPECT-INPUT"
+  | "INSPECT-NOT-FOUND"
+  | "INSPECT-AMBIGUOUS";
 
 export interface VaultDiagnostic {
   readonly code: VaultDiagnosticCode;
@@ -67,6 +70,9 @@ const messages: Record<
   "EVIDENCE-RESOURCE": "Evidence resource is missing, unsafe, or oversized.",
   "EVIDENCE-DIGEST": "Evidence digest does not match exact resource bytes.",
   "EVIDENCE-SUPPORT": "Evidence support does not resolve to a valid concept.",
+  "INSPECT-INPUT": "Inspect selector is not a canonical path or UID.",
+  "INSPECT-NOT-FOUND": "No Bookie concept matches the exact selector.",
+  "INSPECT-AMBIGUOUS": "More than one Bookie concept matches the exact UID.",
 };
 
 const remediations: Record<
@@ -116,6 +122,12 @@ const remediations: Record<
     "Recompute lowercase SHA-256 over the exact stored resource bytes.",
   "EVIDENCE-SUPPORT":
     "Point every support path to a schema-valid Bookie concept.",
+  "INSPECT-INPUT":
+    "Use exactly one canonical bundle-absolute concept path or Bookie UID.",
+  "INSPECT-NOT-FOUND":
+    "Use the exact path or UID of a schema-valid Bookie concept in this vault.",
+  "INSPECT-AMBIGUOUS":
+    "Resolve duplicate UIDs before inspecting a concept by UID.",
 };
 
 export function compareText(left: string, right: string): number {

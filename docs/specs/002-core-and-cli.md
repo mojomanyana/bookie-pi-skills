@@ -2,7 +2,7 @@
 
 ## Status
 
-In progress — lossless loading, current/Git-base validation, safe mutation, and Evidence capture through BK-009 are merged and verified; BK-010 bounded filesystem search and inspect is next
+In progress — lossless loading, current/Git-base validation, safe mutation, and Evidence capture through BK-009 are merged and verified; BK-010 bounded filesystem search and inspect is in implementation
 
 Owner: unassigned  
 Target release: 0.1  
@@ -215,6 +215,157 @@ The BK-009 diagnostic additions are:
 | `GIT-BASE`           | Local base resolution, bounded tree reading, or current tracking was unsafe. |
 | `ACTIVITY-IMMUTABLE` | A Git-base Activity was edited, deleted, renamed, or replaced.               |
 | `EVIDENCE-IMMUTABLE` | A Git-base Evidence descriptor was edited, deleted, renamed, or replaced.    |
+
+## Filesystem search and inspect contract
+
+BK-010 adds `searchVault(root, request, options?)` and `inspectConcept(root, selector, options?)`. Both operate on one explicit filesystem vault path or file URL, use exact current working-tree bytes, and return `mode: "filesystem"`. They do not invoke Git and therefore return `commit: null` rather than claiming that local bytes equal a commit or are merged. A later CLI or Pi caller may label an actual service outage as degraded; core itself does not invent a fallback reason.
+
+The public request and shared signal shapes are:
+
+```ts
+interface FilesystemSearchFilters {
+  readonly type?: string;
+  readonly project?: string;
+  readonly status?: string;
+  readonly state?: string;
+  readonly sensitivity?: string;
+  readonly tag?: string;
+}
+
+interface SearchVaultRequest {
+  readonly query: string;
+  readonly filters?: FilesystemSearchFilters;
+}
+
+type InspectConceptSelector =
+  | { readonly path: string; readonly uid?: never }
+  | { readonly uid: string; readonly path?: never };
+
+interface FilesystemConceptSource {
+  readonly path: string;
+  readonly state: "working-tree";
+  readonly commit: null;
+  readonly sourceHash: ConceptSourceHash;
+}
+
+type FilesystemSensitivityClassification =
+  | "missing"
+  | "declared"
+  | "undeclared"
+  | "excluded";
+
+interface FilesystemConceptSignals {
+  readonly type: string;
+  readonly uid: string;
+  readonly project: string | null;
+  readonly status: string;
+  readonly state: string | null;
+  readonly sensitivity: {
+    readonly value: string | null;
+    readonly classification: FilesystemSensitivityClassification;
+  };
+  readonly verification: "present" | "absent";
+  readonly staleAfter: string | null;
+  readonly untrusted: true;
+}
+
+interface FilesystemQueryOptions {
+  readonly maxManifestBytes?: number;
+  readonly maxConceptBytes?: number;
+  readonly maxYamlDepth?: number;
+  readonly maxEntries?: number;
+  readonly maxConcepts?: number;
+  readonly maxTotalConceptBytes?: number;
+  readonly maxDiagnostics?: number;
+  readonly signal?: AbortSignal;
+}
+
+interface SearchVaultOptions extends FilesystemQueryOptions {
+  readonly maxResults?: number;
+  readonly maxExcerptBytes?: number;
+  readonly maxTotalTextBytes?: number;
+}
+
+interface FilesystemSearchHit extends FilesystemConceptSignals {
+  readonly source: FilesystemConceptSource;
+  readonly title: string;
+  readonly titleTruncated: boolean;
+  readonly matchedField: "title" | "body";
+  readonly excerpt: string;
+  readonly excerptTruncated: boolean;
+}
+
+interface SearchVaultResult {
+  readonly mode: "filesystem";
+  readonly root: string;
+  readonly results: readonly FilesystemSearchHit[];
+  readonly matchedCount: number;
+  readonly rejectedConcepts: number;
+  readonly complete: boolean;
+  readonly resultsTruncated: boolean;
+  readonly outputTruncated: boolean;
+  readonly diagnostics: readonly VaultDiagnostic[];
+  readonly diagnosticsTruncated: boolean;
+}
+
+interface InspectConceptOptions extends FilesystemQueryOptions {
+  readonly maxContentBytes?: number;
+}
+
+interface InspectConceptSuccess extends FilesystemConceptSignals {
+  readonly ok: true;
+  readonly mode: "filesystem";
+  readonly root: string;
+  readonly source: FilesystemConceptSource;
+  readonly sourceText: string;
+  readonly sourceByteLength: number;
+  readonly returnedByteLength: number;
+  readonly sourceTruncated: boolean;
+  readonly handling: "ordinary" | "excluded";
+  readonly rejectedConcepts: number;
+  readonly complete: true;
+  readonly diagnostics: readonly VaultDiagnostic[];
+  readonly diagnosticsTruncated: false;
+}
+
+interface InspectConceptFailure {
+  readonly ok: false;
+  readonly mode: "filesystem";
+  readonly root: string;
+  readonly reason:
+    | "invalid-selector"
+    | "not-found"
+    | "ambiguous"
+    | "invalid-concept"
+    | "incomplete";
+  readonly rejectedConcepts: number;
+  readonly complete: boolean;
+  readonly diagnostics: readonly VaultDiagnostic[];
+  readonly diagnosticsTruncated: boolean;
+}
+
+type InspectConceptResult = InspectConceptSuccess | InspectConceptFailure;
+```
+
+Search accepts a non-empty Unicode-scalar query of at most 4,096 UTF-8 bytes. It performs one case-sensitive literal substring match without trimming, tokenization, locale folding, Unicode normalization, fuzzy matching, semantic scoring, or YAML-source matching. The searchable fields, in precedence order, are decoded `title` and the Markdown body. A result records the first matching field and occurrence. Filter values and tags use exact decoded-string equality; supplied filters are ANDed, absent project/state/sensitivity never matches a supplied filter, and the query is still required when filters are present. Search covers only complete schema-valid Bookie concepts whose type is allowed by the manifest. Generic OKF Markdown remains valid vault content but is outside this first Bookie-profile retrieval API.
+
+Each hit contains bounded `title` and `excerpt` strings with separate truncation flags, `FilesystemConceptSource`, and `FilesystemConceptSignals`. Results use deterministic canonical-path order rather than a relevance score. The result includes `matchedCount`, `resultsTruncated`, `outputTruncated`, `complete`, `diagnosticsTruncated`, `rejectedConcepts`, and static diagnostics. `matchedCount` counts non-excluded matches observed by the scan and is exact only when `complete` is true. Invalid Bookie candidates are omitted but remain observable through redacted diagnostics and `rejectedConcepts`; generic OKF concepts are neither hits nor rejections. Empty complete results remain distinguishable from incomplete or invalid scans.
+
+Search defaults to at most 50 hits, 1,024 UTF-8 bytes for each title or excerpt, and 32,768 aggregate UTF-8 bytes across returned titles and excerpts. Per-hit truncation does not split a Unicode scalar; body excerpts retain the first exact match when it fits. The scan continues after filling the result budget so `matchedCount` and result truncation remain truthful. `resultsTruncated` reports omitted hits; `outputTruncated` reports any per-item or aggregate title/excerpt truncation.
+
+Inspect resolves exactly one canonical bundle-absolute Bookie concept path or one exact canonical Bookie UID. Path lookup never falls back to UID, basename, prefix, case folding, or a nearest match; UID lookup fails on ambiguity. Success returns the shared source/signals, an exact UTF-8 source prefix, full and returned byte counts, `sourceTruncated`, `handling: "ordinary" | "excluded"`, and diagnostics. The hash always covers the complete source, never just the prefix. The default source-output limit is the 1 MiB concept limit and may be lowered. A malformed selector, missing concept, duplicate UID, invalid target concept, or incomplete snapshot returns an `ok: false` result with no source text.
+
+A record assigned a class listed in `policy.sensitivity.excluded_classes` never appears in search hits, `matchedCount`, truncation decisions, or value-bearing diagnostics, even when a sensitivity filter names it. Missing and undeclared classes may participate in this local filesystem read and are labelled `missing` or `undeclared`; this grants no indexing, embedding, logging, checkpoint, or export eligibility and does not resolve OQ-007. Direct inspect may return an excluded record only through the exact path/UID selector and marks it `handling: "excluded"` plus `untrusted: true`; callers MUST NOT log, index, checkpoint, or export that result.
+
+Both APIs use the manifest's anchored exclusions and Evidence-resource classification, reject symlinks, multiply linked files, unsafe roots, descriptor paths beneath Evidence roots, and filesystem identity changes, and recheck the complete tracked snapshot before returning content. They reuse the validation ceilings of 65,536 manifest bytes, 1 MiB per concept, depth 64, 100,000 entries, 50,000 concepts, 512 MiB aggregate concept bytes, and 1,000 diagnostics; callers may lower but not raise any ceiling. Reaching a filesystem/content bound or observing a race sets `complete: false`; inspect discards content, while search may return clearly incomplete safe hits. Cancellation rejects with `AbortError`. Invalid programmer option types or limits throw `TypeError`. Neither API reads Evidence resource bytes, uses Redis/Pi/network services, exits the process, commits, or pushes.
+
+The BK-010 diagnostic additions are:
+
+| Code                | Meaning                                                        |
+| ------------------- | -------------------------------------------------------------- |
+| `INSPECT-INPUT`     | The exact path or UID selector is lexically invalid.           |
+| `INSPECT-NOT-FOUND` | No schema-valid Bookie concept matches the exact selector.     |
+| `INSPECT-AMBIGUOUS` | More than one schema-valid concept has the selected exact UID. |
 
 ## CLI contract
 

@@ -101,4 +101,5 @@ export interface VaultEntries {
   readonly directories: ReadonlySet<string>;
   readonly markdownFiles: readonly string[];
   readonly incomplete: boolean;
+  readonly unsafeEntries: boolean;
 }

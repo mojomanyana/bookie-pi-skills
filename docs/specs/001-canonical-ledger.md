@@ -180,7 +180,7 @@ The current `schemas/bookie-common.schema.json` and `schemas/types/*.schema.json
 
 ### Deferred runtime policy
 
-**`SENSITIVITY-EXCLUSION`** refines REQ-026: a record assigned a class listed in `policy.sensitivity.excluded_classes` MUST NOT be indexed, checkpointed, logged, or exported. This schema declares the exclusions but does not enforce operation behavior. Export enforcement belongs to SPEC-002/BK-011, checkpoint enforcement to SPEC-003/BK-015, and indexing enforcement to SPEC-004/BK-017; any logging implementation must apply the same requirement when introduced. This increment does not define runtime behavior for missing, reserved, or undeclared record classes and does not settle provider authorization; OQ-007 remains open.
+**`SENSITIVITY-EXCLUSION`** refines REQ-026: a record assigned a class listed in `policy.sensitivity.excluded_classes` MUST NOT be indexed, checkpointed, logged, or exported. This schema declares the exclusions but does not enforce operation behavior. SPEC-002/BK-010 omits excluded records from local search while labelling missing or undeclared classes in local-only read results; that behavior grants no indexing or provider eligibility. Export enforcement belongs to SPEC-002/BK-011, checkpoint enforcement to SPEC-003/BK-015, and indexing enforcement to SPEC-004/BK-017; any logging implementation must apply the same requirement when introduced. Behavior for missing, reserved, or undeclared classes at those later operation/provider boundaries remains unresolved under OQ-007.
 
 ## Interfaces and artifacts
 

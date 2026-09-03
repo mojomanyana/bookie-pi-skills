@@ -445,6 +445,7 @@ export async function enumerateVault(
   const markdownFiles: string[] = [];
   let entries = 0;
   let incomplete = false;
+  let unsafeEntries = false;
 
   const walk = async (relativeDirectory: string): Promise<void> => {
     if (incomplete) return;
@@ -457,6 +458,7 @@ export async function enumerateVault(
       signal,
     );
     if (snapshot === undefined) {
+      unsafeEntries = true;
       collector.add(
         createDiagnostic("VAULT-IO", bundlePath(relativeDirectory)),
       );
@@ -484,6 +486,7 @@ export async function enumerateVault(
       }
     } catch {
       throwIfAborted(signal);
+      unsafeEntries = true;
       collector.add(
         createDiagnostic("VAULT-IO", bundlePath(relativeDirectory)),
       );
@@ -492,6 +495,7 @@ export async function enumerateVault(
     }
     if (incomplete) return;
     if (!(await verifySafePath(snapshot, signal))) {
+      unsafeEntries = true;
       collector.add(
         createDiagnostic("VAULT-IO", bundlePath(relativeDirectory)),
       );
@@ -508,6 +512,7 @@ export async function enumerateVault(
         : child.name;
 
       if (child.isSymbolicLink()) {
+        unsafeEntries = true;
         collector.add(createDiagnostic("VAULT-IO", bundlePath(relativePath)));
       } else if (child.isDirectory()) {
         directories.add(relativePath);
@@ -518,6 +523,7 @@ export async function enumerateVault(
           metadata = await lstat(resolve(root, relativePath), { bigint: true });
         } catch {
           throwIfAborted(signal);
+          unsafeEntries = true;
           collector.add(createDiagnostic("VAULT-IO", bundlePath(relativePath)));
           collector.markIncomplete();
           continue;
@@ -527,6 +533,7 @@ export async function enumerateVault(
           metadata.isSymbolicLink() ||
           metadata.nlink !== BigInt(1)
         ) {
+          unsafeEntries = true;
           collector.add(createDiagnostic("VAULT-IO", bundlePath(relativePath)));
         } else {
           trackIdentity(tracker, resolve(root, relativePath), metadata);
@@ -534,6 +541,7 @@ export async function enumerateVault(
           if (relativePath.endsWith(".md")) markdownFiles.push(relativePath);
         }
       } else {
+        unsafeEntries = true;
         collector.add(createDiagnostic("VAULT-IO", bundlePath(relativePath)));
       }
       if (incomplete) return;
@@ -542,7 +550,13 @@ export async function enumerateVault(
 
   await walk("");
   markdownFiles.sort(compareText);
-  return { regularFiles, directories, markdownFiles, incomplete };
+  return {
+    regularFiles,
+    directories,
+    markdownFiles,
+    incomplete,
+    unsafeEntries,
+  };
 }
 
 export async function verifyTrackedPaths(

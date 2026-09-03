@@ -56,6 +56,8 @@ Semantic failure falls back to lexical retrieval with an explicit degradation fi
 
 ## Local overlay
 
+Core's filesystem query is deliberately simpler than shared retrieval: it scans one bounded safe working-tree snapshot, performs case-sensitive literal title/body matching plus exact metadata filters, omits vault-global sensitivity exclusions, and returns deterministic path order with bounded text and explicit truncation. It reports filesystem/working-tree mode and `commit: null`; without invoking Git it cannot claim the bytes are merged or name a source commit. Missing and undeclared sensitivity values are labelled but gain no indexing or provider approval. Exact inspect is a direct canonical read and may return an excluded record only with restrictive handling metadata.
+
 The Pi extension searches unmerged local files directly and merges those results with shared service results. Local overlay results:
 
 - identify themselves as unmerged;

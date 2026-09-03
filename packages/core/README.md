@@ -1,6 +1,6 @@
 # `@bookie/core`
 
-Pure canonical-domain package for Bookie. It implements OKF/Profile lossless parsing, current-tree and Git-base validation, lifecycle/immutability policy, Evidence hashing and capture, and conflict-safe atomic concept creation/amendment. Later SPEC-002 slices add local search and canonical export.
+Pure canonical-domain package for Bookie. It implements OKF/Profile lossless parsing, current-tree and Git-base validation, lifecycle/immutability policy, Evidence hashing and capture, conflict-safe atomic concept creation/amendment, and bounded local filesystem query. A later SPEC-002 slice adds canonical export.
 
 It must not depend on Pi, Redis, an HTTP framework, or a concrete embedding provider. Implement against [SPEC-001](../../docs/specs/001-canonical-ledger.md) and [SPEC-002](../../docs/specs/002-core-and-cli.md).
 
@@ -34,4 +34,12 @@ Core serializes its mutations per real vault root. Pi callers must also pass `ru
 
 Absent targets publish with atomic no-replace semantics. The resource file and directory are flushed before descriptor publication, and the descriptor directory is flushed before success. Success reports both changed paths, exact descriptor source hash, resource SHA-256, and byte count. Cancellation before resource publication cleans both temporaries. After the resource becomes durable, a descriptor conflict or I/O uncertainty leaves an explicit orphan rather than risking check-then-unlink deletion of another writer's file; failure `changedPaths` identifies every canonical path that may exist. Capture does not infer identity, timestamps, media type, project, support links, actor, or body and never invokes Git or the network.
 
-The package declares Node `>=24`; `npm pack` builds code, declarations, and canonical schema assets from a clean source checkout. `npm run benchmark:vault --workspace @bookie/core -- 50000` reproduces the bounded scale probe.
+## Filesystem query
+
+`searchVault(root, { query, filters? }, options?)` scans one safe working-tree snapshot for a case-sensitive exact Unicode substring in schema-valid Bookie titles and Markdown bodies. Type, project, lifecycle status, workflow state, sensitivity, and tag filters use exact decoded equality. Results are deterministic by canonical path and identify filesystem mode, working-tree state, a null commit, exact source hash, declared verification/freshness signals, and untrusted handling. Result count, per-hit title/excerpt bytes, aggregate returned text, traversal, parsing, aggregate input, diagnostics, and cancellation are bounded and independently disclose incompleteness or truncation.
+
+Search omits every record assigned a manifest-excluded sensitivity class from hits, matched counts, and truncation decisions. Missing and undeclared classes remain labelled local-only data and gain no provider/index/export eligibility. Generic OKF remains valid content but is outside this first Bookie-profile query API.
+
+`inspectConcept(root, { path } | { uid }, options?)` resolves one exact schema-valid Bookie record without fallback or fuzzy matching. It returns a bounded exact UTF-8 source prefix, full/returned byte counts, the complete-source hash, and explicit truncation. Exact inspection may return excluded content with `handling: "excluded"`; callers must not log, index, checkpoint, or export it. Ambiguous UIDs, malformed selectors, invalid concepts, missing targets, bounds, and raced snapshots return no source text. Query APIs never invoke Git, Redis, Pi, a network service, commit, push, or process exit.
+
+The package declares Node `>=24`; `npm pack` builds code, declarations, and canonical schema assets from a clean source checkout. `npm run benchmark:vault --workspace @bookie/core -- 50000` and `npm run benchmark:query --workspace @bookie/core -- 50000` reproduce the bounded scale probes.
