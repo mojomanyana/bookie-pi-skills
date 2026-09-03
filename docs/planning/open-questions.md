@@ -69,8 +69,8 @@ Open questions are not permission to guess. Resolve them by the listed deadline,
 
 ## OQ-009: Pre-write secret detection policy
 
-- **State:** Open; does not block the low-level BK-008 mutation primitive, but blocks CLI or Pi mutation exposure.
-- **Question:** Which deterministic local detectors, approval/override rules, and stable redacted diagnostic should guard complete create/amend candidates before publication?
-- **Current direction:** Scan the complete candidate before staging, fail closed on high-confidence credential material, never echo a matched value, and keep detection independent of network providers.
+- **State:** Open; does not block the low-level BK-008/BK-009 write primitives, but blocks CLI or Pi mutation exposure.
+- **Question:** Which deterministic local detectors, approval/override rules, and stable redacted diagnostic should guard complete create/amend candidates and captured Evidence resources before publication?
+- **Current direction:** Scan the complete candidate or bounded Evidence byte stream before publication, fail closed on high-confidence credential material, never echo a matched value, and keep detection independent of network providers. BK-008/BK-009 remain policy-neutral low-level primitives until this write-facing boundary is accepted.
 - **Decision deadline:** Before BK-012.
 - **Owner:** Product owner and security reviewer.

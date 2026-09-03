@@ -113,7 +113,7 @@ The checkpoint contains a curated operational record, not a raw transcript.
 
 ## Evidence
 
-The Evidence concept describes immutable bytes at the top-level OKF `resource`. Required digest input is the exact stored byte sequence. SHA-256 is lowercase hexadecimal. `mime_type` stores only the media type essence (`type/subtype`), without parameters or wildcards. When known, `bookie.origin` is an absolute HTTP(S) URL without embedded credentials; schema validity never authorizes dereferencing it. Creator, capture method, and source timestamp are recorded when known. `supports` points to concepts whose claims the resource substantiates.
+The Evidence concept describes immutable bytes at the top-level OKF `resource`. A file beneath a configured evidence root that is named by a schema-valid Evidence descriptor is treated as resource bytes rather than a concept even when its filename ends in `.md`; unreferenced Markdown remains a concept candidate. Required digest input is the exact stored byte sequence. SHA-256 is lowercase hexadecimal. `mime_type` stores only the media type essence (`type/subtype`), without parameters or wildcards. When known, `bookie.origin` is an absolute HTTP(S) URL without embedded credentials; schema validity never authorizes dereferencing it. Creator, capture method, and source timestamp are recorded when known. `supports` points to concepts whose claims the resource substantiates.
 
 For an external resource that cannot be captured, create a Research or Document source reference instead of claiming immutable evidence.
 

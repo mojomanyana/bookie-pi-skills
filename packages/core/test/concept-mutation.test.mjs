@@ -382,6 +382,7 @@ test("create rejects traversal, host paths, encoding, reserved names, and unsafe
     "projects/fixture/index.md",
     "missing-parent/task.md",
     "linked/escape.md",
+    "references/files/concept.md",
   ];
 
   for (const [index, path] of cases.entries()) {

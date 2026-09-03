@@ -41,6 +41,15 @@ export {
   computeConceptSourceHash,
   createConcept,
 } from "./concept-mutation.js";
+export { captureEvidence } from "./evidence-capture.js";
+export type {
+  CaptureEvidenceFailure,
+  CaptureEvidenceOptions,
+  CaptureEvidenceRequest,
+  CaptureEvidenceResult,
+  CaptureEvidenceSuccess,
+} from "./evidence-capture.js";
+
 export type {
   AmendConceptRequest,
   ConceptMutationCoordinator,

@@ -16,6 +16,7 @@ import { getSchemaValidators, readVaultManifest } from "./vault-manifest.js";
 import {
   bundlePath,
   enumerateVault,
+  isBeneathLiteralPath,
   readSafeBoundedFile,
   verifyTrackedPaths,
 } from "./vault-filesystem.js";
@@ -231,6 +232,7 @@ export async function checkUidCollision(
   candidate: Candidate,
   operation: MutationOperation,
   manifest: Manifest,
+  validators: SchemaValidators,
   limits: MutationLimits,
   signal: AbortSignal | undefined,
   tracker: PathTracker,
@@ -260,9 +262,27 @@ export async function checkUidCollision(
 
   let conceptCount = 0;
   let totalBytes = 0;
-  for (const relativePath of entries.markdownFiles) {
+  const evidenceResourceFiles = new Set<string>();
+  const markdownFiles = [
+    ...entries.markdownFiles.filter(
+      (path) => !isBeneathLiteralPath(path, manifest.policy.evidence_roots),
+    ),
+    ...entries.markdownFiles.filter((path) =>
+      isBeneathLiteralPath(path, manifest.policy.evidence_roots),
+    ),
+  ];
+  for (const relativePath of markdownFiles) {
     throwIfAborted(signal);
-    if (isReservedMarkdown(relativePath)) continue;
+    const insideEvidenceRoot = isBeneathLiteralPath(
+      relativePath,
+      manifest.policy.evidence_roots,
+    );
+    if (
+      isReservedMarkdown(relativePath) ||
+      (insideEvidenceRoot && evidenceResourceFiles.has(relativePath))
+    ) {
+      continue;
+    }
     conceptCount += 1;
     if (conceptCount > DEFAULT_MAX_VAULT_CONCEPTS) {
       return [mutationDiagnostic("MUTATION-BOUNDS", candidate.displayFile)];
@@ -292,6 +312,22 @@ export async function checkUidCollision(
       maxDepth: limits.maxYamlDepth,
     });
     if (!loaded.ok) {
+      return [mutationDiagnostic("MUTATION-IO", candidate.displayFile)];
+    }
+    const loadedType = loaded.concept.frontmatter.type;
+    const loadedValidator =
+      typeof loadedType === "string"
+        ? validators.byType.get(loadedType)
+        : undefined;
+    if (
+      loadedType === "Evidence" &&
+      loadedValidator?.(loaded.concept.frontmatter) === true &&
+      typeof loaded.concept.frontmatter.resource === "string" &&
+      loaded.concept.frontmatter.resource.startsWith("/")
+    ) {
+      evidenceResourceFiles.add(loaded.concept.frontmatter.resource.slice(1));
+    }
+    if (insideEvidenceRoot) {
       return [mutationDiagnostic("MUTATION-IO", candidate.displayFile)];
     }
     const bookie = isObject(loaded.concept.frontmatter.bookie)

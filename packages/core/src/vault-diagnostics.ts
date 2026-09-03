@@ -13,12 +13,15 @@ export type VaultDiagnosticCode =
   | "CONCEPT-SCHEMA"
   | "MARKDOWN-LINK"
   | "DIAGNOSTICS-TRUNCATED"
+  | "GIT-BASE"
   | "TYPE-ALLOWED"
   | "UID-UNIQUE"
   | "PROJECT-TARGET"
   | "RELATION-TARGET"
   | "RELATION-INVERSE"
   | "DECISION-SUPERSESSION"
+  | "ACTIVITY-IMMUTABLE"
+  | "EVIDENCE-IMMUTABLE"
   | "EVIDENCE-RESOURCE"
   | "EVIDENCE-DIGEST"
   | "EVIDENCE-SUPPORT";
@@ -49,12 +52,18 @@ const messages: Record<
   "CONCEPT-SCHEMA": "Concept does not satisfy its required schema.",
   "MARKDOWN-LINK": "Local Markdown link target is invalid or unavailable.",
   "DIAGNOSTICS-TRUNCATED": "Additional diagnostics were omitted.",
+  "GIT-BASE":
+    "Git base validation could not establish a safe complete comparison.",
   "TYPE-ALLOWED": "Bookie concept type is not allowed by the manifest.",
   "UID-UNIQUE": "Bookie UID is not unique within the vault.",
   "PROJECT-TARGET": "Project reference does not resolve to a valid Project.",
   "RELATION-TARGET": "Relation target or supersession edge is invalid.",
   "RELATION-INVERSE": "Required inverse relation is missing or ambiguous.",
   "DECISION-SUPERSESSION": "Decision supersession lifecycle is invalid.",
+  "ACTIVITY-IMMUTABLE":
+    "A Git-base Activity is not retained byte-for-byte at its path.",
+  "EVIDENCE-IMMUTABLE":
+    "A Git-base Evidence descriptor is not retained byte-for-byte at its path.",
   "EVIDENCE-RESOURCE": "Evidence resource is missing, unsafe, or oversized.",
   "EVIDENCE-DIGEST": "Evidence digest does not match exact resource bytes.",
   "EVIDENCE-SUPPORT": "Evidence support does not resolve to a valid concept.",
@@ -83,6 +92,8 @@ const remediations: Record<
     "Use an existing local target inside the vault or an explicit external URL.",
   "DIAGNOSTICS-TRUNCATED":
     "Raise the diagnostic limit within the supported bound or fix reported errors first.",
+  "GIT-BASE":
+    "Use a local canonical commit ref in the containing Git worktree and stage every validated file.",
   "TYPE-ALLOWED":
     "List the Bookie type in allowed_concept_types or remove the Bookie profile mapping.",
   "UID-UNIQUE":
@@ -95,6 +106,10 @@ const remediations: Record<
     "Add exactly one matching inverse relation with the correct cached UID.",
   "DECISION-SUPERSESSION":
     "Correct reciprocal links, lifecycle, project, cycle, or replacement cardinality.",
+  "ACTIVITY-IMMUTABLE":
+    "Restore the base Activity at its original path or add a new linked correction.",
+  "EVIDENCE-IMMUTABLE":
+    "Restore the base Evidence descriptor at its original path or add a new linked correction.",
   "EVIDENCE-RESOURCE":
     "Use a singly linked bounded regular file beneath a configured evidence root without symlinks.",
   "EVIDENCE-DIGEST":

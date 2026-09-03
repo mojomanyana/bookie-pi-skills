@@ -47,6 +47,7 @@ import {
 import { throwIfAborted } from "./vault-cancellation.js";
 import {
   createPathTracker,
+  isBeneathLiteralPath,
   matchesExcludedPath,
   verifyTrackedPaths,
 } from "./vault-filesystem.js";
@@ -211,6 +212,10 @@ async function performCreate(
     matchesExcludedPath(
       target.relativePath,
       manifestResult.manifest.policy.exclude,
+    ) ||
+    isBeneathLiteralPath(
+      target.relativePath,
+      manifestResult.manifest.policy.evidence_roots,
     )
   ) {
     return failure("create", [
@@ -233,6 +238,7 @@ async function performCreate(
     candidate,
     "create",
     manifestResult.manifest,
+    validators,
     limits,
     signal,
     tracker,
@@ -249,6 +255,7 @@ async function performCreate(
     parent,
     candidate.bytes,
     undefined,
+    "no-replace",
     signal,
     async () => {
       const state = await targetState(target.target);
@@ -261,12 +268,16 @@ async function performCreate(
     },
   );
   if (published !== "published") {
-    return failure("create", [
-      mutationDiagnostic(
-        published === "conflict" ? "MUTATION-CONFLICT" : "MUTATION-IO",
-        candidate.displayFile,
-      ),
-    ]);
+    return failure(
+      "create",
+      [
+        mutationDiagnostic(
+          published === "conflict" ? "MUTATION-CONFLICT" : "MUTATION-IO",
+          candidate.displayFile,
+        ),
+      ],
+      published === "io-after-publication" ? [target.bundlePath] : [],
+    );
   }
   return success(
     "create",
@@ -370,6 +381,10 @@ async function performAmend(
     matchesExcludedPath(
       target.relativePath,
       manifestResult.manifest.policy.exclude,
+    ) ||
+    isBeneathLiteralPath(
+      target.relativePath,
+      manifestResult.manifest.policy.evidence_roots,
     )
   ) {
     return failure("amend", [
@@ -419,6 +434,7 @@ async function performAmend(
     candidateResult.candidate,
     "amend",
     manifestResult.manifest,
+    validators,
     limits,
     signal,
     tracker,
@@ -451,6 +467,7 @@ async function performAmend(
     parent,
     candidateResult.candidate.bytes,
     mode,
+    "replace",
     signal,
     async () => {
       const final = await finalAmendSource(target, source, limits, signal);
@@ -458,12 +475,16 @@ async function performAmend(
     },
   );
   if (published !== "published") {
-    return failure("amend", [
-      mutationDiagnostic(
-        published === "conflict" ? "MUTATION-CONFLICT" : "MUTATION-IO",
-        candidateResult.candidate.displayFile,
-      ),
-    ]);
+    return failure(
+      "amend",
+      [
+        mutationDiagnostic(
+          published === "conflict" ? "MUTATION-CONFLICT" : "MUTATION-IO",
+          candidateResult.candidate.displayFile,
+        ),
+      ],
+      published === "io-after-publication" ? [target.bundlePath] : [],
+    );
   }
   return success(
     "amend",

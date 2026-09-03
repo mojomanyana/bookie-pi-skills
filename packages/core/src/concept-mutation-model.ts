@@ -98,6 +98,7 @@ export interface ConceptMutationFailure {
   readonly ok: false;
   readonly operation: "create" | "amend";
   readonly conflict: boolean;
+  readonly changedPaths: readonly string[];
   readonly diagnostics: readonly MutationDiagnostic[];
 }
 
@@ -199,6 +200,7 @@ export function conceptDiagnostics(
 export function failure(
   operation: MutationOperation,
   diagnostics: readonly MutationDiagnostic[],
+  changedPaths: readonly string[] = [],
 ): ConceptMutationFailure {
   const frozen = Object.freeze([...diagnostics]);
   return Object.freeze({
@@ -207,6 +209,7 @@ export function failure(
     conflict: frozen.some(
       (diagnostic) => diagnostic.code === "MUTATION-CONFLICT",
     ),
+    changedPaths: Object.freeze([...changedPaths]),
     diagnostics: frozen,
   });
 }

@@ -394,6 +394,13 @@ export async function hashSafeBoundedFile(
   return hashed;
 }
 
+export function isBeneathLiteralPath(
+  path: string,
+  roots: readonly string[],
+): boolean {
+  return roots.some((root) => path.startsWith(`${root}/`));
+}
+
 export function matchesExcludedPath(
   path: string,
   patterns: readonly string[],

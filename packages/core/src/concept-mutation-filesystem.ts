@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import type { BigIntStats } from "node:fs";
-import { lstat, open, realpath, rename, unlink } from "node:fs/promises";
+import { link, lstat, open, realpath, rename, unlink } from "node:fs/promises";
 import { dirname, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -53,7 +53,7 @@ interface DirectoryIdentity {
   readonly metadata: BigIntStats;
 }
 
-interface StagedTemporary {
+export interface StagedTemporary {
   readonly path: string;
   readonly metadata: BigIntStats;
 }
@@ -63,7 +63,7 @@ const MAX_MUTATION_PATH_BYTES = 4_096;
 const MAX_MUTATION_PATH_SEGMENT_BYTES = 255;
 const MAX_MUTATION_PATH_SEGMENTS = 64;
 
-interface CanonicalConceptPath {
+interface CanonicalVaultPath {
   readonly relativePath: string;
   readonly segments: readonly string[];
 }
@@ -83,9 +83,10 @@ function hasInvalidPathCharacter(value: string): boolean {
   return false;
 }
 
-function canonicalRelativeConceptPath(
+function canonicalRelativeVaultPath(
   path: unknown,
-): CanonicalConceptPath | undefined {
+  requireConcept: boolean,
+): CanonicalVaultPath | undefined {
   if (
     typeof path !== "string" ||
     path.length === 0 ||
@@ -114,10 +115,11 @@ function canonicalRelativeConceptPath(
   const name = segments.at(-1);
   if (
     name === undefined ||
-    name === "index.md" ||
-    name === "log.md" ||
-    name.length <= 3 ||
-    !name.endsWith(".md")
+    (requireConcept &&
+      (name === "index.md" ||
+        name === "log.md" ||
+        name.length <= 3 ||
+        !name.endsWith(".md")))
   ) {
     return undefined;
   }
@@ -139,7 +141,7 @@ export async function resolveMutationTarget(
   | { readonly ok: true; readonly target: ResolvedMutationTarget }
   | { readonly ok: false; readonly diagnostic: MutationDiagnostic }
 > {
-  const canonicalPath = canonicalRelativeConceptPath(requestPath);
+  const canonicalPath = canonicalRelativeVaultPath(requestPath, true);
   if (canonicalPath === undefined) {
     return {
       ok: false,
@@ -199,6 +201,27 @@ export async function resolveMutationTarget(
       bundlePath: bundlePath(relativePath),
       target,
     },
+  };
+}
+
+export function resolveRelatedMutationFileTarget(
+  rootTarget: ResolvedMutationTarget,
+  requestPath: unknown,
+): ResolvedMutationTarget | undefined {
+  const canonicalPath = canonicalRelativeVaultPath(requestPath, false);
+  if (canonicalPath === undefined) return undefined;
+  let target = rootTarget.root;
+  for (const segment of canonicalPath.segments) {
+    target = resolve(target, segment);
+  }
+  if (!isInside(rootTarget.root, target)) return undefined;
+  return {
+    unresolvedRoot: rootTarget.unresolvedRoot,
+    root: rootTarget.root,
+    rootMetadata: rootTarget.rootMetadata,
+    relativePath: canonicalPath.relativePath,
+    bundlePath: bundlePath(canonicalPath.relativePath),
+    target,
   };
 }
 
@@ -275,6 +298,39 @@ export async function verifyParent(
   } catch {
     throwIfAborted(signal);
     return false;
+  }
+}
+
+export async function syncMutationDirectory(
+  target: ResolvedMutationTarget,
+  snapshot: ParentSnapshot,
+): Promise<boolean> {
+  if (
+    constants.O_DIRECTORY === undefined ||
+    constants.O_NOFOLLOW === undefined ||
+    !(await verifyParent(target, snapshot, undefined))
+  ) {
+    return false;
+  }
+  let handle;
+  try {
+    handle = await open(
+      snapshot.parent,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+    );
+    const metadata = await handle.stat({ bigint: true });
+    const expected = snapshot.identities.at(-1)?.metadata;
+    if (expected === undefined || !sameDirectoryIdentity(expected, metadata)) {
+      return false;
+    }
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    return verifyParent(target, snapshot, undefined);
+  } catch {
+    return false;
+  } finally {
+    await handle?.close().catch(() => undefined);
   }
 }
 
@@ -380,7 +436,22 @@ function sameStagedIdentity(
   );
 }
 
-async function cleanupTemporary(
+function samePublishedIdentity(
+  expected: BigIntStats,
+  actual: BigIntStats,
+): boolean {
+  return (
+    actual.isFile() &&
+    !actual.isSymbolicLink() &&
+    actual.dev === expected.dev &&
+    actual.ino === expected.ino &&
+    actual.mode === expected.mode &&
+    actual.nlink === BigInt(1) &&
+    actual.size === expected.size
+  );
+}
+
+export async function cleanupTemporary(
   temporary: StagedTemporary | undefined,
   target: ResolvedMutationTarget,
   parent: ParentSnapshot,
@@ -397,7 +468,7 @@ async function cleanupTemporary(
   }
 }
 
-async function stageTemporary(
+export async function stageTemporary(
   target: ResolvedMutationTarget,
   parent: ParentSnapshot,
   bytes: Uint8Array,
@@ -426,6 +497,12 @@ async function stageTemporary(
         );
         const openedMetadata = await handle.stat({ bigint: true });
         staged = { path: temporary, metadata: openedMetadata };
+        if (
+          openedMetadata.dev !== parent.identities.at(-1)?.metadata.dev ||
+          !(await verifyParent(target, parent, signal))
+        ) {
+          throw new Error("unsafe temporary parent");
+        }
         break;
       } catch (error) {
         if (!hasErrorCode(error, "EEXIST")) throw error;
@@ -477,7 +554,7 @@ async function stageTemporary(
   }
 }
 
-async function verifyStagedTemporary(
+export async function verifyStagedTemporary(
   temporary: StagedTemporary,
   snapshot: ParentSnapshot,
   expectedBytes: number,
@@ -495,50 +572,113 @@ async function verifyStagedTemporary(
   }
 }
 
-export async function publishCandidate(
+export type StagedPublicationResult =
+  "published" | "conflict" | "io-before-publication" | "io-after-publication";
+
+export async function publishStagedCandidate(
   target: ResolvedMutationTarget,
   parent: ParentSnapshot,
-  bytes: Uint8Array,
-  mode: number | undefined,
+  temporary: StagedTemporary,
+  expectedBytes: number,
+  publication: "no-replace" | "replace",
   signal: AbortSignal | undefined,
   finalCheck: () => Promise<"publish" | "conflict" | "io">,
-): Promise<"published" | "conflict" | "io"> {
-  let temporary: StagedTemporary | undefined;
+): Promise<StagedPublicationResult> {
+  let unpublished: StagedTemporary | undefined = temporary;
+  let linked = false;
   try {
-    temporary = await stageTemporary(target, parent, bytes, mode, signal);
     throwIfAborted(signal);
     if (
       !(await verifyParent(target, parent, signal)) ||
-      !(await verifyStagedTemporary(temporary, parent, bytes.byteLength))
+      !(await verifyStagedTemporary(temporary, parent, expectedBytes))
     ) {
       await cleanupTemporary(temporary, target, parent);
-      return "io";
+      return "io-before-publication";
     }
     const final = await finalCheck();
     throwIfAborted(signal);
     if (final !== "publish") {
       const cleaned = await cleanupTemporary(temporary, target, parent);
-      return cleaned ? final : "io";
+      return final === "conflict" && cleaned
+        ? "conflict"
+        : "io-before-publication";
     }
     if (
       !(await verifyParent(target, parent, signal)) ||
-      !(await verifyStagedTemporary(temporary, parent, bytes.byteLength))
+      !(await verifyStagedTemporary(temporary, parent, expectedBytes))
     ) {
       await cleanupTemporary(temporary, target, parent);
-      return "io";
+      return "io-before-publication";
     }
     throwIfAborted(signal);
-    await rename(temporary.path, target.target);
-    temporary = undefined;
-    return "published";
+    if (publication === "replace") {
+      await rename(temporary.path, target.target);
+      unpublished = undefined;
+      return "published";
+    }
+    try {
+      await link(temporary.path, target.target);
+      linked = true;
+    } catch (error) {
+      const cleaned = await cleanupTemporary(temporary, target, parent);
+      if (hasErrorCode(error, "EEXIST") && cleaned) return "conflict";
+      return "io-before-publication";
+    }
+    await unlink(temporary.path);
+    unpublished = undefined;
+    const published = await lstat(target.target, { bigint: true });
+    return samePublishedIdentity(temporary.metadata, published) &&
+      (await verifyParent(target, parent, undefined))
+      ? "published"
+      : "io-after-publication";
   } catch (error) {
-    const cleaned = await cleanupTemporary(temporary, target, parent);
+    if (linked) {
+      try {
+        await unlink(temporary.path);
+        const published = await lstat(target.target, { bigint: true });
+        return samePublishedIdentity(temporary.metadata, published) &&
+          (await verifyParent(target, parent, undefined))
+          ? "published"
+          : "io-after-publication";
+      } catch {
+        return "io-after-publication";
+      }
+    }
+    const cleaned = await cleanupTemporary(unpublished, target, parent);
     if (isAbortError(error) && cleaned) throw error;
-    return "io";
+    return "io-before-publication";
   }
 }
 
-async function withRootMutationQueue<T>(
+export async function publishCandidate(
+  target: ResolvedMutationTarget,
+  parent: ParentSnapshot,
+  bytes: Uint8Array,
+  mode: number | undefined,
+  publication: "no-replace" | "replace",
+  signal: AbortSignal | undefined,
+  finalCheck: () => Promise<"publish" | "conflict" | "io">,
+): Promise<StagedPublicationResult> {
+  let temporary: StagedTemporary | undefined;
+  try {
+    temporary = await stageTemporary(target, parent, bytes, mode, signal);
+    return await publishStagedCandidate(
+      target,
+      parent,
+      temporary,
+      bytes.byteLength,
+      publication,
+      signal,
+      finalCheck,
+    );
+  } catch (error) {
+    const cleaned = await cleanupTemporary(temporary, target, parent);
+    if (isAbortError(error) && cleaned) throw error;
+    return "io-before-publication";
+  }
+}
+
+export async function withRootMutationQueue<T>(
   root: string,
   signal: AbortSignal | undefined,
   mutation: () => Promise<T>,
