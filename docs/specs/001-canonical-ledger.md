@@ -2,9 +2,9 @@
 
 ## Status
 
-Implemented
+Verified
 
-Verification pending: SPEC-002 now provides production lossless YAML loading and current-tree whole-vault enforcement; Git-base immutability, retention, and pinned-identity rules remain BK-009.
+Verification evidence: BK-002 through [BK-009](../planning/evidence/BK-009.md) cover the profile schemas, fixtures, lossless loading, current-tree policy, Git-base immutability, retention, pinned identities, and exact Evidence resources.
 
 Owner: unassigned  
 Target release: 0.1  
@@ -234,6 +234,6 @@ The schema is a contract, not the complete policy engine. `SENSITIVITY-EXCLUSION
 
 ## Delivery notes
 
-BK-002 delivers the profile manifest schema and decoded configuration fixtures. BK-003 delivers the common metadata and initial concept schemas with decoded fixtures, including explicit Research scope, top-level Evidence resource placement, and recognized OKF metadata shapes. BK-004 delivers exact type-prefix mapping, relation/path schema constraints, stable cross-file rule codes, and materializable decoded base/proposed policy fixtures. BK-005 delivers the complete profile reference, migration/compatibility contract, human-readable example vault, and full valid/invalid Markdown vault fixtures. The fixture test oracle schema-validates records and isolates expected rule boundaries. BK-006 in SPEC-002 consumes the format through production lossless loading, and BK-007 enforces schemas plus current-tree links, relations, resources, and digests. Git-base immutability, retained Decisions, pinned identities, and base resource changes remain BK-009.
+BK-002 delivers the profile manifest schema and decoded configuration fixtures. BK-003 delivers the common metadata and initial concept schemas with decoded fixtures, including explicit Research scope, top-level Evidence resource placement, and recognized OKF metadata shapes. BK-004 delivers exact type-prefix mapping, relation/path schema constraints, stable cross-file rule codes, and materializable decoded base/proposed policy fixtures. BK-005 delivers the complete profile reference, migration/compatibility contract, human-readable example vault, and full valid/invalid Markdown vault fixtures. The fixture test oracle schema-validates records and isolates expected rule boundaries. BK-006 in SPEC-002 consumes the format through production lossless loading, BK-007 enforces schemas plus current-tree links, relations, resources, and digests, and BK-009 verifies Git-base immutability, retained Decisions, pinned identities, and exact base resource retention.
 
 Implement schema and fixtures before the policy engine. The YAML round-trip choice belongs to SPEC-002 and is recorded by ADR-0005 with executable preservation evidence; it is not a SPEC-001 schema constraint.
