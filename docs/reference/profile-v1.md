@@ -33,7 +33,7 @@ Required root `index.md` declares exact `okf_version: "0.2"` in YAML frontmatter
 | `policy.sensitivity.excluded_classes` | Classes excluded from indexing, checkpoints, logs, and exports. |
 | `policy.attachment_max_bytes` | Required positive safe integer applied to captured resources. |
 
-The manifest classifies data but does not grant provider authorization. Unknown, undeclared, and provider-specific sensitivity behavior remains governed by [OQ-007](../planning/open-questions.md#oq-007-indexable-sensitivity-classes).
+The manifest classifies data but does not grant provider authorization. Local filesystem query may label missing or undeclared classes without granting index, embedding, logging, checkpoint, or export eligibility; provider and later-operation behavior remains governed by [OQ-007](../planning/open-questions.md#oq-007-indexable-sensitivity-classes).
 
 ## Common concept metadata
 

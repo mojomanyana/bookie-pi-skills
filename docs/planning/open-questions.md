@@ -55,7 +55,7 @@ Open questions are not permission to guess. Resolve them by the listed deadline,
 
 - **State:** Open; blocks production indexing of non-public data.
 - **Question:** Which classes may be sent to each cloud provider or local model, and who approves changes?
-- **Current direction:** Unknown classes fail closed; local models may receive a broader approved set but are not automatically trusted.
+- **Current direction:** BK-010 local filesystem reads label missing or undeclared classes and omit vault-global exclusions without treating either as provider approval. At indexing/provider boundaries, unknown classes fail closed; local models may receive a broader approved set but are not automatically trusted.
 - **Decision deadline:** Before the first real vault is indexed.
 - **Owner:** Data owner/security reviewer.
 
