@@ -303,6 +303,18 @@ test("base-aware validation requires local refs and tracked ordinary files", asy
   }
 });
 
+test("Git-base validation rejects an abbreviated OID even when a branch has that name", async (t) => {
+  const root = await copyGitVault(t);
+  const baseCommit = git(root, ["rev-parse", "HEAD"]);
+  const abbreviatedOid = baseCommit.slice(0, 8);
+  git(root, ["branch", abbreviatedOid, "HEAD"]);
+
+  const result = await validateVault(root, { baseRef: abbreviatedOid });
+  assert.equal(result.valid, false);
+  assert.equal(result.complete, false);
+  assert.ok(diagnosticCodes(result).includes("GIT-BASE"));
+});
+
 test("Git-base validation scopes a vault nested in its containing worktree", async (t) => {
   const parent = await mkdtemp(join(tmpdir(), "bookie-nested-git-"));
   const repository = join(parent, "repository");

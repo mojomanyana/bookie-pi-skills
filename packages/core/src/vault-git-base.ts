@@ -662,6 +662,9 @@ async function resolveGitBase(
     throw new GitFailure();
   }
   const objectIdLength = objectFormat === "sha1" ? 40 : 64;
+  if (/^[a-f0-9]+$/u.test(baseRef) && baseRef.length < objectIdLength) {
+    throw new GitFailure();
+  }
   const exactOid = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u.test(baseRef);
   if (exactOid) {
     if (baseRef.length !== objectIdLength) throw new GitFailure();
