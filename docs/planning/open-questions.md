@@ -53,10 +53,11 @@ Open questions are not permission to guess. Resolve them by the listed deadline,
 
 ## OQ-007: Indexable sensitivity classes
 
-- **State:** Open; blocks production indexing of non-public data.
+- **State:** Partially resolved for canonical export on 2026-09-03; provider approval remains open and blocks production indexing of non-public data.
 - **Question:** Which classes may be sent to each cloud provider or local model, and who approves changes?
-- **Current direction:** BK-010 local filesystem reads label missing or undeclared classes and omit vault-global exclusions without treating either as provider approval. At indexing/provider boundaries, unknown classes fail closed; local models may receive a broader approved set but are not automatically trusted.
-- **Decision deadline:** Before the first real vault is indexed.
+- **Export decision:** BK-011 exports only records with a sensitivity class declared by the source commit's manifest and not listed in `excluded_classes`. Any otherwise exportable Bookie record with missing or undeclared sensitivity fails the complete export before output with a static redacted diagnostic. Excluded records are omitted; an included record that would expose an excluded UID or path also fails rather than being silently rewritten.
+- **Current provider direction:** BK-010 local filesystem reads label missing or undeclared classes and omit vault-global exclusions without treating either as provider approval. At indexing/provider boundaries, unknown classes fail closed; local models may receive a broader approved set but are not automatically trusted.
+- **Decision deadline:** Export behavior is resolved before BK-011; provider approval remains due before the first real vault is indexed.
 - **Owner:** Data owner/security reviewer.
 
 ## OQ-008: First destination adapter
