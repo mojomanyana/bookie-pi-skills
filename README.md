@@ -2,7 +2,7 @@
 
 Bookie is a local-first, Git-native project ledger for people and agents. It keeps tasks, documents, research, decisions, activity checkpoints, files, and evidence in an [Open Knowledge Format (OKF) v0.2](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)-compatible bundle and exposes disciplined workflows through a Pi extension.
 
-> **Status:** the canonical profile in [SPEC-001](docs/specs/001-canonical-ledger.md) is verified. Lossless loading, current/Git-base vault validation, conflict-safe mutation, and Evidence capture through BK-009 are merged and verified; BK-010 bounded filesystem search and inspect is the next SPEC-002 slice. See the ordered [backlog](docs/planning/backlog.md).
+> **Status:** the canonical profile in [SPEC-001](docs/specs/001-canonical-ledger.md) is verified. Lossless loading, current/Git-base vault validation, conflict-safe mutation, Evidence capture, and bounded filesystem search/inspect through BK-010 are merged and verified; BK-011 deterministic canonical JSONL export is the next SPEC-002 slice. See the ordered [backlog](docs/planning/backlog.md).
 
 ## Design commitments
 
@@ -36,7 +36,7 @@ These checks validate the planning contract, schemas, policy fixtures, internal 
 
 ```text
 apps/service/          shared retrieval/indexing service (planned)
-packages/core/         lossless parsing, validation, and conflict-safe mutation
+packages/core/         lossless parsing, validation, safe mutation, and local query
 packages/cli/          automation and CI interface (planned)
 packages/pi-extension/ Pi package, tools, commands, and hooks (planned)
 docs/                  product, architecture, planning, and executable specs

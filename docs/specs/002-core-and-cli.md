@@ -2,7 +2,7 @@
 
 ## Status
 
-In progress — lossless loading, current/Git-base validation, safe mutation, and Evidence capture through BK-009 are merged and verified; BK-010 bounded filesystem search and inspect is in implementation
+In progress — lossless loading, current/Git-base validation, safe mutation, Evidence capture, and bounded filesystem search/inspect through BK-010 are merged and verified; BK-011 deterministic canonical JSONL export is next
 
 Owner: unassigned  
 Target release: 0.1  
