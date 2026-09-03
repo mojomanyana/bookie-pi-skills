@@ -18,6 +18,7 @@
   ],
   "scripts": {
     "build": "tsc -b && node scripts/copy-schemas.mjs",
+    "benchmark:export": "npm run build && node scripts/benchmark-canonical-export.mjs",
     "benchmark:query": "npm run build && node scripts/benchmark-filesystem-query.mjs",
     "benchmark:vault": "npm run build && node scripts/benchmark-vault-validation.mjs",
     "prepack": "npm run build",

@@ -51,7 +51,7 @@ These requirements are authoritative. Specifications may refine them but may not
 | REQ-023 | Redis shall remain on a private network and shall not serve as an authorization boundary. |
 | REQ-024 | Separate vaults shall provide confidentiality boundaries; cross-vault search requires an explicitly authorized aggregation design. |
 | REQ-025 | Retrieved content shall be labelled and handled as untrusted data before model context injection. |
-| REQ-026 | Secrets and excluded sensitivity classes shall not be indexed, checkpointed, logged, or exported. |
+| REQ-026 | Secrets and excluded sensitivity classes shall not be indexed, checkpointed, or logged. Export secret detection shall default on; only an explicit low-level unchecked policy may bypass detection, never sensitivity exclusions. |
 | REQ-027 | Retrieval failure or fallback shall be observable to callers and operators. |
 
 ## Portability and export

@@ -73,5 +73,71 @@
     "body_markdown": {
       "type": "string"
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "type": { "const": "Project" } } },
+      "then": {
+        "properties": {
+          "frontmatter": { "$ref": "urn:bookie:schema:type:project:1.0" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "Task" } } },
+      "then": {
+        "properties": {
+          "frontmatter": { "$ref": "urn:bookie:schema:type:task:1.0" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "Document" } } },
+      "then": {
+        "properties": {
+          "frontmatter": { "$ref": "urn:bookie:schema:type:document:1.0" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "Research" } } },
+      "then": {
+        "properties": {
+          "frontmatter": { "$ref": "urn:bookie:schema:type:research:1.0" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "Decision" } } },
+      "then": {
+        "properties": {
+          "frontmatter": { "$ref": "urn:bookie:schema:type:decision:1.0" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "Activity" } } },
+      "then": {
+        "properties": {
+          "frontmatter": { "$ref": "urn:bookie:schema:type:activity:1.0" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "Evidence" } } },
+      "then": {
+        "properties": {
+          "frontmatter": { "$ref": "urn:bookie:schema:type:evidence:1.0" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "Person" } } },
+      "then": {
+        "properties": {
+          "frontmatter": { "$ref": "urn:bookie:schema:type:person:1.0" }
+        }
+      }
+    }
+  ]
 }

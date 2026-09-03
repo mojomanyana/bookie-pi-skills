@@ -1,6 +1,23 @@
 export const OKF_VERSION = "0.2" as const;
 
 export {
+  DEFAULT_MAX_CANONICAL_JSONL_BYTES,
+  exportCanonicalJsonl,
+} from "./canonical-export.js";
+export type {
+  CanonicalJsonlExportFailure,
+  CanonicalJsonlExportFailureReason,
+  CanonicalJsonlExportOptions,
+  CanonicalJsonlExportRequest,
+  CanonicalJsonlExportResult,
+  CanonicalJsonlExportSuccess,
+  CanonicalJsonlRecordV1,
+  CanonicalExportSecretPolicy,
+  CanonicalJsonlSink,
+  InitialBookieConceptType,
+} from "./canonical-export.js";
+
+export {
   DEFAULT_MAX_CONCEPT_BYTES,
   DEFAULT_MAX_YAML_DEPTH,
   loadConcept,

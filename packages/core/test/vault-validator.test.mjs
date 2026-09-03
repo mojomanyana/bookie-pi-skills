@@ -833,6 +833,7 @@ test("a clean relocated package carries canonical schemas and supported runtime 
   assert.equal(packageManifest.engines?.node, ">=24");
   for (const relativePath of [
     "bookie-common.schema.json",
+    "export/1.0/canonical-record.schema.json",
     "profile/1.0/bookie-config.schema.json",
     ...[
       "activity",
@@ -889,6 +890,7 @@ test("a clean relocated package carries canonical schemas and supported runtime 
     "dist/index.d.ts",
     "dist/vault-markdown-worker.js",
     "dist/schemas/bookie-common.schema.json",
+    "dist/schemas/export/1.0/canonical-record.schema.json",
     "dist/schemas/profile/1.0/bookie-config.schema.json",
   ]) {
     assert.ok(files.has(required), `Packed core is missing ${required}`);
@@ -940,6 +942,7 @@ test("a clean relocated package carries canonical schemas and supported runtime 
   const relocated = await import(
     `${pathToFileURL(join(installRoot, "node_modules/@bookie/core/dist/index.js")).href}?packed`
   );
+  assert.equal(typeof relocated.exportCanonicalJsonl, "function");
   const result = await relocated.validateVault(validVault);
   assert.equal(result.valid, true, JSON.stringify(result.diagnostics));
   const packedWorkerVault = join(packRoot, "packed-worker-vault");

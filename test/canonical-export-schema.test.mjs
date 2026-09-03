@@ -84,6 +84,7 @@ test("canonical JSONL record schema rejects malformed envelopes", async () => {
     { ...valid, source_hash: "sha256:short" },
     { ...valid, path: "projects/demo/tasks/task.md" },
     { ...valid, uid: "TSK-invalid" },
+    { ...valid, type: "Project" },
     { ...valid, body_markdown: 1 },
     { ...valid, unexpected: true },
   ];

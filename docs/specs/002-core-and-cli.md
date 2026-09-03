@@ -2,7 +2,7 @@
 
 ## Status
 
-In progress — lossless loading, current/Git-base validation, safe mutation, Evidence capture, and bounded filesystem search/inspect through BK-010 are merged and verified; BK-011 deterministic canonical JSONL export is next
+In progress — behavior through BK-010 is merged and verified; BK-011 deterministic exact-commit canonical JSONL export is in implementation
 
 Owner: unassigned  
 Target release: 0.1  
@@ -381,7 +381,12 @@ type CanonicalJsonlSink = (
   completeLine: Uint8Array,
 ) => void | Promise<void>;
 
+type CanonicalExportSecretPolicy =
+  | "reject-detected"
+  | "allow-unchecked";
+
 interface CanonicalJsonlExportOptions {
+  readonly secretPolicy?: CanonicalExportSecretPolicy;
   readonly maxManifestBytes?: number;
   readonly maxConceptBytes?: number;
   readonly maxYamlDepth?: number;
@@ -400,6 +405,7 @@ interface CanonicalJsonlExportSuccess {
   readonly schemaVersion: "1.0";
   readonly root: string;
   readonly sourceCommit: string;
+  readonly secretPolicy: CanonicalExportSecretPolicy;
   readonly recordCount: number;
   readonly byteLength: number;
   readonly outputHash: ConceptSourceHash;
@@ -414,10 +420,12 @@ interface CanonicalJsonlExportFailure {
   readonly schemaVersion: "1.0";
   readonly root: string;
   readonly sourceCommit?: string;
+  readonly secretPolicy: CanonicalExportSecretPolicy;
   readonly reason:
     | "invalid-source"
     | "invalid-vault"
     | "sensitivity-policy"
+    | "secret-policy"
     | "incomplete"
     | "output-error";
   readonly complete: boolean;
@@ -434,9 +442,11 @@ Canonical serialization recursively sorts every object key using ECMAScript UTF-
 
 Before invoking `write`, core completely reads and validates the same immutable commit: manifest and OKF bundle metadata, concept envelopes/schemas and allowed types, canonical paths and unique UIDs, CommonMark local links, cross-file policy, Evidence resource modes/sizes/digests, sensitivity policy, all configured limits, every encoded line size, and aggregate output size. Manifest-excluded paths are ignored. Generic OKF remains valid but is not an export record. The source snapshot may contain up to the existing 100,000 entries, 50,000 concepts, 512 MiB aggregate concept bytes, 2 GiB streamed Evidence bytes, and 1,000 diagnostics; `maxOutputBytes` defaults to and cannot exceed 512 MiB. Caller options may lower but never raise defaults.
 
-A record assigned a class in `policy.sensitivity.excluded_classes` is validated but omitted before sorting, counting, hashing, or output. A schema-valid Bookie record with missing or undeclared sensitivity returns `sensitivity-policy`, a static `EXPORT-SENSITIVITY` diagnostic whose file is `<unclassified>`, and zero sink calls. If an included record's decoded metadata or local Markdown links contain an omitted record's exact UID or path, export fails the same way rather than leaking or silently rewriting the included record. Export emits no logs.
+A record assigned a class in `policy.sensitivity.excluded_classes` is validated but omitted before sorting, counting, hashing, or output. A schema-valid Bookie record with missing or undeclared sensitivity returns `sensitivity-policy`, a static `EXPORT-SENSITIVITY` diagnostic whose file is `<unclassified>`, and zero sink calls. If any canonical field of an included record contains an omitted record's exact UID or path, including through a resolved relative local link, export fails the same way rather than leaking or silently rewriting the included record. Export emits no logs.
 
-Invalid programmer request/option types and above-default limits throw `TypeError`. Cancellation rejects with `AbortError`. Source, vault, sensitivity, and bound failures return before the sink is called and report zero possibly written bytes. Once emission starts, sink calls are sequential and each receives one complete line. A rejecting/throwing sink returns `output-error` with static `EXPORT-OUTPUT` and conservatively counts the attempted line in `possiblyWrittenRecords`/`possiblyWrittenBytes`; no raw sink error is exposed. Cancellation after emission starts can likewise leave a prefix. Callers must discard any prefix after non-success; BK-012's file command stages to an absent temporary and publishes only after success.
+`secretPolicy` is an explicit two-value policy and defaults to `"reject-detected"`. The default scans all canonical string fields of every included record before output using deterministic local high-confidence signatures: private-key PEM headers; known AWS, GitHub, OpenAI, Slack, Stripe, and Google token prefixes/shapes; credential-bearing URI userinfo; and credential-named structured fields or text assignments with non-placeholder values. A match returns `secret-policy` with one static `EXPORT-SECRET` diagnostic at `<redacted>` and zero sink calls; matched keys, values, paths, and bodies are never returned. `"allow-unchecked"` skips only this heuristic and is echoed in every result. It does not bypass schema validation, sensitivity exclusions, excluded-identity checks, or other policy. No environment variable or implicit fallback can select it, and BK-011 does not expose it through CLI or Pi.
+
+Invalid programmer request/option types, unknown secret policies, and above-default limits throw `TypeError`. Cancellation rejects with `AbortError`, including while an asynchronous sink remains pending; a later sink rejection is consumed rather than becoming unhandled. Source, vault, sensitivity, secret, and bound failures return before the sink is called and report zero possibly written bytes. Once emission starts, sink calls are sequential and each receives one complete line. A rejecting/throwing sink returns `output-error` with static `EXPORT-OUTPUT` and conservatively counts the attempted line in `possiblyWrittenRecords`/`possiblyWrittenBytes`; no raw sink error is exposed. Cancellation after emission starts can likewise leave a prefix. Callers must discard any prefix after non-success; BK-012's file command stages to an absent temporary and publishes only after success.
 
 The BK-011 diagnostic additions are:
 
@@ -444,6 +454,7 @@ The BK-011 diagnostic additions are:
 | -------------------- | -------------------------------------------------------------------------- |
 | `EXPORT-SOURCE`      | The exact local source commit could not be resolved or read safely.        |
 | `EXPORT-SENSITIVITY` | Export eligibility is unclassified or would expose an excluded identity.  |
+| `EXPORT-SECRET`      | Default secret detection found possible credential material.              |
 | `EXPORT-OUTPUT`      | The caller-owned byte sink did not accept the complete deterministic data. |
 
 ## CLI contract
