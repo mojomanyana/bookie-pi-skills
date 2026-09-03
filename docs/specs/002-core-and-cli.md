@@ -2,7 +2,7 @@
 
 ## Status
 
-In progress — BK-008 safe mutation merged and verified; BK-009 evidence capture and Git-base validation in implementation
+In progress — lossless loading, current/Git-base validation, safe mutation, and Evidence capture through BK-009 are merged and verified; BK-010 bounded filesystem search and inspect is next
 
 Owner: unassigned  
 Target release: 0.1  
@@ -59,7 +59,7 @@ Stable BK-006 diagnostic codes are:
 | `YAML-UNSUPPORTED`  | The document uses an unsupported version, tag, alias, or unsafe integer. |
 | `YAML-ROOT`         | The parsed document root is not a mapping.                               |
 
-Schema, profile, and current-tree cross-file diagnostics are introduced by BK-007. Git-base diagnostics remain BK-009.
+Schema, profile, and current-tree cross-file diagnostics are introduced by BK-007. BK-009 adds the Git-base diagnostics documented below.
 
 ## Safe mutation contract
 
@@ -166,7 +166,7 @@ Success returns `ok: true`, `operation: "capture-evidence"`, `outcome: "captured
 
 ## Vault validation contract
 
-BK-007 adds asynchronous `validateVault(root, options?)` for one explicit filesystem vault root. Upward discovery, mutation paths, and Git-base comparison remain later slices.
+BK-007 adds asynchronous `validateVault(root, options?)` for one explicit filesystem vault root. BK-008 adds mutation paths, and BK-009 adds the optional Git-base comparison documented below.
 
 Validation:
 
