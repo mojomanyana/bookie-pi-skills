@@ -558,13 +558,6 @@ export async function validateVault(
     }
 
     const { frontmatter } = loaded.concept;
-    if (
-      frontmatter.type === "Evidence" &&
-      typeof frontmatter.resource === "string" &&
-      frontmatter.resource.startsWith("/")
-    ) {
-      evidenceResourceFiles.add(frontmatter.resource.slice(1));
-    }
     currentSourceDigests.set(
       file,
       createHash("sha256").update(read.bytes).digest("hex"),
@@ -670,6 +663,13 @@ export async function validateVault(
       );
       policySources.push(policySource);
       continue;
+    }
+    if (
+      type === "Evidence" &&
+      typeof frontmatter.resource === "string" &&
+      frontmatter.resource.startsWith("/")
+    ) {
+      evidenceResourceFiles.add(frontmatter.resource.slice(1));
     }
 
     const record = {

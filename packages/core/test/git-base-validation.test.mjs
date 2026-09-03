@@ -315,6 +315,42 @@ test("Git-base validation rejects an abbreviated OID even when a branch has that
   assert.ok(diagnosticCodes(result).includes("GIT-BASE"));
 });
 
+test("Git-base validation rejects case-variant abbreviated OID branch names", async (t) => {
+  const root = await copyGitVault(t);
+  let baseCommit = git(root, ["rev-parse", "HEAD"]);
+  let prefix = baseCommit.slice(0, 39);
+  for (
+    let attempt = 0;
+    (prefix.match(/[a-f]/gu) ?? []).length < 2;
+    attempt += 1
+  ) {
+    assert.ok(attempt < 16, "could not create an OID with two hex letters");
+    git(root, [
+      "commit",
+      "-q",
+      "--allow-empty",
+      "--no-gpg-sign",
+      "-m",
+      `case variant ${attempt}`,
+    ]);
+    baseCommit = git(root, ["rev-parse", "HEAD"]);
+    prefix = baseCommit.slice(0, 39);
+  }
+  const firstLetter = prefix.search(/[a-f]/u);
+  const variants = [
+    prefix.toUpperCase(),
+    `${prefix.slice(0, firstLetter)}${prefix[firstLetter].toUpperCase()}${prefix.slice(firstLetter + 1)}`,
+  ];
+
+  for (const baseRef of variants) {
+    git(root, ["branch", baseRef, "HEAD"]);
+    const result = await validateVault(root, { baseRef });
+    assert.equal(result.valid, false, baseRef);
+    assert.equal(result.complete, false, baseRef);
+    assert.ok(diagnosticCodes(result).includes("GIT-BASE"), baseRef);
+  }
+});
+
 test("Git-base validation scopes a vault nested in its containing worktree", async (t) => {
   const parent = await mkdtemp(join(tmpdir(), "bookie-nested-git-"));
   const repository = join(parent, "repository");
