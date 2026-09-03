@@ -2,7 +2,7 @@
 
 ## Status
 
-In progress — BK-007 vault validation merged and verified; BK-008 safe mutation implementation candidate under review
+In progress — BK-008 safe mutation merged and verified; BK-009 evidence capture and Git-base validation ready
 
 Owner: unassigned  
 Target release: 0.1  
