@@ -338,6 +338,62 @@ test("a coordinator error after publication explicitly reports that mutation com
   assert.equal(loadConcept(stored, { file: "/committed.md" }).ok, true);
 });
 
+test("a coordinator cannot substitute the completed mutation result", async (t) => {
+  const { vault } = await temporaryVault(t);
+  const target = join(vault, "projects/fixture/tasks/substituted.md");
+
+  await assert.rejects(
+    createConcept(
+      vault,
+      {
+        path: "projects/fixture/tasks/substituted.md",
+        frontmatter: taskFrontmatter(taskUidA),
+        bodyText: "",
+      },
+      {
+        async runExclusive(_path, mutation) {
+          return { ...(await mutation()) };
+        },
+      },
+    ),
+    /concept mutation completed/u,
+  );
+
+  const stored = await readFile(target);
+  assert.equal(loadConcept(stored, { file: "/substituted.md" }).ok, true);
+});
+
+test("a coordinator cannot return before the mutation callback completes", async (t) => {
+  const { vault } = await temporaryVault(t);
+  let callback;
+
+  try {
+    await assert.rejects(
+      createConcept(
+        vault,
+        {
+          path: "projects/fixture/tasks/early-return.md",
+          frontmatter: taskFrontmatter(taskUidA),
+          bodyText: "",
+        },
+        {
+          async runExclusive(_path, mutation) {
+            callback = mutation();
+            return { early: true };
+          },
+        },
+      ),
+      /concept mutation completed/u,
+    );
+  } finally {
+    await callback;
+  }
+  const stored = await readFile(
+    join(vault, "projects/fixture/tasks/early-return.md"),
+  );
+  assert.equal(loadConcept(stored, { file: "/early-return.md" }).ok, true);
+});
+
 test("root replacement while waiting for coordination fails closed", async (t) => {
   const { parent, vault } = await temporaryVault(t);
   const originalRoot = join(parent, "original-vault");
@@ -382,6 +438,7 @@ test("create rejects traversal, host paths, encoding, reserved names, and unsafe
     "projects/fixture/index.md",
     "missing-parent/task.md",
     "linked/escape.md",
+    "references/files/concept.md",
   ];
 
   for (const [index, path] of cases.entries()) {

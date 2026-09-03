@@ -2,7 +2,7 @@
 
 ## Status
 
-In progress — BK-008 safe mutation merged and verified; BK-009 evidence capture and Git-base validation ready
+In progress — BK-008 safe mutation merged and verified; BK-009 evidence capture and Git-base validation in implementation
 
 Owner: unassigned  
 Target release: 0.1  
@@ -63,7 +63,7 @@ Schema, profile, and current-tree cross-file diagnostics are introduced by BK-00
 
 ## Safe mutation contract
 
-BK-008 adds `createConcept(root, request, options?)`, `amendConcept(root, request, options?)`, and pure `computeConceptSourceHash(bytes)`. `root` is an explicit filesystem path or file URL. Request paths are canonical vault-relative POSIX concept paths such as `projects/demo/tasks/task.md`: host-absolute paths, a leading slash, empty or dot segments, backslashes, percent-encoded input, controls, query/fragment syntax, any case variant of a `.git` segment, reserved `index.md`/`log.md` basenames, manifest-excluded paths, and non-Markdown targets are rejected. Mutation paths contain at most 64 segments and 4,096 UTF-8 bytes total, with at most 255 UTF-8 bytes per segment; these lexical bounds are checked before the coordinator receives a queue key. Relation, project, and support values inside frontmatter retain their separate bundle-absolute `/...md` contract.
+BK-008 adds `createConcept(root, request, options?)`, `amendConcept(root, request, options?)`, and pure `computeConceptSourceHash(bytes)`. `root` is an explicit filesystem path or file URL. Request paths are canonical vault-relative POSIX concept paths such as `projects/demo/tasks/task.md`: host-absolute paths, a leading slash, empty or dot segments, backslashes, percent-encoded input, controls, query/fragment syntax, any case variant of a `.git` segment, reserved `index.md`/`log.md` basenames, configured Evidence-resource namespaces, manifest-excluded paths, and non-Markdown targets are rejected. Mutation paths contain at most 64 segments and 4,096 UTF-8 bytes total, with at most 255 UTF-8 bytes per segment; these lexical bounds are checked before the coordinator receives a queue key. Relation, project, and support values inside frontmatter retain their separate bundle-absolute `/...md` contract.
 
 The public request shapes are:
 
@@ -118,25 +118,51 @@ type ConceptMutationCoordinator = <T>(
 
 Create requires a complete schema-valid profile 1.0 Bookie frontmatter mapping, a type allowed by `bookie.yaml`, a correctly prefixed caller-generated ULID not already present in the vault, an existing safe parent directory, and an absent target. It does not generate identity or timestamps; the caller remains responsible for global UID uniqueness beyond the scanned vault. Amend requires an existing singly linked regular target and a source hash from the exact bytes previously read; it may not change `type`, `bookie.profile`, or `bookie.uid`. Both operations validate the complete proposed target document and perform a bounded safe vault scan for UID collision. They do not claim that separately authored relation inverses or other multi-file changes are complete; callers run `validateVault()` after the related mutation set and before submission.
 
-`ConceptSourceHash` is lowercase SHA-256 over exact source bytes with the `sha256:` prefix. Amend checks the expected token after its initial no-follow read and again immediately before publication. A mismatch returns a conflict and never retries or overwrites silently. The result is a discriminated union: success has `ok: true`, `operation`, `outcome: "created" | "amended" | "unchanged"`, canonical bundle path, exact resulting `sourceHash`, optional `previousSourceHash`, an empty diagnostic list, and `changedPaths` containing the one bundle path only when bytes changed; failure has `ok: false`, `operation`, `conflict`, and one or more static `MutationDiagnostic` values. Conflict results do not return current bytes or a replacement token: callers must reread before retrying.
+`ConceptSourceHash` is lowercase SHA-256 over exact source bytes with the `sha256:` prefix. Amend checks the expected token after its initial no-follow read and again immediately before publication. A mismatch returns a conflict and never retries or overwrites silently. The result is a discriminated union: success has `ok: true`, `operation`, `outcome: "created" | "amended" | "unchanged"`, canonical bundle path, exact resulting `sourceHash`, optional `previousSourceHash`, an empty diagnostic list, and `changedPaths` containing the one bundle path only when bytes changed; failure has `ok: false`, `operation`, `conflict`, `changedPaths`, and one or more static `MutationDiagnostic` values. Ordinary pre-publication failures have no changed paths; a post-publication I/O uncertainty reports every canonical target that may exist rather than claiming no write. Conflict results do not return current bytes or a replacement token: callers must reread before retrying.
 
-Core serializes its own mutations per resolved real vault root. `runExclusive`, when supplied, is called exactly once with the resolved absolute target and wraps the complete target read, manifest/UID checks, candidate preparation, final conflict check, temporary write, and publication. A coordinator must invoke the callback exactly once and await and return its result unchanged. A coordinator failure before the callback completes returns `MUTATION-IO`; a contract violation after it completes throws a static error that explicitly says the mutation completed rather than returning a false failure. The Pi extension MUST pass `(path, mutation) => withFileMutationQueue(path, mutation)` so Bookie participates in Pi's shared per-file queue; wrapping only the final rename is invalid. Initial lexical request validation and real-root resolution happen before the callback so unsafe input is never offered as a queue key, and all filesystem assumptions are rechecked inside it.
+Core serializes its own mutations per resolved real vault root. `runExclusive`, when supplied, is called exactly once with the resolved absolute target and wraps the complete target read, manifest/UID checks, candidate preparation, final conflict check, temporary write, and publication. A coordinator must invoke the callback exactly once and await and return its result unchanged. A coordinator failure before the callback completes returns `MUTATION-IO`; a contract violation after it completes throws a static error that explicitly says the mutation completed rather than returning a false failure. The Pi extension MUST pass `(path, mutation) => withFileMutationQueue(path, mutation)` so Bookie participates in Pi's shared per-file queue; wrapping only final publication is invalid. Initial lexical request validation and real-root resolution happen before the callback so unsafe input is never offered as a queue key, and all filesystem assumptions are rechecked inside it.
 
-Writes use an exclusively created temporary regular file in the existing target directory, flush and close it, recheck the root, parent chain, target state, and expected source hash, then rename on the same filesystem. Under the required coordinator this gives no partial target and no lost update among participating writers. An uncoordinated external process is outside that lock contract, but changes observed before publication still fail closed. Cancellation is honored through the final pre-publication check; after atomic publication starts, the operation completes and reports its committed result rather than returning an ambiguous cancellation. No mutation invokes Git, a network service, or a process exit.
+Writes use an exclusively created temporary regular file in the existing target directory, flush and close it, then recheck the root, parent chain, target state, and expected source hash. Absent-target publication uses an atomic same-filesystem no-replace link so a target created after the final check is never overwritten; amendment replaces its existing hash-checked target atomically under the required coordinator. This gives no partial target and no lost update among participating writers. An uncoordinated external process is outside that lock contract, but changes observed before publication still fail closed. Node exposes pathname operations rather than portable `openat`/`renameat2`; a hostile local process permitted to rename a validated ancestor between syscalls is therefore outside the atomicity guarantee. A detected late race returns I/O with any possibly published path, while OS permissions or sandboxing must prevent adversarial ancestor renames. Cancellation is honored through the final pre-publication check; after atomic publication starts, the operation completes and reports its committed result rather than returning an ambiguous cancellation. No mutation invokes Git, a network service, or a process exit.
 
 Stable BK-008-only diagnostic codes are:
 
-| Code                  | Meaning                                                                 |
-| --------------------- | ----------------------------------------------------------------------- |
-| `MUTATION-INPUT`      | The body, frontmatter value, edit set, or source-hash token is invalid. |
-| `MUTATION-PATH`       | The requested path is non-canonical, reserved, excluded, or unsafe.     |
-| `MUTATION-TARGET`     | Create found an existing target, or amend found no safe regular target. |
-| `MUTATION-IDENTITY`   | Amend attempted to change stable type, profile, or UID identity.        |
-| `MUTATION-CONFLICT`   | Exact target bytes no longer match the expected source hash.            |
-| `MUTATION-BOUNDS`     | Candidate preparation or the collision scan reached a fixed bound.     |
-| `MUTATION-IO`         | Safe staging, cleanup, or atomic publication could not complete.        |
+| Code                | Meaning                                                                 |
+| ------------------- | ----------------------------------------------------------------------- |
+| `MUTATION-INPUT`    | The body, frontmatter value, edit set, or source-hash token is invalid. |
+| `MUTATION-PATH`     | The requested path is non-canonical, reserved, excluded, or unsafe.     |
+| `MUTATION-TARGET`   | Create found an existing target, or amend found no safe regular target. |
+| `MUTATION-IDENTITY` | Amend attempted to change stable type, profile, or UID identity.        |
+| `MUTATION-CONFLICT` | Exact target bytes no longer match the expected source hash.            |
+| `MUTATION-BOUNDS`   | Candidate preparation or the collision scan reached a fixed bound.      |
+| `MUTATION-IO`       | Safe staging, cleanup, or atomic publication could not complete.        |
 
 Candidate format/schema failures reuse BK-006 concept codes plus `CONCEPT-SCHEMA`, `TYPE-ALLOWED`, and `UID-UNIQUE`; an invalid explicit root reuses `VAULT-ROOT`; manifest failures reuse `MANIFEST-MISSING`, `MANIFEST-SIZE`, `MANIFEST-SYNTAX`, and `MANIFEST-SCHEMA`. Invalid programmer limits throw `TypeError`, cancellation rejects with `AbortError`, and expected content, conflict, path, target, bounds, and I/O failures return the failure union rather than throwing parser or filesystem messages.
+
+## Evidence capture contract
+
+BK-009 adds `captureEvidence(root, request, options?)` as the two-file primitive beneath the later CLI command. It copies one caller-selected local source file into the vault and creates its Evidence descriptor; it does not infer a UID, timestamp, media type, project, support target, title, actor, or body.
+
+```ts
+interface CaptureEvidenceRequest {
+  readonly source: string | URL;
+  readonly path: string;
+  readonly resourcePath: string;
+  readonly frontmatter: ReadonlyYamlMapping;
+  readonly bodyText: string;
+}
+
+interface CaptureEvidenceOptions extends ConceptMutationOptions {
+  readonly maxResourceBytes?: number;
+}
+```
+
+`path` is the descriptor's canonical vault-relative Markdown path. `resourcePath` is a canonical vault-relative POSIX file path with the same 64-segment, 255-byte component, 4,096-byte total, character, traversal, host-path, percent-encoding, `.git`, and existing-safe-parent limits as mutation paths, except that its basename need not end in `.md`; it must be strictly beneath one configured literal evidence root and outside manifest exclusions. The descriptor and resource targets must both be absent. The explicit source may be a filesystem path or file URL, is opened without following its final component, must remain one stable regular file throughout capture, and is never interpreted as vault-relative input.
+
+The caller supplies a complete Evidence frontmatter candidate except that top-level `resource` and `bookie.sha256` MUST be absent. Core clones the bounded input, streams exact source bytes into an exclusively created same-directory resource temporary, enforces both `policy.attachment_max_bytes` and an optional lower `maxResourceBytes`, computes lowercase SHA-256 without decoding, flushes the temporary, and reopens and hashes the staged file to verify the durable bytes. It then inserts bundle-absolute `resource` and the verified digest, validates the complete Evidence schema/type/manifest/UID candidate, and stages the descriptor. A source change, short/extra write, staged digest mismatch, unsafe path, collision, bound, or candidate error publishes neither descriptor nor resource.
+
+Core's per-real-root queue and an optional `runExclusive` coordinator wrap the complete source read, manifest/UID checks, both staging operations, final source/parent/target checks, and publication; the coordinator key is the resolved descriptor target and follows the same exactly-once contract as concept mutation. Publication uses atomic no-replace links and synchronizes the resource directory before attempting the descriptor, then synchronizes the descriptor directory before success. Thus a visible descriptor never points at a resource this operation has not first made durable, and neither target can overwrite a file created after the final check. Cancellation is honored until resource publication begins; after that point the operation finishes descriptor publication or reports the exact canonical paths already published instead of returning an ambiguous cancellation. Core never rolls back a published pathname with a check-then-unlink sequence because another process could replace that path between the check and deletion. A descriptor-publication conflict therefore leaves the durable resource as an explicit orphan and reports it in `changedPaths`; a post-publication I/O failure conservatively reports every target that may exist.
+
+Success returns `ok: true`, `operation: "capture-evidence"`, `outcome: "captured"`, descriptor `path`, bundle-absolute `resourcePath`, exact descriptor `sourceHash`, lowercase resource `sha256`, resource `byteLength`, `changedPaths` in resource-then-descriptor publication order, and no diagnostics. Failure returns `ok: false`, `operation: "capture-evidence"`, `conflict`, observable `changedPaths`, and static mutation, manifest, schema, type, UID, or Evidence diagnostics. Invalid programmer limits throw `TypeError`; cancellation before publication rejects with `AbortError`. Capture never invokes Git, a network service, a process exit, commit, or push. It is a policy-neutral core primitive and does not guess the unresolved secret detectors or overrides in OQ-009; no CLI or Pi write surface may expose it until that boundary is accepted.
 
 ## Vault validation contract
 
@@ -144,7 +170,7 @@ BK-007 adds asynchronous `validateVault(root, options?)` for one explicit filesy
 
 Validation:
 
-- resolves one real vault root, never follows traversed symlinks, rejects multiply linked or special file entries, ignores `.git`, counts traversed entries before exclusions, treats `policy.exclude` as anchored segment globs, and uses deterministic POSIX-relative ordering;
+- resolves one real vault root, never follows traversed symlinks, rejects multiply linked or special file entries, ignores `.git`, counts traversed entries before exclusions, treats `policy.exclude` as anchored segment globs, treats a file strictly beneath a configured literal Evidence root as resource bytes rather than a concept when a schema-valid Evidence descriptor names it, even when its name ends in `.md`, while unreferenced Markdown remains a concept candidate, and uses deterministic POSIX-relative ordering;
 - parses the complete `bookie.yaml` byte stream directly as exactly one bounded strict YAML 1.2 mapping, with the same precision, alias, tag, and depth policy as concept loading, then validates it and Bookie records with the canonical JSON Schemas through Ajv 2020;
 - requires root `index.md` to be a bounded frontmatter document declaring exact `okf_version: "0.2"`; other reserved Markdown remains content/link input rather than a Bookie concept;
 - treats any concept with a `bookie` mapping as an attempted Bookie record; type names alone are never reserved, so generic OKF Markdown without `bookie` remains outside Bookie schema and relation policy but still requires a non-empty `type`;
@@ -170,7 +196,25 @@ Stable BK-007 infrastructure/schema codes are:
 | `MARKDOWN-LINK`         | A local CommonMark link target is malformed, escaping, missing, or a symlink.               |
 | `DIAGNOSTICS-TRUNCATED` | The diagnostic limit was reached and additional findings were omitted.                      |
 
-BK-007 also emits current-tree SPEC-001 codes `TYPE-ALLOWED`, `UID-UNIQUE`, `PROJECT-TARGET`, `RELATION-TARGET`, `RELATION-INVERSE`, `DECISION-SUPERSESSION`, `EVIDENCE-RESOURCE`, `EVIDENCE-DIGEST`, and `EVIDENCE-SUPPORT`. `ACTIVITY-IMMUTABLE`, `EVIDENCE-IMMUTABLE`, Git tracking, base-tree Decision retention, pinned target identity, and base resource changes require `--base` and remain BK-009.
+BK-007 also emits current-tree SPEC-001 codes `TYPE-ALLOWED`, `UID-UNIQUE`, `PROJECT-TARGET`, `RELATION-TARGET`, `RELATION-INVERSE`, `DECISION-SUPERSESSION`, `EVIDENCE-RESOURCE`, `EVIDENCE-DIGEST`, and `EVIDENCE-SUPPORT`.
+
+## Git-base validation contract
+
+BK-009 extends `ValidateVaultOptions` with `baseRef?: string` and successful base resolution adds `baseCommit` to `ValidateVaultResult`. Omitting `baseRef` preserves the BK-007 filesystem-only behavior exactly. A supplied base is either a full 40- or 64-hex object ID matching the repository's declared SHA-1 or SHA-256 object format, or a bounded canonical Git ref name such as `main`, `origin/main`, or `refs/remotes/origin/main`; abbreviated object IDs, revision expressions, option-like values, controls, whitespace, reflog selectors, and path selectors are rejected. It must resolve locally to a commit in the non-bare Git worktree containing the explicit vault root. Validation never fetches, invokes hooks, applies filters, commits, pushes, or interpolates a shell command.
+
+The resolved commit object, not a checkout or caller-controlled textual command, supplies the base tree. Base traversal is NUL-delimited and bounded by the same per-tree entry, concept-count, concept-byte, YAML-depth, resource-byte, and diagnostic ceilings as the current tree. It rejects non-UTF-8 paths, symlink entries, submodules, special modes, malformed/missing base manifest or bundle metadata, unreadable/oversized Bookie candidates, and incomplete Git output. The current non-excluded filesystem entries consumed by validation must have one ordinary stage-zero `100644` or `100755` index entry; this makes Git tracking and submodule rejection explicit while still comparing the working-tree bytes, not staged blobs. New canonical files therefore must be added to the index before a base-aware validation can pass.
+
+For every schema-valid Activity and Evidence in the base tree, the proposed filesystem tree retains the same path, UID, and exact Markdown blob bytes. Deletion, rename, replacement, or edit emits `ACTIVITY-IMMUTABLE` or `EVIDENCE-IMMUTABLE`. Every base Decision UID remains addressable by a schema-valid Decision in the proposed tree; current-tree lifecycle and reciprocal-edge validation then enforces valid supersession. Project, relation, and support paths stored by base Activity/Evidence must resolve in both trees at the stored path to the same UID, emitting `PROJECT-TARGET`, `RELATION-TARGET`, or `EVIDENCE-SUPPORT` on replacement or loss. Every base Evidence resource remains an ordinary blob at its stored path and the current singly linked regular tracked file has the same exact-byte SHA-256 and size; change, deletion, unsafe replacement, or submodule conversion emits `EVIDENCE-RESOURCE` independently of current `EVIDENCE-DIGEST` checks.
+
+Base records assigned a sensitivity class excluded by either parseable base or current manifest use `<excluded>` diagnostics and never expose their paths, UIDs, titles, bodies, references, resource names, or values. Policy violations are complete validation failures. An invalid/unavailable ref, non-worktree root, unsafe/incomplete base, tracking ambiguity, Git executable failure, or Git bound emits static `GIT-BASE`, marks the result incomplete, and never includes Git stderr, object contents, or ref-derived command text. Cancellation kills an active Git reader and consistently rejects with `AbortError`. Invalid option types or limits throw `TypeError`.
+
+The BK-009 diagnostic additions are:
+
+| Code                 | Meaning                                                                      |
+| -------------------- | ---------------------------------------------------------------------------- |
+| `GIT-BASE`           | Local base resolution, bounded tree reading, or current tracking was unsafe. |
+| `ACTIVITY-IMMUTABLE` | A Git-base Activity was edited, deleted, renamed, or replaced.               |
+| `EVIDENCE-IMMUTABLE` | A Git-base Evidence descriptor was edited, deleted, renamed, or replaced.    |
 
 ## CLI contract
 
@@ -202,7 +246,7 @@ Exit codes:
 - Validation reports all independent errors in one run and uses documented rule codes.
 - Every mutating API rejects absolute, relative, encoded, and symlink paths outside the vault.
 - Concurrent writes detect source-hash conflicts rather than silently overwrite.
-- Evidence capture verifies the digest after writing and leaves no descriptor on failure.
+- Evidence capture verifies staged exact bytes, makes the resource durable before descriptor publication, never overwrites a raced target, and reports every canonical path that a failure may have published.
 - Filesystem search reports degraded/local mode and respects project, type, lifecycle, workflow, and sensitivity filters.
 - JSONL export is byte-for-byte deterministic across repeated runs.
 - A mixed-sensitivity export retains included records but omits records assigned a class in `policy.sensitivity.excluded_classes`; excluded UIDs, paths, and marker content appear in neither JSONL nor export diagnostics or logs.

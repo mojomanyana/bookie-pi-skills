@@ -137,6 +137,21 @@ test("a vault requires valid OKF 0.2 bundle metadata", async (t) => {
   );
 });
 
+test("malformed Evidence cannot classify Markdown as resource bytes", async (t) => {
+  const vault = await temporaryVault(t);
+  const evidencePath = join(vault, "projects/fixture/evidence/evidence.md");
+  const hiddenPath = join(vault, "references/files/hidden.md");
+  await writeFile(hiddenPath, "# Missing frontmatter\n");
+  await rewriteFlowConcept(evidencePath, (frontmatter) => {
+    delete frontmatter.title;
+    frontmatter.resource = "/references/files/hidden.md";
+  });
+
+  const result = await validateVault(vault);
+  assert.ok(codes(result).includes("CONCEPT-SCHEMA"));
+  assert.ok(codes(result).includes("FRONTMATTER-OPEN"));
+});
+
 test("schema-valid exclusion patterns cannot exhaust the call stack", async (t) => {
   const vault = await temporaryVault(t);
   const manifestPath = join(vault, "bookie.yaml");

@@ -100,7 +100,7 @@ The OKF concept ID is the bundle-relative Markdown path without `.md`; `bookie.u
 
 A target referenced from merged immutable Activity or Evidence is path-pinned while that record remains: it cannot move or be replaced by another UID because the source bytes cannot be amended. Profile 1.0 defines no aliases or UID-only fallback.
 
-Evidence uses top-level OKF `resource`, for example `/references/files/source.txt`. The path must be beneath a configured evidence root and resolve inside the real vault to a singly linked tracked regular file—not a directory, symlink, hardlink alias, or submodule. Its exact bytes must fit `attachment_max_bytes`; SHA-256 uses those bytes without decoding or newline normalization.
+Evidence uses top-level OKF `resource`, for example `/references/files/source.txt`. The path must be beneath a configured evidence root and resolve inside the real vault to a singly linked tracked regular file—not a directory, symlink, hardlink alias, or submodule. Files strictly beneath an evidence root that are named by schema-valid Evidence descriptors are resource bytes rather than concepts even when a filename ends in `.md`; unreferenced Markdown remains subject to concept validation, and Bookie concept writers reject descriptor paths in those namespaces. Exact resource bytes must fit `attachment_max_bytes`; SHA-256 uses those bytes without decoding or newline normalization.
 
 ## Relations
 

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { realpath, stat } from "node:fs/promises";
 import { posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,10 +21,12 @@ import {
   createPathTracker,
   enumerateVault,
   hashSafeBoundedFile,
+  isBeneathLiteralPath,
   readSafeBoundedFile,
   verifyTrackedPaths,
 } from "./vault-filesystem.js";
 import type { PathTracker } from "./vault-filesystem.js";
+import { validateGitBase } from "./vault-git-base.js";
 import { getSchemaValidators, readVaultManifest } from "./vault-manifest.js";
 import { validateMarkdownLinks } from "./vault-markdown.js";
 import type {
@@ -57,6 +60,7 @@ export interface ValidateVaultOptions {
   readonly maxTotalConceptBytes?: number;
   readonly maxTotalResourceBytes?: number;
   readonly maxDiagnostics?: number;
+  readonly baseRef?: string;
   readonly signal?: AbortSignal;
 }
 
@@ -66,6 +70,7 @@ export interface ValidateVaultResult {
   readonly diagnostics: readonly VaultDiagnostic[];
   readonly complete: boolean;
   readonly diagnosticsTruncated: boolean;
+  readonly baseCommit?: string;
 }
 
 export type {
@@ -265,8 +270,9 @@ async function validateEvidenceResources(
     const resource = evidence.frontmatter.resource;
     if (typeof resource !== "string" || !resource.startsWith("/")) continue;
     const relativeResource = resource.slice(1);
-    const beneathConfiguredRoot = manifest.policy.evidence_roots.some(
-      (evidenceRoot) => relativeResource.startsWith(`${evidenceRoot}/`),
+    const beneathConfiguredRoot = isBeneathLiteralPath(
+      relativeResource,
+      manifest.policy.evidence_roots,
     );
     if (!beneathConfiguredRoot || !entries.regularFiles.has(relativeResource)) {
       collector.add(
@@ -332,6 +338,9 @@ export async function validateVault(
   rootPath: string | URL,
   options: ValidateVaultOptions = {},
 ): Promise<ValidateVaultResult> {
+  if (options.baseRef !== undefined && typeof options.baseRef !== "string") {
+    throw new TypeError("baseRef must be a string");
+  }
   const limits = validationLimits(options);
   const collector = new DiagnosticCollector(limits.maxDiagnostics);
   const tracker = createPathTracker();
@@ -392,12 +401,32 @@ export async function validateVault(
   const candidates: BookieCandidate[] = [];
   const records: BookieRecord[] = [];
   const policySources: BookiePolicySource[] = [];
+  const currentSourceDigests = new Map<string, string>();
   const redactedEntryPaths = new Set<string>();
+  const evidenceResourceFiles = new Set<string>();
   let conceptCount = 0;
   let totalConceptBytes = 0;
+  const markdownFiles =
+    manifest === undefined
+      ? entries.markdownFiles
+      : [
+          ...entries.markdownFiles.filter(
+            (path) =>
+              !isBeneathLiteralPath(path, manifest.policy.evidence_roots),
+          ),
+          ...entries.markdownFiles.filter((path) =>
+            isBeneathLiteralPath(path, manifest.policy.evidence_roots),
+          ),
+        ];
 
-  for (const relativePath of entries.markdownFiles) {
+  for (const relativePath of markdownFiles) {
     throwIfAborted(options.signal);
+    const insideEvidenceRoot =
+      manifest !== undefined &&
+      isBeneathLiteralPath(relativePath, manifest.policy.evidence_roots);
+    if (insideEvidenceRoot && evidenceResourceFiles.has(relativePath)) {
+      continue;
+    }
     const hostPath = resolve(root, relativePath);
     const file = bundlePath(relativePath);
     const read = await readSafeBoundedFile(
@@ -529,11 +558,18 @@ export async function validateVault(
     }
 
     const { frontmatter } = loaded.concept;
+    currentSourceDigests.set(
+      file,
+      createHash("sha256").update(read.bytes).digest("hex"),
+    );
     const displayFile = displayFileFor(
       file,
       frontmatter,
       manifestState.excludedSensitivityClasses,
     );
+    if (insideEvidenceRoot) {
+      collector.add(createDiagnostic("CONCEPT-PATH", displayFile));
+    }
     if (displayFile === "<excluded>") {
       const addSensitivePath = (value: unknown): void => {
         if (typeof value === "string" && value.startsWith("/")) {
@@ -628,6 +664,13 @@ export async function validateVault(
       policySources.push(policySource);
       continue;
     }
+    if (
+      type === "Evidence" &&
+      typeof frontmatter.resource === "string" &&
+      frontmatter.resource.startsWith("/")
+    ) {
+      evidenceResourceFiles.add(frontmatter.resource.slice(1));
+    }
 
     const record = {
       path: file,
@@ -653,6 +696,25 @@ export async function validateVault(
     options.signal,
     tracker,
   );
+  const gitBase =
+    options.baseRef === undefined
+      ? {}
+      : await validateGitBase({
+          root,
+          baseRef: options.baseRef,
+          ...(manifest === undefined ? {} : { currentManifest: manifest }),
+          currentExcludedSensitivityClasses:
+            manifestState.excludedSensitivityClasses,
+          currentRecords: records,
+          currentSourceDigests,
+          entries,
+          limits,
+          validators,
+          collector,
+          redactedEntryPaths,
+          ...(options.signal === undefined ? {} : { signal: options.signal }),
+          tracker,
+        });
   throwIfAborted(options.signal);
   if (!(await verifyTrackedPaths(tracker, options.signal))) {
     collector.add(createDiagnostic("VAULT-IO", "/"));
@@ -669,5 +731,8 @@ export async function validateVault(
     diagnostics,
     complete,
     diagnosticsTruncated: collector.diagnosticsTruncated,
+    ...(gitBase.baseCommit === undefined
+      ? {}
+      : { baseCommit: gitBase.baseCommit }),
   };
 }

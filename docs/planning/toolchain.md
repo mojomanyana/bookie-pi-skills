@@ -1,6 +1,6 @@
 # Toolchain baseline
 
-Last reviewed: 2026-08-17 UTC
+Last reviewed: 2026-09-03 UTC
 
 This is the supported repository-development baseline, not a promise that every registry's highest major version is compatible.
 
@@ -10,6 +10,7 @@ This is the supported repository-development baseline, not a promise that every 
 |---|---:|---|
 | Node.js | 24 | Pinned by `.nvmrc`; root and packable package engines are `>=24`. Use Node 24 in CI until an ADR changes the runtime line. |
 | npm | 11.9.0 | Recorded in `packageManager`; refresh the lockfile only with a compatible npm 11 release. |
+| Git | 2.29+ for base-aware validation | Required only when `validateVault()` receives `baseRef`; this baseline provides local object-format discovery and bounded plumbing. Filesystem-only core behavior does not invoke Git. |
 | Pi | Current release when SPEC-003 starts | No repository dependency exists yet. Add peer dependencies and a smoke-test matrix when the extension imports Pi APIs. |
 
 ## Development dependencies
