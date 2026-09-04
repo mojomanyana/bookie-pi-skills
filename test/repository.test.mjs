@@ -68,6 +68,12 @@ function repoPath(absolute) {
   return absolute.slice(root.length + 1);
 }
 
+function workflowActions(source) {
+  return [...source.matchAll(/^\s*(?:-\s+)?uses:\s+([^\s#]+)\s*$/gm)].map(
+    (match) => match[1],
+  );
+}
+
 test("repository contains the agent handoff contract", () => {
   const missing = requiredFiles.filter(
     (path) => !existsSync(resolve(root, path)),
@@ -77,6 +83,32 @@ test("repository contains the agent handoff contract", () => {
     [],
     `Missing required files:\n${missing.join("\n")}`,
   );
+});
+
+test("CI actions use Node 24-native maintained releases", () => {
+  const workflow = readFileSync(
+    resolve(root, ".github/workflows/ci.yml"),
+    "utf8",
+  );
+  const actions = workflowActions(workflow);
+
+  assert.deepEqual(
+    workflowActions(
+      "steps:\n  - name: checkout\n    uses: actions/checkout@v4\n",
+    ),
+    ["actions/checkout@v4"],
+    "named steps must not bypass action-version checks",
+  );
+  for (const action of ["actions/checkout", "actions/setup-node"]) {
+    assert.deepEqual(
+      actions.filter((value) => value.startsWith(`${action}@`)),
+      [`${action}@v5`],
+      `${action} must use its Node 24-native v5 release exactly once`,
+    );
+  }
+  assert.match(workflow, /^\s+runs-on:\s+ubuntu-latest\s*$/m);
+  assert.match(workflow, /^\s+node-version-file:\s+\.nvmrc\s*$/m);
+  assert.match(workflow, /^\s+- run:\s+npm ci\s*$/m);
 });
 
 test("exact-byte CRLF fixtures are protected from text normalization", () => {
