@@ -2,7 +2,7 @@
 
 ## Status
 
-In progress — canonical JSONL 1.0 is accepted for BK-011; destination planning and adapters remain deferred until real migration demand
+In progress — canonical JSONL 1.0 is merged and verified through BK-011; destination planning and adapters remain deferred until real migration demand
 
 Owner: unassigned  
 Target release: 0.1 for canonical JSONL; 0.3 for destination adapters
