@@ -1,6 +1,6 @@
 # Toolchain baseline
 
-Last reviewed: 2026-09-03 UTC
+Last reviewed: 2026-09-04 UTC
 
 This is the supported repository-development baseline, not a promise that every registry's highest major version is compatible.
 
@@ -12,6 +12,12 @@ This is the supported repository-development baseline, not a promise that every 
 | npm | 11.9.0 | Recorded in `packageManager`; refresh the lockfile only with a compatible npm 11 release. |
 | Git | 2.29+ for base-aware validation | Required only when `validateVault()` receives `baseRef`; this baseline provides local object-format discovery and bounded plumbing. Filesystem-only core behavior does not invoke Git. |
 | Pi | Current release when SPEC-003 starts | No repository dependency exists yet. Add peer dependencies and a smoke-test matrix when the extension imports Pi APIs. |
+
+## Continuous integration
+
+The single GitHub Actions workflow uses `actions/checkout@v5` and `actions/setup-node@v5`, whose action runtimes use Node 24. It runs on GitHub-hosted `ubuntu-latest`, loads the application runtime from `.nvmrc`, restores npm's cache, performs `npm ci`, and executes the root quality command. A future self-hosted runner must be v2.327.1 or newer before it can execute these v5 actions.
+
+Repository tests require each action exactly once and recognize both shorthand and named `uses:` steps so workflow presentation changes cannot hide a stale duplicate.
 
 ## Development dependencies
 
@@ -49,4 +55,5 @@ Repository tests verify:
 - workspace name/version/private-state alignment with the lockfile;
 - OKF and example profile version consistency;
 - backlog dependency order, valid states, and completion evidence;
-- contiguous requirement, specification, ADR, backlog, and open-question numbering.
+- contiguous requirement, specification, ADR, backlog, and open-question numbering;
+- Node 24-native checkout/setup action lines and the surrounding clean-install CI contract.
