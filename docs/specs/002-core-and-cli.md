@@ -2,7 +2,7 @@
 
 ## Status
 
-In progress — behavior through BK-010 is merged and verified; BK-011 deterministic exact-commit canonical JSONL export is in implementation
+In progress — behavior through BK-011 is merged and verified; BK-012 CLI delivery remains blocked by OQ-009's write-facing secret policy
 
 Owner: unassigned  
 Target release: 0.1  
