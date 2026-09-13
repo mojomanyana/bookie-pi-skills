@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft — ready after the relevant SPEC-002 APIs exist
+In progress — BK-013 implements the packaged read, filesystem-search, and validation slice; write, checkpoint, service retrieval, and export tools remain later backlog work
 
 Owner: unassigned  
 Target release: 0.1  

@@ -11,8 +11,14 @@
     "apps/*",
     "packages/*"
   ],
+  "pi": {
+    "extensions": [
+      "./packages/pi-extension/dist/index.js"
+    ]
+  },
   "scripts": {
     "build": "npm run build --workspaces --if-present",
+    "prepare": "npm run build --workspace @bookie/pi-extension",
     "format:check": "prettier --check \"**/*.{js,mjs,ts,json,yaml,yml}\"",
     "lint": "eslint .",
     "test": "npm run test:repo && npm run test --workspaces --if-present",
@@ -20,15 +26,19 @@
     "typecheck": "tsc -b --pretty false",
     "check": "npm run format:check && npm run lint && npm run typecheck && npm test"
   },
+  "dependencies": {
+    "@earendil-works/pi-ai": "^0.85.1",
+    "@earendil-works/pi-coding-agent": "^0.85.1",
+    "@types/node": "^24.0.0",
+    "typescript": "^6.0.3"
+  },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@types/node": "^24.0.0",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
     "eslint": "^10.8.1",
     "globals": "^17.11.0",
     "prettier": "^3.7.0",
-    "typescript": "^6.0.3",
     "typescript-eslint": "^8.48.0",
     "yaml": "^2.9.0"
   },
