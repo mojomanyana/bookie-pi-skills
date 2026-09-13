@@ -27,6 +27,7 @@ import {
   isObject,
   mutationDiagnostic,
   reusedDiagnostic,
+  writeSecretDiagnostic,
   utf8ByteLength,
 } from "./concept-mutation-model.js";
 import type {
@@ -44,11 +45,13 @@ import {
 import {
   capturePublishedEvidenceResource,
   stageEvidenceResource,
+  scanStagedEvidenceResource,
   verifyEvidenceSource,
   verifyPublishedEvidenceResource,
 } from "./evidence-capture-filesystem.js";
 import type { StagedEvidenceResource } from "./evidence-capture-filesystem.js";
 import { throwIfAborted } from "./vault-cancellation.js";
+import { containsDetectedSecret } from "./vault-secret-detection.js";
 import {
   DEFAULT_MAX_CONCEPT_BYTES,
   DEFAULT_MAX_YAML_DEPTH,
@@ -84,6 +87,17 @@ export interface CaptureEvidenceSuccess {
   readonly diagnostics: readonly [];
 }
 
+export interface CaptureEvidenceRedactedSuccess {
+  readonly ok: true;
+  readonly operation: "capture-evidence";
+  readonly outcome: "captured";
+  readonly redacted: true;
+  readonly path: "<redacted>";
+  readonly resourcePath: "<redacted>";
+  readonly changedPaths: readonly ["<redacted>", "<redacted>"];
+  readonly diagnostics: readonly [];
+}
+
 export interface CaptureEvidenceFailure {
   readonly ok: false;
   readonly operation: "capture-evidence";
@@ -93,7 +107,9 @@ export interface CaptureEvidenceFailure {
 }
 
 export type CaptureEvidenceResult =
-  CaptureEvidenceSuccess | CaptureEvidenceFailure;
+  | CaptureEvidenceSuccess
+  | CaptureEvidenceRedactedSuccess
+  | CaptureEvidenceFailure;
 
 interface CaptureLimits extends MutationLimits {
   readonly maxResourceBytes: number;
@@ -155,6 +171,39 @@ function captureFailure(
     changedPaths: Object.freeze([...changedPaths]),
     diagnostics: frozenDiagnostics,
   });
+}
+
+function requestDeclaresSensitivity(request: CaptureEvidenceRequest): boolean {
+  const bookie = request.frontmatter.bookie;
+  return isObject(bookie) && typeof bookie.sensitivity === "string";
+}
+
+function redactCaptureResult(
+  result: CaptureEvidenceResult,
+  redact: boolean,
+): CaptureEvidenceResult {
+  if (!redact) return result;
+  if (result.ok) {
+    return Object.freeze({
+      ok: true,
+      operation: "capture-evidence",
+      outcome: "captured",
+      redacted: true,
+      path: "<redacted>",
+      resourcePath: "<redacted>",
+      changedPaths: Object.freeze(["<redacted>", "<redacted>"]) as readonly [
+        "<redacted>",
+        "<redacted>",
+      ],
+      diagnostics: emptyDiagnostics,
+    });
+  }
+  return captureFailure(
+    result.diagnostics.map((diagnostic) =>
+      Object.freeze({ ...diagnostic, file: "<redacted>" }),
+    ),
+    result.changedPaths.map(() => "<redacted>"),
+  );
 }
 
 function captureSuccess(
@@ -293,6 +342,8 @@ async function performCapture(
   request: CaptureEvidenceRequest,
   limits: CaptureLimits,
   signal: AbortSignal | undefined,
+  enforceWritePolicy: boolean,
+  classifyExcluded: (excluded: boolean) => void,
 ): Promise<CaptureEvidenceResult> {
   const descriptorParent = await captureParent(descriptor, signal);
   const resourceParent = await captureParent(resource, signal);
@@ -306,17 +357,19 @@ async function performCapture(
     targetState(resource.target),
   ]);
   throwIfAborted(signal);
-  if (descriptorState !== "absent" || resourceState !== "absent") {
-    return captureFailure([
-      mutationDiagnostic(
-        descriptorState === "io" || resourceState === "io"
-          ? "MUTATION-IO"
-          : "MUTATION-TARGET",
-        descriptorState !== "absent"
-          ? descriptor.bundlePath
-          : resource.bundlePath,
-      ),
-    ]);
+  const pendingTargetDiagnostic =
+    descriptorState !== "absent" || resourceState !== "absent"
+      ? mutationDiagnostic(
+          descriptorState === "io" || resourceState === "io"
+            ? "MUTATION-IO"
+            : "MUTATION-TARGET",
+          descriptorState !== "absent"
+            ? descriptor.bundlePath
+            : resource.bundlePath,
+        )
+      : undefined;
+  if (pendingTargetDiagnostic !== undefined && !enforceWritePolicy) {
+    return captureFailure([pendingTargetDiagnostic]);
   }
 
   const preparedInput = inputFrontmatter(request, descriptor, limits);
@@ -393,6 +446,20 @@ async function performCapture(
         : [mutationDiagnostic("MUTATION-IO", descriptor.bundlePath)],
     );
 
+  if (enforceWritePolicy) {
+    const resourceScan = await scanStagedEvidenceResource(
+      stagedResource,
+      signal,
+    );
+    if (resourceScan !== "clear") {
+      return failBeforePublication([
+        resourceScan === "detected"
+          ? writeSecretDiagnostic()
+          : mutationDiagnostic("MUTATION-IO", descriptor.bundlePath),
+      ]);
+    }
+  }
+
   let descriptorBytes: Uint8Array;
   try {
     if (
@@ -418,6 +485,15 @@ async function performCapture(
         mutationDiagnostic("MUTATION-INPUT", descriptor.bundlePath),
       ]);
     }
+    if (
+      enforceWritePolicy &&
+      (containsDetectedSecret(preparedInput.frontmatter) ||
+        containsDetectedSecret(request.bodyText) ||
+        containsDetectedSecret(Buffer.from(descriptorBytes).toString("utf8")))
+    ) {
+      return failBeforePublication([writeSecretDiagnostic()]);
+    }
+
     const candidate = validateCandidate(
       descriptorBytes,
       descriptor,
@@ -426,6 +502,10 @@ async function performCapture(
       limits,
     );
     if (!candidate.ok) return failBeforePublication(candidate.diagnostics);
+    classifyExcluded(candidate.candidate.displayFile === "<excluded>");
+    if (pendingTargetDiagnostic !== undefined) {
+      return failBeforePublication([pendingTargetDiagnostic]);
+    }
     const collisions = await checkUidCollision(
       descriptor,
       candidate.candidate,
@@ -581,13 +661,24 @@ async function runCoordinatedCapture(
   request: CaptureEvidenceRequest,
   limits: CaptureLimits,
   options: CaptureEvidenceOptions,
+  enforceWritePolicy: boolean,
+  classifyExcluded: (excluded: boolean) => void,
 ): Promise<CaptureEvidenceResult> {
   return runCoordinatedOperation(
     descriptor.target,
     descriptor.root,
     options.signal,
     options.runExclusive,
-    () => performCapture(descriptor, resource, request, limits, options.signal),
+    () =>
+      performCapture(
+        descriptor,
+        resource,
+        request,
+        limits,
+        options.signal,
+        enforceWritePolicy,
+        classifyExcluded,
+      ),
     () =>
       captureFailure([
         mutationDiagnostic("MUTATION-IO", descriptor.bundlePath),
@@ -624,5 +715,129 @@ export async function captureEvidence(
     request,
     limits,
     options,
+    false,
+    () => undefined,
+  );
+}
+
+function capturePolicySnapshot(
+  request: CaptureEvidenceRequest,
+  limits: CaptureLimits,
+): CaptureEvidenceRequest | undefined {
+  try {
+    if (!isObject(request) || Array.isArray(request)) return undefined;
+    const allowedKeys = new Set([
+      "source",
+      "path",
+      "resourcePath",
+      "frontmatter",
+      "bodyText",
+    ]);
+    if (
+      Reflect.ownKeys(request).some(
+        (key) => typeof key !== "string" || !allowedKeys.has(key),
+      )
+    ) {
+      return undefined;
+    }
+    const readData = (key: keyof CaptureEvidenceRequest): unknown => {
+      const descriptor = Object.getOwnPropertyDescriptor(request, key);
+      if (descriptor === undefined || !("value" in descriptor)) {
+        throw new TypeError("Capture policy input must use data properties.");
+      }
+      return descriptor.value;
+    };
+    const source = readData("source");
+    const path = readData("path");
+    const resourcePath = readData("resourcePath");
+    const frontmatter = readData("frontmatter");
+    const bodyText = readData("bodyText");
+    const cloned = cloneYamlInput(
+      frontmatter,
+      { ...limits, maxYamlDepth: limits.maxYamlDepth + 4 },
+      limits.maxConceptBytes,
+    );
+    if (
+      !cloned.ok ||
+      !isObject(cloned.value) ||
+      (typeof source !== "string" && !(source instanceof URL)) ||
+      typeof path !== "string" ||
+      typeof resourcePath !== "string" ||
+      typeof bodyText !== "string"
+    ) {
+      return undefined;
+    }
+    return {
+      source: source instanceof URL ? new URL(source.href) : source,
+      path,
+      resourcePath,
+      frontmatter: cloned.value,
+      bodyText,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+export async function captureEvidenceWithPolicy(
+  root: string | URL,
+  request: CaptureEvidenceRequest,
+  options: CaptureEvidenceOptions = {},
+): Promise<CaptureEvidenceResult> {
+  const limits = captureLimits(options);
+  throwIfAborted(options.signal);
+  const snapshot = capturePolicySnapshot(request, limits);
+  let rootValue: string;
+  try {
+    rootValue = root instanceof URL ? root.href : root;
+  } catch {
+    return captureFailure([writeSecretDiagnostic()]);
+  }
+  if (
+    snapshot === undefined ||
+    typeof rootValue !== "string" ||
+    containsDetectedSecret(rootValue) ||
+    containsDetectedSecret({
+      source:
+        snapshot.source instanceof URL ? snapshot.source.href : snapshot.source,
+      path: snapshot.path,
+      resourcePath: snapshot.resourcePath,
+      frontmatter: snapshot.frontmatter,
+      bodyText: snapshot.bodyText,
+    })
+  ) {
+    return captureFailure([writeSecretDiagnostic()]);
+  }
+  const descriptor = await resolveMutationTarget(
+    root,
+    snapshot.path,
+    options.signal,
+  );
+  if (!descriptor.ok) return captureFailure([descriptor.diagnostic]);
+  const resource = resolveRelatedMutationFileTarget(
+    descriptor.target,
+    snapshot.resourcePath,
+  );
+  if (resource === undefined || resource.target === descriptor.target.target) {
+    return captureFailure([mutationDiagnostic("MUTATION-PATH", "<invalid>")]);
+  }
+  let candidateClassified = false;
+  let excludedCandidate = false;
+  const result = await runCoordinatedCapture(
+    descriptor.target,
+    resource,
+    snapshot,
+    limits,
+    options,
+    true,
+    (excluded) => {
+      candidateClassified = true;
+      excludedCandidate = excluded;
+    },
+  );
+  return redactCaptureResult(
+    result,
+    excludedCandidate ||
+      (!candidateClassified && requestDeclaresSensitivity(snapshot)),
   );
 }

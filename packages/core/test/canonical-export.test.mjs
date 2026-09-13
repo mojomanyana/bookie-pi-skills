@@ -24,6 +24,10 @@ import {
   DEFAULT_MAX_CANONICAL_JSONL_BYTES,
   exportCanonicalJsonl,
 } from "../dist/index.js";
+import {
+  secretDetectionV1,
+  secretPlaceholdersV1,
+} from "./fixtures/secret-detection-v1.mjs";
 
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
 const validVault = resolve(repositoryRoot, "fixtures/valid-vault");
@@ -393,163 +397,7 @@ test("canonical export rejects detected credentials by default and permits an ex
   const { root } = await temporaryGitVault(t);
   const ownerPath = "people/owner.md";
   const baseBody = "Owner.\n";
-  const cases = [
-    {
-      name: "private key",
-      value: ["-----BEGIN OPENSSH", "PRIVATE KEY-----"].join(" "),
-      placement: "body",
-    },
-    {
-      name: "AWS access key",
-      value: ["AKIA", "ABCDEFGHIJKLMNOP"].join(""),
-      placement: "field",
-    },
-    {
-      name: "GitHub token",
-      value: ["ghp_", "1234567890abcdefghijABCDE"].join(""),
-      placement: "field",
-    },
-    {
-      name: "OpenAI token",
-      value: ["sk-", "1234567890abcdefghijklmnopqrstuv"].join(""),
-      placement: "field",
-    },
-    {
-      name: "Slack token",
-      value: ["xoxb-", "1234567890-abcdefghijkl"].join(""),
-      placement: "field",
-    },
-    {
-      name: "Stripe token",
-      value: ["sk_live_", "1234567890abcdefghijkl"].join(""),
-      placement: "field",
-    },
-    {
-      name: "Google API key",
-      value: `AIza${"A".repeat(35)}`,
-      placement: "field",
-    },
-    {
-      name: "credential URI",
-      value: ["postgres", "//bookie", "S3cretPass@localhost/db"].join(":"),
-      placement: "field",
-    },
-    {
-      name: "256-byte credential URI password",
-      value: ["postgres", "//bookie", `${"a".repeat(256)}@localhost/db`].join(
-        ":",
-      ),
-      placement: "field",
-    },
-    {
-      name: "257-byte credential URI password",
-      value: ["postgres", "//bookie", `${"a".repeat(257)}@localhost/db`].join(
-        ":",
-      ),
-      placement: "field",
-    },
-    {
-      name: "structured secret",
-      key: "aws_secret_access_key",
-      value: ["wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLE", "KEY"].join(""),
-      placement: "structured",
-    },
-    {
-      name: "credential container",
-      key: "credentials",
-      value: "alice:CorrectHorseBatteryStaple1!",
-      placement: "structured",
-    },
-    {
-      name: "qualified password",
-      key: "db_password",
-      value: "CorrectHorseBatteryStaple1!",
-      placement: "structured",
-    },
-    {
-      name: "camel-case client secret",
-      key: "prodClientSecret",
-      value: "CorrectHorseBatteryStaple1!",
-      placement: "structured",
-    },
-    {
-      name: "API token",
-      key: "api_token",
-      value: "CorrectHorseBatteryStaple1!",
-      placement: "structured",
-    },
-    {
-      name: "low-entropy password",
-      key: "password",
-      value: "password",
-      placement: "structured",
-    },
-    {
-      name: "bracketed password",
-      key: "password",
-      value: "[CorrectHorseBatteryStaple1!]",
-      placement: "structured",
-    },
-    {
-      name: "angle-bracketed password",
-      key: "password",
-      value: "<CorrectHorseBatteryStaple1!>",
-      placement: "structured",
-    },
-    {
-      name: "nested credential field",
-      key: "api_key",
-      value: "CorrectHorseBatteryStaple1!",
-      placement: "nested",
-    },
-    {
-      name: "body assignment",
-      value: 'password = "CorrectHorseBatteryStaple1!"',
-      placement: "body",
-    },
-    {
-      name: "256-byte quoted assignment",
-      value: `password = "${"a".repeat(256)}"`,
-      placement: "body",
-    },
-    {
-      name: "257-byte quoted assignment",
-      value: `password = "${"a".repeat(257)}"`,
-      placement: "body",
-    },
-    {
-      name: "qualified body token",
-      value: "api_token = CorrectHorseBatteryStaple1!",
-      placement: "body",
-    },
-    {
-      name: "quoted assignment key",
-      value: `'api_key': 'CorrectHorseBatteryStaple1!'`,
-      placement: "body",
-    },
-    {
-      name: "JSON assignment",
-      value: '{"password":"CorrectHorseBatteryStaple1!"}',
-      placement: "body",
-    },
-    {
-      name: "low-entropy body assignment",
-      value: "password: pineapple",
-      placement: "body",
-    },
-    {
-      name: "emphasized Markdown assignment",
-      value: "**Password:** CorrectHorseBatteryStaple1!",
-      placement: "body",
-    },
-    {
-      name: "qualified Markdown assignment",
-      value: "Password (production): CorrectHorseBatteryStaple1!",
-      placement: "body",
-    },
-  ];
-
-  for (const secretCase of cases) {
+  for (const secretCase of secretDetectionV1) {
     await rewriteConcept(root, ownerPath, (frontmatter) => {
       delete frontmatter.export_probe;
       if (secretCase.placement === "field") {
@@ -610,13 +458,9 @@ test("canonical export rejects detected credentials by default and permits an ex
   assert.equal(unchecked.bytes.includes("CorrectHorseBatteryStaple1!"), true);
 
   await rewriteConcept(root, ownerPath, (frontmatter) => {
-    frontmatter.export_probe = { api_key: "not-a-secret" };
+    frontmatter.export_probe = secretPlaceholdersV1.structured;
   });
-  await rewriteBody(
-    root,
-    ownerPath,
-    "password=${PASSWORD}\napi_token=<redacted>\nsecret=[REDACTED]\n",
-  );
+  await rewriteBody(root, ownerPath, secretPlaceholdersV1.body);
   git(root, ["add", "-A"]);
   git(root, ["commit", "-q", "--no-gpg-sign", "-m", "safe placeholder"]);
   const placeholder = await collectExport(root);

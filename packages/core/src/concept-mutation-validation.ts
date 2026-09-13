@@ -50,7 +50,7 @@ export interface StableIdentity {
   readonly uid: string;
 }
 
-function displayFileForCandidate(
+export function displayFileForCandidate(
   bundlePathValue: string,
   frontmatter: ReadonlyYamlMapping,
   manifest: Manifest,

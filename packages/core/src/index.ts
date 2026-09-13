@@ -55,10 +55,15 @@ export type {
 
 export {
   amendConcept,
+  amendConceptWithPolicy,
   computeConceptSourceHash,
   createConcept,
+  createConceptWithPolicy,
 } from "./concept-mutation.js";
-export { captureEvidence } from "./evidence-capture.js";
+export {
+  captureEvidence,
+  captureEvidenceWithPolicy,
+} from "./evidence-capture.js";
 export {
   DEFAULT_MAX_INSPECT_CONTENT_BYTES,
   DEFAULT_MAX_SEARCH_EXCERPT_BYTES,
@@ -87,6 +92,7 @@ export type {
 export type {
   CaptureEvidenceFailure,
   CaptureEvidenceOptions,
+  CaptureEvidenceRedactedSuccess,
   CaptureEvidenceRequest,
   CaptureEvidenceResult,
   CaptureEvidenceSuccess,

@@ -17,6 +17,7 @@ import test from "node:test";
 
 import {
   captureEvidence,
+  captureEvidenceWithPolicy,
   computeConceptSourceHash,
   loadConcept,
   validateVault,
@@ -27,6 +28,16 @@ import {
   resolveMutationTarget,
   stageTemporary,
 } from "../dist/concept-mutation-filesystem.js";
+import {
+  containsDetectedSecret,
+  createSecretByteScanner,
+} from "../dist/vault-secret-detection.js";
+import {
+  applySecretCase,
+  secretCaseResourceText,
+  secretDetectionV1,
+  secretPlaceholdersV1,
+} from "./fixtures/secret-detection-v1.mjs";
 
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
 const validVault = resolve(repositoryRoot, "fixtures/valid-vault");
@@ -164,6 +175,327 @@ test("publication distinguishes I/O before a target is linked", async (t) => {
     await readFile(resolved.target.target).catch(() => undefined),
     undefined,
   );
+});
+
+test("policy resource scanner detects the shared corpus across every split", () => {
+  for (const value of [
+    "password=$CorrectHorseBatteryStaple1!",
+    "password={CorrectHorseBatteryStaple1!",
+    "password=[CorrectHorseBatteryStaple1!",
+    "password=<CorrectHorseBatteryStaple1!",
+  ]) {
+    assert.equal(containsDetectedSecret(value), true, value);
+    const scanner = createSecretByteScanner();
+    assert.equal(
+      scanner.push(Buffer.from(value)) || scanner.finish(),
+      true,
+      value,
+    );
+  }
+
+  for (const secretCase of secretDetectionV1) {
+    const bytes = Buffer.from(secretCaseResourceText(secretCase));
+    for (let split = 0; split <= bytes.byteLength; split += 1) {
+      const scanner = createSecretByteScanner();
+      const detected =
+        scanner.push(bytes.subarray(0, split)) ||
+        scanner.push(bytes.subarray(split)) ||
+        scanner.finish();
+      assert.equal(detected, true, `${secretCase.name} split ${split}`);
+    }
+  }
+  for (const placeholder of [
+    secretPlaceholdersV1.body,
+    ...Object.values(secretPlaceholdersV1.structured),
+  ]) {
+    const scanner = createSecretByteScanner();
+    assert.equal(scanner.push(Buffer.from(placeholder)), false, placeholder);
+    assert.equal(scanner.finish(), false, placeholder);
+  }
+
+  const partialPlaceholder = createSecretByteScanner();
+  assert.equal(
+    partialPlaceholder.push(
+      Buffer.from(`${"x".repeat(65_500)}\npassword=\${PASS`),
+    ),
+    false,
+  );
+  assert.equal(partialPlaceholder.push(Buffer.from("WORD}")), false);
+  assert.equal(partialPlaceholder.finish(), false);
+
+  for (const [before, after] of [
+    ["", "${PASSWORD}"],
+    ["$", "{PASSWORD}"],
+    ["[RED", "ACTED]"],
+    ["not-a-", "secret"],
+  ]) {
+    const boundaryPlaceholder = createSecretByteScanner();
+    assert.equal(
+      boundaryPlaceholder.push(
+        Buffer.from(`${"x".repeat(65_500)}\npassword=${before}`),
+      ),
+      false,
+    );
+    assert.equal(boundaryPlaceholder.push(Buffer.from(after)), false);
+    assert.equal(boundaryPlaceholder.finish(), false);
+  }
+
+  for (const value of ["$unsafe", "{unsafe", "[unsafe", "<unsafe"]) {
+    const assignment = `password=${value}`;
+    assert.equal(containsDetectedSecret(assignment), true, assignment);
+    const scanner = createSecretByteScanner();
+    assert.equal(
+      scanner.push(Buffer.from(`${"x".repeat(2_048)}\n${assignment}`)),
+      false,
+      assignment,
+    );
+    assert.equal(scanner.finish(), true, assignment);
+  }
+
+  const cutoffToken = `AKIA${"A".repeat(16)}`;
+  const cutoff = createSecretByteScanner();
+  assert.equal(
+    cutoff.push(
+      Buffer.from(
+        `${"x".repeat(64_500)}\n${cutoffToken}\n${"x".repeat(1_014)}`,
+      ),
+    ),
+    true,
+  );
+
+  const cutoffPlaceholder = createSecretByteScanner();
+  assert.equal(
+    cutoffPlaceholder.push(
+      Buffer.from(
+        `${"x".repeat(64_500)}\npassword=\${PASSWORD}\n${"x".repeat(1_015)}`,
+      ),
+    ),
+    false,
+  );
+  assert.equal(cutoffPlaceholder.finish(), false);
+
+  for (const longToken of [
+    `ghp_${"A".repeat(1_100)}`,
+    `sk-${"A".repeat(1_100)}`,
+  ]) {
+    const scanner = createSecretByteScanner();
+    assert.equal(scanner.push(Buffer.from(`\n${longToken}`)), true);
+  }
+
+  for (const shortToken of [`AKIA${"A".repeat(15)}`, `AIza${"A".repeat(34)}`]) {
+    const boundary = createSecretByteScanner();
+    assert.equal(
+      boundary.push(
+        Buffer.from(`${"x".repeat(65_535 - shortToken.length)}\n${shortToken}`),
+      ),
+      false,
+    );
+    assert.equal(boundary.push(Buffer.from("BB")), false);
+    assert.equal(boundary.finish(), false);
+  }
+
+  for (const token of [cutoffToken, `AIza${"A".repeat(35)}`]) {
+    const boundary = createSecretByteScanner();
+    assert.equal(
+      boundary.push(
+        Buffer.from(`${"x".repeat(65_536 - token.length)}${token}`),
+      ),
+      false,
+    );
+    assert.equal(boundary.push(Buffer.from("A")), false);
+    assert.equal(boundary.finish(), false);
+  }
+});
+
+test("policy evidence capture rejects descriptor and resource secrets without publication", async (t) => {
+  const { parent, root } = await temporaryVault(t);
+  const source = join(parent, "source.bin");
+  await writeFile(source, Buffer.from("ordinary binary\0bytes"));
+  const descriptor = await request(source, root);
+  applySecretCase(
+    descriptor.frontmatter,
+    secretDetectionV1.find(({ placement }) => placement === "structured"),
+  );
+
+  const descriptorRejected = await captureEvidenceWithPolicy(root, descriptor);
+  assert.deepEqual(codes(descriptorRejected), ["WRITE-SECRET"]);
+  assert.equal(descriptorRejected.diagnostics[0].file, "<redacted>");
+  await assert.rejects(readFile(join(root, descriptor.path)), {
+    code: "ENOENT",
+  });
+  await assert.rejects(readFile(join(root, descriptor.resourcePath)), {
+    code: "ENOENT",
+  });
+
+  const marker = secretCaseResourceText(secretDetectionV1[1]);
+  await writeFile(source, Buffer.from(`binary-prefix\0${marker}`));
+  const resourceRequest = await request(source, root, {
+    path: "projects/fixture/evidence/resource-secret.md",
+    resourcePath: "references/files/resource-secret.bin",
+  });
+  const resourceRejected = await captureEvidenceWithPolicy(
+    root,
+    resourceRequest,
+  );
+  assert.deepEqual(codes(resourceRejected), ["WRITE-SECRET"]);
+  assert.equal(resourceRejected.diagnostics[0].file, "<redacted>");
+  await assert.rejects(readFile(join(root, resourceRequest.path)), {
+    code: "ENOENT",
+  });
+  await assert.rejects(readFile(join(root, resourceRequest.resourcePath)), {
+    code: "ENOENT",
+  });
+
+  const manifestPath = join(root, "bookie.yaml");
+  await writeFile(
+    manifestPath,
+    (await readFile(manifestPath, "utf8")).replace(
+      "attachment_max_bytes: 1024",
+      "attachment_max_bytes: 100000",
+    ),
+  );
+  const longUri = `postgres://user:${"p".repeat(70_000)}@host/db`;
+  await writeFile(source, Buffer.from(longUri));
+  const longRequest = await request(source, root, {
+    path: "projects/fixture/evidence/long-secret.md",
+    resourcePath: "references/files/long-secret.bin",
+  });
+  const longRejected = await captureEvidenceWithPolicy(root, longRequest);
+  assert.deepEqual(codes(longRejected), ["WRITE-SECRET"]);
+  await assert.rejects(readFile(join(root, longRequest.path)), {
+    code: "ENOENT",
+  });
+  await assert.rejects(readFile(join(root, longRequest.resourcePath)), {
+    code: "ENOENT",
+  });
+
+  const cutoffToken = `AKIA${"A".repeat(16)}`;
+  await writeFile(
+    source,
+    Buffer.from(`${"x".repeat(64_500)}\n${cutoffToken}\n${"x".repeat(1_014)}`),
+  );
+  const cutoffRequest = await request(source, root, {
+    path: "projects/fixture/evidence/cutoff-secret.md",
+    resourcePath: "references/files/cutoff-secret.bin",
+  });
+  const cutoffRejected = await captureEvidenceWithPolicy(root, cutoffRequest);
+  assert.deepEqual(codes(cutoffRejected), ["WRITE-SECRET"]);
+
+  await writeFile(
+    source,
+    Buffer.from(
+      `${"x".repeat(64_500)}\npassword=\${PASSWORD}\n${"x".repeat(1_015)}`,
+    ),
+  );
+  const cutoffPlaceholderRequest = await request(source, root, {
+    path: "projects/fixture/evidence/cutoff-placeholder.md",
+    resourcePath: "references/files/cutoff-placeholder.bin",
+  });
+  const cutoffPlaceholder = await captureEvidenceWithPolicy(
+    root,
+    cutoffPlaceholderRequest,
+  );
+  assert.equal(cutoffPlaceholder.ok, true, JSON.stringify(cutoffPlaceholder));
+});
+
+test("policy evidence secret detection precedes occupied-target diagnostics", async (t) => {
+  const { parent, root } = await temporaryVault(t);
+  const source = join(parent, "source.bin");
+  await writeFile(
+    source,
+    Buffer.from(secretCaseResourceText(secretDetectionV1[1])),
+  );
+  const occupied = await request(source, root, {
+    path: "projects/fixture/evidence/evidence.md",
+    resourcePath: "references/files/occupied-secret.bin",
+  });
+  const rejected = await captureEvidenceWithPolicy(root, occupied);
+  assert.deepEqual(codes(rejected), ["WRITE-SECRET"]);
+  assert.equal(rejected.diagnostics[0].file, "<redacted>");
+  await assert.rejects(readFile(join(root, occupied.resourcePath)), {
+    code: "ENOENT",
+  });
+});
+
+test("policy evidence capture snapshots hostile requests before source access", async (t) => {
+  const { root } = await temporaryVault(t);
+  let sourceRead = false;
+  const accessorRequest = {
+    get source() {
+      sourceRead = true;
+      return "/outside/source.bin";
+    },
+    path: "projects/fixture/evidence/accessor.md",
+    resourcePath: "references/files/accessor.bin",
+    frontmatter: {},
+    bodyText: "",
+  };
+  const accessorRejected = await captureEvidenceWithPolicy(
+    root,
+    accessorRequest,
+  );
+  assert.deepEqual(codes(accessorRejected), ["WRITE-SECRET"]);
+  assert.equal(sourceRead, false);
+
+  const proxyRejected = await captureEvidenceWithPolicy(
+    root,
+    new Proxy(
+      {},
+      {
+        ownKeys: () => {
+          throw new Error("secret detail");
+        },
+      },
+    ),
+  );
+  assert.deepEqual(codes(proxyRejected), ["WRITE-SECRET"]);
+  assert.equal(proxyRejected.diagnostics[0].file, "<redacted>");
+});
+
+test("policy evidence capture redacts excluded successful results", async (t) => {
+  const { parent, root } = await temporaryVault(t);
+  const manifestPath = join(root, "bookie.yaml");
+  await writeFile(
+    manifestPath,
+    (await readFile(manifestPath, "utf8"))
+      .replace("      - public\n", "      - public\n      - restricted\n")
+      .replace(
+        "    excluded_classes: []",
+        "    excluded_classes:\n      - restricted",
+      ),
+  );
+  const source = join(parent, "source.bin");
+  await writeFile(source, Buffer.from("ordinary binary"));
+  const captureRequest = await request(source, root);
+  captureRequest.frontmatter.bookie.sensitivity = "restricted";
+  const result = await captureEvidenceWithPolicy(root, captureRequest);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.path, "<redacted>");
+  assert.equal(result.resourcePath, "<redacted>");
+  assert.deepEqual(result.changedPaths, ["<redacted>", "<redacted>"]);
+  assert.equal(result.redacted, true);
+  assert.equal(Object.hasOwn(result, "sha256"), false);
+  assert.equal(Object.hasOwn(result, "sourceHash"), false);
+  assert.equal(Object.hasOwn(result, "byteLength"), false);
+  assert.equal(JSON.stringify(result).includes("EVD-"), false);
+});
+
+test("policy evidence capture permits ordinary binary and placeholders", async (t) => {
+  const { parent, root } = await temporaryVault(t);
+  const source = join(parent, "source.bin");
+  await writeFile(
+    source,
+    Buffer.from(
+      `binary\0${secretPlaceholdersV1.body}|${Object.values(
+        secretPlaceholdersV1.structured,
+      ).join("|")}`,
+    ),
+  );
+  const result = await captureEvidenceWithPolicy(
+    root,
+    await request(source, root),
+  );
+  assert.equal(result.ok, true, JSON.stringify(result));
 });
 
 test("captureEvidence publishes exact binary bytes before a valid descriptor", async (t) => {

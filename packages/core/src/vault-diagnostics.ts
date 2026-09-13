@@ -218,6 +218,7 @@ export class DiagnosticCollector {
   readonly #diagnostics: VaultDiagnostic[] = [];
   readonly #maximum: number;
   readonly #decisionKeys = new Set<string>();
+  readonly #observedCodes = new Set<VaultDiagnosticCode>();
   #diagnosticsTruncated = false;
   #incomplete = false;
 
@@ -235,6 +236,10 @@ export class DiagnosticCollector {
 
   markIncomplete(): void {
     this.#incomplete = true;
+  }
+
+  hasCode(code: VaultDiagnosticCode): boolean {
+    return this.#observedCodes.has(code);
   }
 
   redactFiles(files: ReadonlySet<string>): void {
@@ -258,6 +263,7 @@ export class DiagnosticCollector {
   }
 
   add(diagnostic: VaultDiagnostic): void {
+    this.#observedCodes.add(diagnostic.code);
     if (diagnostic.code === "DECISION-SUPERSESSION") {
       const key = `${diagnostic.file}\0${diagnostic.instancePath ?? ""}`;
       if (this.#decisionKeys.has(key)) return;

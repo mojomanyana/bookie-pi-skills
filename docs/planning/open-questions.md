@@ -70,9 +70,25 @@ Open questions are not permission to guess. Resolve them by the listed deadline,
 
 ## OQ-009: Pre-write secret detection policy
 
-- **State:** Partially resolved for BK-011 canonical export on 2026-09-03; write policy remains open and blocks CLI or Pi mutation exposure.
+- **State:** Resolved 2026-09-04 by [ADR-0007](../architecture/decisions/0007-fail-closed-write-secret-policy.md); export policy was resolved earlier for BK-011 on 2026-09-03.
 - **Question:** Which deterministic local detectors, approval/override rules, and stable redacted diagnostic should guard complete create/amend candidates and captured Evidence resources before publication?
 - **Export decision:** Canonical export uses fixed deterministic high-confidence signatures by default, returns only static `EXPORT-SECRET` at `<redacted>` on a match, and permits the low-level exact option `secretPolicy: "allow-unchecked"`. The selected policy is reported, no environment variable can opt out, and sensitivity exclusions remain mandatory. BK-011 does not expose the opt-out through CLI or Pi.
-- **Current write direction:** Scan the complete candidate or bounded Evidence byte stream before publication, fail closed on high-confidence credential material, never echo a matched value, and keep detection independent of network providers. BK-008/BK-009 remain policy-neutral low-level primitives until this write-facing boundary is accepted.
-- **Decision deadline:** Before BK-012.
+- **Write decision:** Supported write surfaces use policy-bearing core operations that scan the complete resulting concept and, for Evidence, the complete bounded staged resource before publication. ADR-0008 subsequently removed all release 0.1 CLI write surfaces without weakening this policy. Detection returns only static `WRITE-SECRET` at `<redacted>` and publishes nothing. No user-facing flag, environment variable, configuration value, prompt, or fallback may bypass detection. BK-008/BK-009 remain explicitly low-level policy-neutral primitives and may not be called directly by CLI or Pi.
+- **Revisit trigger:** Measured false positives materially block normal use and an authenticated, attributable, append-only approval design has been accepted.
+- **Owner:** Product owner and security reviewer.
+
+## OQ-010: CLI authoring inputs and generated metadata
+
+- **State:** Resolved 2026-09-04 in SPEC-002 with product-owner approval.
+- **Question:** Should release 0.1 create and Evidence commands require callers to provide canonical target/resource paths, UIDs, timestamps, actors, sensitivity, media type, title, and body in a complete JSON request, or should the CLI generate any of them from flags and local defaults?
+- **Decision:** Keep any future non-interactive authoring surface deterministic and thin. Init, create, amend, and Evidence capture require complete caller-supplied JSON requests and generate no path, identity, timestamp, actor, sensitivity, attachment, or Evidence metadata. ADR-0008 subsequently deferred those CLI commands; the input contract remains available for a future accepted surface.
+- **Revisit trigger:** A measured automation use case cannot reasonably produce the core request, or an accepted Pi workflow needs a shared deterministic generator.
+- **Owner:** Product owner.
+
+## OQ-011: Portable vault initialization publication
+
+- **State:** Resolved 2026-09-04 by product-owner approval of ADR-0007's rollback.
+- **Question:** How shall release 0.1 publish a newly initialized vault when portable Node exposes neither atomic no-replace directory rename nor directory-relative no-follow mutation primitives that prevent a concurrently swapped destination from redirecting descendant writes?
+- **Decision:** Defer every filesystem-writing CLI command. Release 0.1 CLI exposes validate, search, and inspect only. Canonical JSONL remains available through the core stream API, but file-targeted CLI export is deferred because its path-based temporary publication has the same substitution race. Existing policy-bearing core create, amend, and Evidence APIs remain reusable but are not CLI-reachable. No plain `rename()`, cooperating lock, logical marker, or narrowed same-principal race assumption substitutes for the accepted guarantees.
+- **Revisit trigger:** A small audited native helper has an accepted platform/filesystem support matrix and adversarial tests for atomic no-replace publication plus directory-relative no-follow writes, or Node exposes equivalent portable primitives.
 - **Owner:** Product owner and security reviewer.

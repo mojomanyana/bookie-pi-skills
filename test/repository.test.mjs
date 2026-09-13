@@ -34,6 +34,7 @@ const requiredFiles = [
   "docs/architecture/decisions/0004-typescript-monorepo.md",
   "docs/architecture/decisions/0005-yaml-document-ast.md",
   "docs/architecture/decisions/0006-exact-commit-streaming-export.md",
+  "docs/architecture/decisions/0007-fail-closed-write-secret-policy.md",
   "docs/planning/roadmap.md",
   "docs/planning/backlog.md",
   "docs/planning/definition-of-done.md",
@@ -514,6 +515,46 @@ test("backlog dependencies, states, and completion evidence stay coherent", () =
         `${row.id} evidence file is missing`,
       );
     }
+  }
+});
+
+test("BK-012 has an accepted read-only CLI contract", () => {
+  const backlog = readFileSync(
+    resolve(root, "docs/planning/backlog.md"),
+    "utf8",
+  );
+  const openQuestions = readFileSync(
+    resolve(root, "docs/planning/open-questions.md"),
+    "utf8",
+  );
+  const specification = readFileSync(
+    resolve(root, "docs/specs/002-core-and-cli.md"),
+    "utf8",
+  );
+
+  assert.match(openQuestions, /## OQ-010:[\s\S]*\*\*State:\*\* Resolved/u);
+  assert.match(openQuestions, /## OQ-011:[\s\S]*\*\*State:\*\* Resolved/u);
+  const backlogRow = backlog.match(/^\| BK-012 .*$/mu)?.[0] ?? "";
+  assert.match(backlogRow, /^\| BK-012 \| Ready\s+\|/u);
+  assert.doesNotMatch(backlogRow.split("|")[5] ?? "", /OQ-011/u);
+  for (const command of [
+    "init",
+    "create",
+    "amend",
+    "evidence add",
+    "export jsonl",
+  ]) {
+    assert.ok(
+      specification.includes(`\`${command}\``),
+      `BK-012 must name deferred ${command}`,
+    );
+    assert.equal(
+      specification.includes(
+        `bookie ${command} --vault <path> --input <json-file>`,
+      ),
+      false,
+      `BK-012 must not expose deferred ${command}`,
+    );
   }
 });
 

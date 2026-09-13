@@ -22,11 +22,19 @@ import test from "node:test";
 
 import {
   amendConcept,
+  amendConceptWithPolicy,
   computeConceptSourceHash,
   createConcept,
+  createConceptWithPolicy,
   loadConcept,
   validateVault,
 } from "../dist/index.js";
+import { containsDetectedSecret } from "../dist/vault-secret-detection.js";
+import {
+  applySecretCase,
+  secretDetectionV1,
+  secretPlaceholdersV1,
+} from "./fixtures/secret-detection-v1.mjs";
 
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
 const validVault = resolve(repositoryRoot, "fixtures/valid-vault");
@@ -177,6 +185,482 @@ test("create publishes one complete validated concept through the supplied queue
 
   const validated = await validateVault(vault);
   assert.equal(validated.valid, true, JSON.stringify(validated.diagnostics));
+});
+
+test("policy create rejects secrets with static redaction and permits placeholders", async (t) => {
+  const { vault } = await temporaryVault(t);
+  const secret = ["ghp", "_", "A".repeat(24)].join("");
+  const secretPath = `projects/fixture/tasks/${secret}.md`;
+  const rejected = await createConceptWithPolicy(vault, {
+    path: secretPath,
+    frontmatter: taskFrontmatter(taskUidA),
+    bodyText: "",
+  });
+
+  assert.deepEqual(rejected, {
+    ok: false,
+    operation: "create",
+    conflict: false,
+    changedPaths: [],
+    diagnostics: [
+      {
+        code: "WRITE-SECRET",
+        severity: "error",
+        file: "<redacted>",
+        message: "Canonical write rejected possible credential material.",
+        remediation: "Remove or redact possible credential material and retry.",
+      },
+    ],
+  });
+  assert.equal(JSON.stringify(rejected).includes(secret), false);
+  await assert.rejects(readFile(join(vault, secretPath)));
+
+  const acceptedPath = "projects/fixture/tasks/placeholder.md";
+  const accepted = await createConceptWithPolicy(vault, {
+    path: acceptedPath,
+    frontmatter: {
+      ...taskFrontmatter(taskUidA),
+      integration: secretPlaceholdersV1.structured,
+    },
+    bodyText: secretPlaceholdersV1.body,
+  });
+  assert.equal(accepted.ok, true, JSON.stringify(accepted));
+});
+
+test("policy create and amend reject the shared detector corpus", async (t) => {
+  const { vault } = await temporaryVault(t);
+  const existingPath = "projects/fixture/tasks/policy-amend.md";
+  const created = await createConcept(vault, {
+    path: existingPath,
+    frontmatter: taskFrontmatter(taskUidA),
+    bodyText: "safe body\n",
+  });
+  assert.equal(created.ok, true, JSON.stringify(created));
+
+  for (const secretCase of secretDetectionV1) {
+    const frontmatter = applySecretCase(taskFrontmatter(taskUidB), secretCase);
+    const bodyText =
+      secretCase.placement === "body" ? `${secretCase.value}\n` : "safe body\n";
+    const createResult = await createConceptWithPolicy(vault, {
+      path: "projects/fixture/tasks/policy-create.md",
+      frontmatter,
+      bodyText,
+    });
+    assertRejected(createResult, "WRITE-SECRET");
+    assert.deepEqual(createResult.changedPaths, [], secretCase.name);
+
+    const amendResult = await amendConceptWithPolicy(vault, {
+      path: existingPath,
+      expectedSourceHash: created.sourceHash,
+      edits:
+        secretCase.placement === "body"
+          ? []
+          : [
+              {
+                op: "set",
+                path: ["export_probe"],
+                value: frontmatter.export_probe,
+              },
+            ],
+      ...(secretCase.placement === "body" ? { bodyText } : {}),
+    });
+    assertRejected(amendResult, "WRITE-SECRET");
+    assert.deepEqual(amendResult.changedPaths, [], secretCase.name);
+  }
+
+  await assert.rejects(
+    readFile(join(vault, "projects/fixture/tasks/policy-create.md")),
+  );
+  assert.equal(
+    (await readFile(join(vault, existingPath), "utf8")).includes(
+      "export_probe",
+    ),
+    false,
+  );
+});
+
+test("policy create snapshots accessors, cycles, roots, and redacts failures", async (t) => {
+  const { vault } = await temporaryVault(t);
+  const secret = ["ghp", "_", "B".repeat(24)].join("");
+  const accessorRequest = {
+    frontmatter: taskFrontmatter(taskUidA),
+    bodyText: "",
+  };
+  let pathReads = 0;
+  Object.defineProperty(accessorRequest, "path", {
+    enumerable: true,
+    get() {
+      pathReads += 1;
+      return pathReads === 1
+        ? "projects/fixture/tasks/safe.md"
+        : `projects/fixture/tasks/${secret}.md`;
+    },
+  });
+
+  const accessorResult = await createConceptWithPolicy(vault, accessorRequest);
+  assertRejected(accessorResult, "WRITE-SECRET");
+  assert.equal(pathReads, 0);
+  assert.equal(JSON.stringify(accessorResult).includes(secret), false);
+
+  const proxyResult = await createConceptWithPolicy(vault, {
+    path: "projects/fixture/tasks/proxy.md",
+    frontmatter: new Proxy(
+      {},
+      {
+        getPrototypeOf() {
+          throw new Error(secret);
+        },
+      },
+    ),
+    bodyText: "",
+  });
+  assertRejected(proxyResult, "WRITE-SECRET");
+  assert.equal(JSON.stringify(proxyResult).includes(secret), false);
+
+  const cyclic = [];
+  cyclic.push(cyclic);
+  const cycleResult = await createConceptWithPolicy(vault, {
+    path: "projects/fixture/tasks/cycle.md",
+    frontmatter: {
+      ...taskFrontmatter(taskUidA),
+      cyclic,
+    },
+    bodyText: "",
+  });
+  assertRejected(cycleResult, "WRITE-SECRET");
+
+  const rootResult = await createConceptWithPolicy(join(vault, secret), {
+    path: "projects/fixture/tasks/root.md",
+    frontmatter: taskFrontmatter(taskUidA),
+    bodyText: "",
+  });
+  assertRejected(rootResult, "WRITE-SECRET");
+  assert.equal(JSON.stringify(rootResult).includes(secret), false);
+
+  const manifestPath = join(vault, "bookie.yaml");
+  const manifest = await readFile(manifestPath, "utf8");
+  await writeFile(
+    manifestPath,
+    manifest
+      .replace("      - public\n", "      - public\n      - restricted\n")
+      .replace(
+        "    excluded_classes: []",
+        "    excluded_classes:\n      - restricted",
+      ),
+  );
+  const restrictedFrontmatter = {
+    ...taskFrontmatter(taskUidA),
+    bookie: {
+      ...taskFrontmatter(taskUidA).bookie,
+      sensitivity: "restricted",
+    },
+  };
+  const missingParentResult = await createConceptWithPolicy(vault, {
+    path: "projects/missing/task.md",
+    frontmatter: restrictedFrontmatter,
+    bodyText: "",
+  });
+  assertRejected(missingParentResult, "MUTATION-PATH");
+  assert.equal(missingParentResult.diagnostics[0].file, "<redacted>");
+
+  const existingResult = await createConceptWithPolicy(vault, {
+    path: "projects/fixture/tasks/task.md",
+    frontmatter: {
+      ...restrictedFrontmatter,
+    },
+    bodyText: "",
+  });
+  assertRejected(existingResult, "MUTATION-TARGET");
+  assert.ok(
+    existingResult.diagnostics.every(
+      (diagnostic) => diagnostic.file === "<redacted>",
+    ),
+  );
+
+  const existingPath = "projects/fixture/tasks/task.md";
+  const existingSource = await readFile(join(vault, existingPath));
+  const classified = await amendConcept(vault, {
+    path: existingPath,
+    expectedSourceHash: exactHash(existingSource),
+    edits: [
+      {
+        op: "set",
+        path: ["bookie", "sensitivity"],
+        value: "restricted",
+      },
+    ],
+  });
+  assert.equal(classified.ok, true, JSON.stringify(classified));
+  const excludedCreatePath = "projects/fixture/tasks/excluded-create.md";
+  const excludedCreate = await createConceptWithPolicy(vault, {
+    path: excludedCreatePath,
+    frontmatter: {
+      ...restrictedFrontmatter,
+      bookie: { ...restrictedFrontmatter.bookie, uid: taskUidC },
+    },
+    bodyText: "",
+  });
+  assert.equal(excludedCreate.ok, true, JSON.stringify(excludedCreate));
+  assert.equal(excludedCreate.path, "<redacted>");
+  assert.deepEqual(excludedCreate.changedPaths, ["<redacted>"]);
+  assert.equal(
+    (await readFile(join(vault, excludedCreatePath))).byteLength > 0,
+    true,
+  );
+
+  const excludedAmend = await amendConceptWithPolicy(vault, {
+    path: existingPath,
+    expectedSourceHash: classified.sourceHash,
+    edits: [{ op: "set", path: ["title"], value: "Excluded update" }],
+  });
+  assert.equal(excludedAmend.ok, true, JSON.stringify(excludedAmend));
+  assert.equal(excludedAmend.path, "<redacted>");
+  assert.deepEqual(excludedAmend.changedPaths, ["<redacted>"]);
+
+  const transitionPath = "projects/fixture/tasks/transition.md";
+  const transition = await createConcept(vault, {
+    path: transitionPath,
+    frontmatter: taskFrontmatter(taskUidB),
+    bodyText: "",
+  });
+  assert.equal(transition.ok, true, JSON.stringify(transition));
+  const transitioned = await amendConceptWithPolicy(vault, {
+    path: transitionPath,
+    expectedSourceHash: transition.sourceHash,
+    edits: [
+      {
+        op: "set",
+        path: ["bookie", "sensitivity"],
+        value: "restricted",
+      },
+    ],
+  });
+  assert.equal(transitioned.ok, true, JSON.stringify(transitioned));
+  assert.equal(transitioned.path, "<redacted>");
+  assert.deepEqual(transitioned.changedPaths, ["<redacted>"]);
+
+  const excludedConflict = await amendConceptWithPolicy(vault, {
+    path: existingPath,
+    expectedSourceHash: `sha256:${"0".repeat(64)}`,
+    edits: [{ op: "set", path: ["title"], value: "Conflict" }],
+  });
+  assertRejected(excludedConflict, "MUTATION-CONFLICT");
+  assert.equal(excludedConflict.diagnostics[0].file, "<redacted>");
+
+  const invalidExcluded = await amendConceptWithPolicy(vault, {
+    path: existingPath,
+    expectedSourceHash: "invalid",
+    edits: [],
+  });
+  assertRejected(invalidExcluded, "MUTATION-INPUT");
+  assert.equal(invalidExcluded.diagnostics[0].file, "<redacted>");
+
+  const boundedExcluded = await amendConceptWithPolicy(
+    vault,
+    {
+      path: existingPath,
+      expectedSourceHash: classified.sourceHash,
+      edits: [],
+    },
+    { maxConceptBytes: 1 },
+  );
+  assertRejected(boundedExcluded, "MUTATION-BOUNDS");
+  assert.equal(boundedExcluded.diagnostics[0].file, "<redacted>");
+
+  const ordinaryResult = await createConceptWithPolicy(vault, {
+    path: "projects/fixture/tasks/task.md",
+    frontmatter: taskFrontmatter(taskUidA),
+    bodyText: "",
+  });
+  assertRejected(ordinaryResult, "MUTATION-TARGET");
+  assert.equal(
+    ordinaryResult.diagnostics[0].file,
+    "/projects/fixture/tasks/task.md",
+  );
+});
+
+test("secret traversal is cycle-safe and credential-context independent", () => {
+  const shared = { value: "ordinary-looking-value" };
+  assert.equal(
+    containsDetectedSecret({ credentials: shared, ordinary: shared }),
+    true,
+  );
+  assert.equal(
+    containsDetectedSecret({ ordinary: shared, credentials: shared }),
+    true,
+  );
+  const cyclicArray = [];
+  cyclicArray.push(cyclicArray);
+  assert.equal(containsDetectedSecret(cyclicArray), false);
+});
+
+test("policy request snapshots preserve concept depth boundaries", async (t) => {
+  const first = await temporaryVault(t);
+  const second = await temporaryVault(t);
+  const frontmatter = {
+    ...taskFrontmatter(taskUidA),
+    extension: { first: { second: { value: "boundary" } } },
+  };
+  const request = {
+    path: "projects/fixture/tasks/depth.md",
+    frontmatter,
+    bodyText: "",
+  };
+
+  const neutral = await createConcept(first.vault, request, {
+    maxYamlDepth: 4,
+  });
+  const checked = await createConceptWithPolicy(second.vault, request, {
+    maxYamlDepth: 4,
+  });
+  assert.equal(neutral.ok, true, JSON.stringify(neutral));
+  assert.equal(checked.ok, true, JSON.stringify(checked));
+
+  const third = await temporaryVault(t);
+  const fourth = await temporaryVault(t);
+  const baseRequest = {
+    path: request.path,
+    frontmatter: taskFrontmatter(taskUidA),
+    bodyText: "",
+  };
+  const [thirdCreated, fourthCreated] = await Promise.all([
+    createConcept(third.vault, baseRequest, { maxYamlDepth: 4 }),
+    createConcept(fourth.vault, baseRequest, { maxYamlDepth: 4 }),
+  ]);
+  assert.equal(thirdCreated.ok, true, JSON.stringify(thirdCreated));
+  assert.equal(fourthCreated.ok, true, JSON.stringify(fourthCreated));
+  const editValue = { first: { second: { third: "boundary" } } };
+  const neutralAmend = await amendConcept(
+    third.vault,
+    {
+      path: request.path,
+      expectedSourceHash: thirdCreated.sourceHash,
+      edits: [{ op: "set", path: ["extension"], value: editValue }],
+    },
+    { maxYamlDepth: 4 },
+  );
+  const checkedAmend = await amendConceptWithPolicy(
+    fourth.vault,
+    {
+      path: request.path,
+      expectedSourceHash: fourthCreated.sourceHash,
+      edits: [{ op: "set", path: ["extension"], value: editValue }],
+    },
+    { maxYamlDepth: 4 },
+  );
+  assert.equal(neutralAmend.ok, true, JSON.stringify(neutralAmend));
+  assert.equal(checkedAmend.ok, true, JSON.stringify(checkedAmend));
+
+  const fifth = await temporaryVault(t);
+  const fifthCreated = await createConcept(fifth.vault, baseRequest);
+  assert.equal(fifthCreated.ok, true, JSON.stringify(fifthCreated));
+  const shared = { safe: "value" };
+  const sharedResult = await amendConceptWithPolicy(fifth.vault, {
+    path: request.path,
+    expectedSourceHash: fifthCreated.sourceHash,
+    edits: [
+      { op: "set", path: ["extension_a"], value: shared },
+      { op: "set", path: ["extension_b"], value: shared },
+    ],
+  });
+  assert.equal(sharedResult.ok, true, JSON.stringify(sharedResult));
+});
+
+test("policy amend scans structured retained secrets before stale conflicts", async (t) => {
+  const { vault } = await temporaryVault(t);
+  const path = "projects/fixture/tasks/structured-secret.md";
+  const created = await createConcept(vault, {
+    path,
+    frontmatter: {
+      ...taskFrontmatter(taskUidA),
+      export_probe: { credentials: { username: "alice" } },
+    },
+    bodyText: "safe body\n",
+  });
+  assert.equal(created.ok, true, JSON.stringify(created));
+  const source = await readFile(join(vault, path), "utf8");
+  assert.equal(containsDetectedSecret(source), false);
+
+  const rejected = await amendConceptWithPolicy(vault, {
+    path,
+    expectedSourceHash: `sha256:${"0".repeat(64)}`,
+    edits: [],
+  });
+  assertRejected(rejected, "WRITE-SECRET");
+});
+
+test("policy amend scans malformed retained bytes before parse diagnostics", async (t) => {
+  const { vault } = await temporaryVault(t);
+  const ordinaryPath = "projects/fixture/tasks/malformed.md";
+  const ordinarySource = Buffer.from("---\ntitle: [\n---\nordinary\n");
+  await writeFile(join(vault, ordinaryPath), ordinarySource);
+  const conflict = await amendConceptWithPolicy(vault, {
+    path: ordinaryPath,
+    expectedSourceHash: `sha256:${"0".repeat(64)}`,
+    edits: [],
+  });
+  assertRejected(conflict, "MUTATION-CONFLICT");
+  assert.equal(conflict.diagnostics[0].file, "<redacted>");
+
+  const path = "projects/fixture/tasks/malformed-secret.md";
+  const target = join(vault, path);
+  const secret = ["ghp", "_", "C".repeat(24)].join("");
+  const source = Buffer.from(`---\ntitle: [\n---\n${secret}\n`);
+  await writeFile(target, source);
+
+  const rejected = await amendConceptWithPolicy(vault, {
+    path,
+    expectedSourceHash: `sha256:${"0".repeat(64)}`,
+    edits: [],
+  });
+  assertRejected(rejected, "WRITE-SECRET");
+  assert.equal(JSON.stringify(rejected).includes(secret), false);
+  assert.deepEqual(await readFile(target), source);
+});
+
+test("policy amend scans retained YAML comments before publication", async (t) => {
+  const { vault } = await temporaryVault(t);
+  const commented = await writeCommentedTask(vault, "comment-secret.md");
+  const assignment = ["pass", "word: pineapple"].join("");
+  const source = commented.source
+    .toString("utf8")
+    .replace("# leading concept comment", `# ${assignment}`);
+  await writeFile(commented.path, source);
+  const before = Buffer.from(source);
+
+  const rejected = await amendConceptWithPolicy(vault, {
+    path: commented.bundlePath.slice(1),
+    expectedSourceHash: exactHash(before),
+    edits: [{ op: "set", path: ["title"], value: "Unrelated edit" }],
+  });
+  assertRejected(rejected, "WRITE-SECRET");
+  assert.deepEqual(await readFile(commented.path), before);
+});
+
+test("policy amend scans the complete retained concept before publication", async (t) => {
+  const { vault } = await temporaryVault(t);
+  const path = "projects/fixture/tasks/retained-secret.md";
+  const target = join(vault, path);
+  const secret = ["sk", "-", "A".repeat(24)].join("");
+  const created = await createConcept(vault, {
+    path,
+    frontmatter: taskFrontmatter(taskUidA),
+    bodyText: `retained ${secret}\n`,
+  });
+  assert.equal(created.ok, true, JSON.stringify(created));
+  const before = await readFile(target);
+
+  const rejected = await amendConceptWithPolicy(vault, {
+    path,
+    expectedSourceHash: `sha256:${"0".repeat(64)}`,
+    edits: [{ op: "set", path: ["title"], value: "Unrelated edit" }],
+  });
+
+  assertRejected(rejected, "WRITE-SECRET");
+  assert.deepEqual(rejected.changedPaths, []);
+  assert.equal(rejected.diagnostics[0].file, "<redacted>");
+  assert.equal(JSON.stringify(rejected).includes(secret), false);
+  assert.deepEqual(await readFile(target), before);
 });
 
 test("create supports the portable target basename byte limit", async (t) => {
