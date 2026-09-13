@@ -538,9 +538,12 @@ test("BK-012 delivered the accepted read-only CLI contract", () => {
   assert.match(backlogRow, /^\| BK-012 \| Done\s+\|/u);
   assert.match(backlogRow, /\[evidence\]\(evidence\/BK-012\.md\)/u);
   assert.doesNotMatch(backlogRow.split("|")[5] ?? "", /OQ-011/u);
+  const bk013Row = backlog.match(/^\| BK-013 .*$/mu)?.[0] ?? "";
+  assert.match(bk013Row, /^\| BK-013 \| Done\s+\|/u);
+  assert.match(bk013Row, /\[evidence\]\(evidence\/BK-013\.md\)/u);
   assert.match(
-    backlog.match(/^\| BK-013 .*$/mu)?.[0] ?? "",
-    /^\| BK-013 \| Ready\s+\|/u,
+    backlog.match(/^\| BK-014 .*$/mu)?.[0] ?? "",
+    /^\| BK-014 \| Ready\s+\|/u,
   );
   for (const command of [
     "init",
