@@ -13,6 +13,7 @@ import type {
 import { verifyParent } from "./concept-mutation-filesystem.js";
 import { hasErrorCode, isAbortError } from "./concept-mutation-model.js";
 import { throwIfAborted } from "./vault-cancellation.js";
+import { createSecretByteScanner } from "./vault-secret-detection.js";
 
 interface SourceSnapshot {
   readonly path: string;
@@ -376,6 +377,66 @@ export async function stageEvidenceResource(
           : "io",
     };
   }
+}
+
+export async function scanStagedEvidenceResource(
+  staged: StagedEvidenceResource,
+  signal: AbortSignal | undefined,
+): Promise<"clear" | "detected" | "io"> {
+  if (constants.O_NOFOLLOW === undefined) return "io";
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  let outcome: "clear" | "detected" | "io" = "io";
+  let caught: unknown;
+  try {
+    throwIfAborted(signal);
+    handle = await open(
+      staged.temporary.path,
+      constants.O_RDONLY | constants.O_NOFOLLOW,
+    );
+    const before = await handle.stat({ bigint: true });
+    if (sameCompleteIdentity(staged.temporary.metadata, before)) {
+      const scanner = createSecretByteScanner();
+      const buffer = Buffer.allocUnsafe(64 * 1_024);
+      let position = 0;
+      while (position < staged.byteLength) {
+        throwIfAborted(signal);
+        const { bytesRead } = await handle.read(
+          buffer,
+          0,
+          Math.min(buffer.byteLength, staged.byteLength - position),
+          position,
+        );
+        if (bytesRead === 0) break;
+        if (scanner.push(buffer.subarray(0, bytesRead))) {
+          outcome = "detected";
+          break;
+        }
+        position += bytesRead;
+      }
+      if (outcome !== "detected" && position === staged.byteLength) {
+        const after = await handle.stat({ bigint: true });
+        outcome = sameCompleteIdentity(before, after)
+          ? scanner.finish()
+            ? "detected"
+            : "clear"
+          : "io";
+      }
+    }
+  } catch (error) {
+    caught = error;
+  }
+  if (handle !== undefined) {
+    try {
+      await handle.close();
+    } catch {
+      return "io";
+    }
+  }
+  if (caught !== undefined) {
+    throwIfAborted(signal);
+    return "io";
+  }
+  return outcome;
 }
 
 export async function capturePublishedEvidenceResource(

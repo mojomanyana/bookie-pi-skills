@@ -23,6 +23,9 @@ const credentialUri = /[A-Za-z][A-Za-z0-9+.-]{1,31}:\/\/[^\s/:@]+:[^\s/@]+@/;
 const textAssignment =
   /(?:^|[\s{[(,;])(?:\*\*|__)?["'`]?([A-Za-z][A-Za-z0-9_.-]*)(?:\s*\([^\r\n)]+\))?["'`]?\s*(?:(?:\*\*|__)\s*(?:=|:)|(?:=|:)\s*(?:\*\*|__)?)\s*(?:"([^"\r\n]+)"?|'([^'\r\n]+)'?|`([^`\r\n]+)`?|(\$\{[^}\r\n]+\}|\{\{[^}\r\n]+\}\}|\[[^\]\r\n]+\]|<[^>\r\n]+>|[^\s"'`,;}\])]+))/g;
 
+const trailingCredentialAssignment =
+  /(?:^|[\s{[(,;])(?:\*\*|__)?["'`]?([A-Za-z][A-Za-z0-9_.-]*)(?:\s*\([^\r\n)]+\))?["'`]?\s*(?:(?:\*\*|__)\s*(?:=|:)|(?:=|:)\s*(?:\*\*|__)?)\s*([^\r\n]*)$/g;
+
 const credentialKeys = new Set([
   "password",
   "passwords",
@@ -175,10 +178,82 @@ function stringContainsSecret(value: string): boolean {
   return hasKnownCredentialSignature(value) || hasCredentialAssignment(value);
 }
 
+function stringContainsSettledSecret(value: string): boolean {
+  if (privateKeyMarkers.some((marker) => value.includes(marker))) return true;
+  for (const [index, pattern] of knownCredentialPatterns.entries()) {
+    const match = pattern.exec(value);
+    if (
+      match !== null &&
+      (match.index + match[0].length < value.length ||
+        (index !== 0 && index !== 6))
+    ) {
+      return true;
+    }
+  }
+  return credentialUri.test(value) || hasCredentialAssignment(value);
+}
+
+export interface SecretByteScanner {
+  push(bytes: Uint8Array): boolean;
+  finish(): boolean;
+}
+
+const secretByteCarryLength = 1_024;
+const maximumPendingPlaceholderLength = 4_096;
+const incompleteCredentialUri =
+  /[A-Za-z][A-Za-z0-9+.-]{1,31}:\/\/[^\s/:@]+:[^\s/@]*$/;
+
+function trailingCredentialAssignmentStart(value: string): number | undefined {
+  trailingCredentialAssignment.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = trailingCredentialAssignment.exec(value)) !== null) {
+    const key = match[1];
+    if (key !== undefined && isCredentialKey(key)) return match.index;
+  }
+  return undefined;
+}
+
+export function createSecretByteScanner(): SecretByteScanner {
+  let carry = "";
+  let detected = false;
+  return {
+    push(bytes) {
+      if (detected) return true;
+      const text = carry + Buffer.from(bytes).toString("latin1");
+      if (text.length <= secretByteCarryLength) {
+        carry = text;
+        return false;
+      }
+      const retainedAt = text.length - secretByteCarryLength;
+      const pendingAssignment = trailingCredentialAssignmentStart(text);
+      const incompleteUri = incompleteCredentialUri.exec(text);
+      detected =
+        stringContainsSettledSecret(
+          pendingAssignment === undefined
+            ? text
+            : text.slice(0, pendingAssignment),
+        ) ||
+        (incompleteUri !== null && incompleteUri.index < retainedAt) ||
+        (pendingAssignment !== undefined &&
+          text.length - pendingAssignment > maximumPendingPlaceholderLength);
+      const carryAt =
+        pendingAssignment === undefined
+          ? retainedAt
+          : Math.min(retainedAt, pendingAssignment);
+      carry = text.slice(carryAt);
+      return detected;
+    },
+    finish() {
+      return detected || stringContainsSecret(carry);
+    },
+  };
+}
+
 export function containsDetectedSecret(value: unknown): boolean {
   const pending: Array<{ readonly value: unknown; readonly key?: string }> = [
     { value },
   ];
+  const visited = new WeakMap<object, number>();
   while (pending.length > 0) {
     const current = pending.pop();
     if (current === undefined) break;
@@ -193,6 +268,12 @@ export function containsDetectedSecret(value: unknown): boolean {
       }
       continue;
     }
+    if (current.value === null || typeof current.value !== "object") continue;
+    const context =
+      current.key !== undefined && isCredentialKey(current.key) ? 2 : 1;
+    const visitedContexts = visited.get(current.value) ?? 0;
+    if ((visitedContexts & context) !== 0) continue;
+    visited.set(current.value, visitedContexts | context);
     if (Array.isArray(current.value)) {
       for (const item of current.value) {
         pending.push({
@@ -202,7 +283,6 @@ export function containsDetectedSecret(value: unknown): boolean {
       }
       continue;
     }
-    if (current.value === null || typeof current.value !== "object") continue;
     const inheritedKey =
       current.key !== undefined && isCredentialKey(current.key)
         ? current.key

@@ -43,7 +43,7 @@ A TypeScript package owns parsing, normalization, profile validation, typed rela
 
 ### CLI
 
-The CLI exposes deterministic automation for validation, evidence verification, indexing manifests, filesystem search, import, and export. CI calls the CLI instead of duplicating domain logic.
+Per ADR-0008, the release 0.1 CLI exposes deterministic validate, filesystem-search, and exact-inspect automation only. Filesystem-writing init, mutation, Evidence capture, import, and file-export commands remain deferred. CI calls the supported CLI commands instead of duplicating their domain logic.
 
 ### Pi extension
 
@@ -92,15 +92,15 @@ A CI job or controlled deployment step updates the checkout to an approved commi
 
 ## Failure behavior
 
-| Failure | Required behavior |
-|---|---|
-| Redis unavailable | Return observable filesystem-only results from the extension. |
-| Embedding provider unavailable | Continue lexical retrieval; report semantic degradation. |
-| Index behind Git main | Return indexed commit and lag; never imply freshness. |
-| Invalid concept | Reject canonical mutation with actionable errors. |
-| Digest mismatch | Fail validation and indexing of the affected evidence record. |
-| Service unavailable | Preserve local read/write/validate operation. |
-| Partial reindex | Keep serving the prior complete generation. |
+| Failure                        | Required behavior                                             |
+| ------------------------------ | ------------------------------------------------------------- |
+| Redis unavailable              | Return observable filesystem-only results from the extension. |
+| Embedding provider unavailable | Continue lexical retrieval; report semantic degradation.      |
+| Index behind Git main          | Return indexed commit and lag; never imply freshness.         |
+| Invalid concept                | Reject canonical mutation with actionable errors.             |
+| Digest mismatch                | Fail validation and indexing of the affected evidence record. |
+| Service unavailable            | Preserve local read/write/validate operation.                 |
+| Partial reindex                | Keep serving the prior complete generation.                   |
 
 ## Scaling path
 
@@ -122,3 +122,5 @@ This architecture does not provide live multi-user editing, per-record ACLs insi
 - [ADR-0004](decisions/0004-typescript-monorepo.md)
 - [ADR-0005](decisions/0005-yaml-document-ast.md)
 - [ADR-0006](decisions/0006-exact-commit-streaming-export.md)
+- [ADR-0007](decisions/0007-fail-closed-write-secret-policy.md)
+- [ADR-0008](decisions/0008-read-query-only-release-cli.md)

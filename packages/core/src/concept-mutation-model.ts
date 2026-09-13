@@ -70,7 +70,8 @@ export type MutationDiagnosticCode =
   | "MUTATION-IDENTITY"
   | "MUTATION-CONFLICT"
   | "MUTATION-BOUNDS"
-  | "MUTATION-IO";
+  | "MUTATION-IO"
+  | "WRITE-SECRET";
 
 export interface MutationDiagnostic {
   readonly code: MutationDiagnosticCode;
@@ -154,6 +155,16 @@ const mutationMessages: Record<
   },
 };
 
+export function writeSecretDiagnostic(): MutationDiagnostic {
+  return Object.freeze({
+    code: "WRITE-SECRET",
+    severity: "error" as const,
+    file: "<redacted>",
+    message: "Canonical write rejected possible credential material.",
+    remediation: "Remove or redact possible credential material and retry.",
+  });
+}
+
 export function mutationDiagnostic(
   code: Extract<MutationDiagnosticCode, `MUTATION-${string}`>,
   file: string,
@@ -171,7 +182,7 @@ export function mutationDiagnostic(
 export function reusedDiagnostic(
   code: Exclude<
     MutationDiagnosticCode,
-    ConceptDiagnosticCode | `MUTATION-${string}`
+    ConceptDiagnosticCode | `MUTATION-${string}` | "WRITE-SECRET"
   >,
   file: string,
   details?: {

@@ -70,6 +70,7 @@ export interface ValidateVaultResult {
   readonly diagnostics: readonly VaultDiagnostic[];
   readonly complete: boolean;
   readonly diagnosticsTruncated: boolean;
+  readonly immutablePolicyViolation: boolean;
   readonly baseCommit?: string;
 }
 
@@ -364,6 +365,7 @@ export async function validateVault(
       diagnostics,
       complete: collector.complete,
       diagnosticsTruncated: collector.diagnosticsTruncated,
+      immutablePolicyViolation: false,
     };
   }
 
@@ -731,6 +733,9 @@ export async function validateVault(
     diagnostics,
     complete,
     diagnosticsTruncated: collector.diagnosticsTruncated,
+    immutablePolicyViolation:
+      collector.hasCode("ACTIVITY-IMMUTABLE") ||
+      collector.hasCode("EVIDENCE-IMMUTABLE"),
     ...(gitBase.baseCommit === undefined
       ? {}
       : { baseCommit: gitBase.baseCommit }),

@@ -2,11 +2,11 @@
 
 ## Status
 
-In progress — behavior through BK-011 is merged and verified; BK-012 CLI delivery remains blocked by OQ-009's write-facing secret policy
+In progress — behavior through BK-011 is merged and verified; resolved OQ-011 makes the reduced read-only BK-012 CLI delivery Ready
 
 Owner: unassigned  
 Target release: 0.1  
-Depends on: SPEC-001, ADR-0004, ADR-0005
+Depends on: SPEC-001, ADR-0004, ADR-0005, ADR-0007, ADR-0008
 
 ## Goal
 
@@ -162,7 +162,7 @@ The caller supplies a complete Evidence frontmatter candidate except that top-le
 
 Core's per-real-root queue and an optional `runExclusive` coordinator wrap the complete source read, manifest/UID checks, both staging operations, final source/parent/target checks, and publication; the coordinator key is the resolved descriptor target and follows the same exactly-once contract as concept mutation. Publication uses atomic no-replace links and synchronizes the resource directory before attempting the descriptor, then synchronizes the descriptor directory before success. Thus a visible descriptor never points at a resource this operation has not first made durable, and neither target can overwrite a file created after the final check. Cancellation is honored until resource publication begins; after that point the operation finishes descriptor publication or reports the exact canonical paths already published instead of returning an ambiguous cancellation. Core never rolls back a published pathname with a check-then-unlink sequence because another process could replace that path between the check and deletion. A descriptor-publication conflict therefore leaves the durable resource as an explicit orphan and reports it in `changedPaths`; a post-publication I/O failure conservatively reports every target that may exist.
 
-Success returns `ok: true`, `operation: "capture-evidence"`, `outcome: "captured"`, descriptor `path`, bundle-absolute `resourcePath`, exact descriptor `sourceHash`, lowercase resource `sha256`, resource `byteLength`, `changedPaths` in resource-then-descriptor publication order, and no diagnostics. Failure returns `ok: false`, `operation: "capture-evidence"`, `conflict`, observable `changedPaths`, and static mutation, manifest, schema, type, UID, or Evidence diagnostics. Invalid programmer limits throw `TypeError`; cancellation before publication rejects with `AbortError`. Capture never invokes Git, a network service, a process exit, commit, or push. It is a policy-neutral core primitive and does not guess the unresolved secret detectors or overrides in OQ-009; no CLI or Pi write surface may expose it until that boundary is accepted.
+Success returns `ok: true`, `operation: "capture-evidence"`, `outcome: "captured"`, descriptor `path`, bundle-absolute `resourcePath`, exact descriptor `sourceHash`, lowercase resource `sha256`, resource `byteLength`, `changedPaths` in resource-then-descriptor publication order, and no diagnostics. Failure returns `ok: false`, `operation: "capture-evidence"`, `conflict`, observable `changedPaths`, and static mutation, manifest, schema, type, UID, or Evidence diagnostics. Invalid programmer limits throw `TypeError`; cancellation before publication rejects with `AbortError`. Capture never invokes Git, a network service, a process exit, commit, or push. It remains a policy-neutral low-level core primitive. Per ADR-0007, any future CLI or Pi Evidence write surface must use `captureEvidenceWithPolicy()`, which scans the complete descriptor candidate and bounded staged resource before publication; it may not call this primitive directly.
 
 ## Vault validation contract
 
@@ -177,7 +177,7 @@ Validation:
 - resolves project, relation, inverse, Decision lifecycle, and Evidence support rules only through schema-valid Bookie targets. Independently trustworthy project, relation, support, and Evidence fields in a source with an unrelated schema error are still checked, while malformed policy structures do not generate speculative cascades;
 - parses inert CommonMark inline links, images, and referenced definitions without rendering or fetching, rejects AST block-container nesting above 256, and isolates lexically suspicious container input in a cancellable worker with a five-second deadline. It checks used local targets from concept bodies and complete reserved `index.md`/`log.md` files; fragment-only and query-only references and explicit external schemes/network-path references are ignored; query/fragment suffixes do not affect local file resolution; relative links resolve from the source file, one-leading-slash links from the vault root, URI escapes are decoded except encoded path separators are rejected, and local targets must remain inside the non-symlink enumerated tree. Heading fragments, unused definitions, and raw-HTML attributes are not validated in BK-007;
 - opens Evidence resources only when no-follow support is available, rejects symlinks, special files, and multiply linked files, verifies real-root and configured-root containment, hashes bounded exact bytes from one file handle, and detects metadata/path identity changes around the read;
-- applies per-concept, manifest, entry, concept-count, aggregate concept-byte, aggregate streamed-resource-byte and diagnostic limits; bytes streamed by failed hashes still debit the aggregate allowance. Cancellation consistently rejects with `AbortError`, while bounds and unreadable or torn required input return `complete: false`. `diagnosticsTruncated` separately identifies diagnostic-cap exhaustion, and `valid` is true only when validation is complete and has no error diagnostics;
+- applies per-concept, manifest, entry, concept-count, aggregate concept-byte, aggregate streamed-resource-byte and diagnostic limits; bytes streamed by failed hashes still debit the aggregate allowance. Cancellation consistently rejects with `AbortError`, while bounds and unreadable or torn required input return `complete: false`. `diagnosticsTruncated` separately identifies diagnostic-cap exhaustion, untruncated `immutablePolicyViolation` remains true when any Activity or Evidence immutability violation was observed even if its diagnostic exceeded the cap, and `valid` is true only when validation is complete and has no error diagnostics;
 - returns deterministic static diagnostics that never include parser messages or source values. Default bounds support 50,000 concepts when their aggregate UTF-8 bytes fit 512 MiB, with at most 100,000 traversed entries and 2 GiB of streamed Evidence bytes; diagnostic limits qualify the all-independent-errors guarantee rather than implying unbounded output. Diagnostics for a loaded record assigned an excluded sensitivity class use `<excluded>` instead of its path and never include its UID, title, body, or field values.
 
 Stable BK-007 infrastructure/schema codes are:
@@ -249,10 +249,7 @@ interface FilesystemConceptSource {
 }
 
 type FilesystemSensitivityClassification =
-  | "missing"
-  | "declared"
-  | "undeclared"
-  | "excluded";
+  "missing" | "declared" | "undeclared" | "excluded";
 
 interface FilesystemConceptSignals {
   readonly type: string;
@@ -377,13 +374,9 @@ interface CanonicalJsonlExportRequest {
   readonly write: CanonicalJsonlSink;
 }
 
-type CanonicalJsonlSink = (
-  completeLine: Uint8Array,
-) => void | Promise<void>;
+type CanonicalJsonlSink = (completeLine: Uint8Array) => void | Promise<void>;
 
-type CanonicalExportSecretPolicy =
-  | "reject-detected"
-  | "allow-unchecked";
+type CanonicalExportSecretPolicy = "reject-detected" | "allow-unchecked";
 
 interface CanonicalJsonlExportOptions {
   readonly secretPolicy?: CanonicalExportSecretPolicy;
@@ -446,33 +439,42 @@ A record assigned a class in `policy.sensitivity.excluded_classes` is validated 
 
 `secretPolicy` is an explicit two-value policy and defaults to `"reject-detected"`. The default scans all canonical string fields of every included record before output using deterministic local high-confidence signatures: private-key PEM headers; known AWS, GitHub, OpenAI, Slack, Stripe, and Google token prefixes/shapes; credential-bearing URI userinfo; and credential-named structured fields or text assignments with non-placeholder values. A match returns `secret-policy` with one static `EXPORT-SECRET` diagnostic at `<redacted>` and zero sink calls; matched keys, values, paths, and bodies are never returned. `"allow-unchecked"` skips only this heuristic and is echoed in every result. It does not bypass schema validation, sensitivity exclusions, excluded-identity checks, or other policy. No environment variable or implicit fallback can select it, and BK-011 does not expose it through CLI or Pi.
 
-Invalid programmer request/option types, unknown secret policies, and above-default limits throw `TypeError`. Cancellation rejects with `AbortError`, including while an asynchronous sink remains pending; a later sink rejection is consumed rather than becoming unhandled. Source, vault, sensitivity, secret, and bound failures return before the sink is called and report zero possibly written bytes. Once emission starts, sink calls are sequential and each receives one complete line. A rejecting/throwing sink returns `output-error` with static `EXPORT-OUTPUT` and conservatively counts the attempted line in `possiblyWrittenRecords`/`possiblyWrittenBytes`; no raw sink error is exposed. Cancellation after emission starts can likewise leave a prefix. Callers must discard any prefix after non-success; BK-012's file command stages to an absent temporary and publishes only after success.
+Invalid programmer request/option types, unknown secret policies, and above-default limits throw `TypeError`. Cancellation rejects with `AbortError`, including while an asynchronous sink remains pending; a later sink rejection is consumed rather than becoming unhandled. Source, vault, sensitivity, secret, and bound failures return before the sink is called and report zero possibly written bytes. Once emission starts, sink calls are sequential and each receives one complete line. A rejecting/throwing sink returns `output-error` with static `EXPORT-OUTPUT` and conservatively counts the attempted line in `possiblyWrittenRecords`/`possiblyWrittenBytes`; no raw sink error is exposed. Cancellation after emission starts can likewise leave a prefix. Callers must discard any prefix after non-success; ADR-0008 defers CLI file publication.
 
 The BK-011 diagnostic additions are:
 
 | Code                 | Meaning                                                                    |
 | -------------------- | -------------------------------------------------------------------------- |
 | `EXPORT-SOURCE`      | The exact local source commit could not be resolved or read safely.        |
-| `EXPORT-SENSITIVITY` | Export eligibility is unclassified or would expose an excluded identity.  |
-| `EXPORT-SECRET`      | Default secret detection found possible credential material.              |
+| `EXPORT-SENSITIVITY` | Export eligibility is unclassified or would expose an excluded identity.   |
+| `EXPORT-SECRET`      | Default secret detection found possible credential material.               |
 | `EXPORT-OUTPUT`      | The caller-owned byte sink did not accept the complete deterministic data. |
+
+## Pre-write secret policy
+
+ADR-0007 adds policy-bearing `createConceptWithPolicy()`, `amendConceptWithPolicy()`, and `captureEvidenceWithPolicy()` operations above the policy-neutral filesystem and BK-008/BK-009 primitives. A future init accepts `{ bookieYaml: string, indexMarkdown: string }`, requires an absent target with an existing safe parent, validates the exact supplied manifest and OKF index, creates only manifest-declared Evidence-root directories, and generates no manifest value or canonical file content. Resolved OQ-011 and ADR-0008 defer initialization and expose no filesystem-writing CLI command because portable Node lacks the no-replace and directory-relative no-follow primitives required by the accepted raced-destination guarantees. Implementations may not weaken no-replace, traversal, race, or complete-publication guarantees by assumption. The other operations retain the existing BK-008/BK-009 request types and underlying success shapes for non-excluded candidates. A successful Evidence capture assigned an excluded sensitivity class instead returns `ok: true`, `operation: "capture-evidence"`, `outcome: "captured"`, `redacted: true`, redacted path fields, no content-derived hash or byte-length fields, and no diagnostics. A detection returns `ok: false`, no changed paths, and one `WRITE-SECRET` diagnostic with file `<redacted>` plus static removal/redaction remediation. It never identifies the target, source, field, detector, match, or neighboring content.
+
+An entry preflight scans the request graph and supplied paths before value-bearing input/path diagnostics can escape. Init scans its destination and both supplied source strings. Create and amend then scan the canonical path, complete resulting decoded frontmatter/body, and complete rendered source before publication; amend includes retained content and comments. Evidence capture additionally scans the complete bounded staged resource with a byte-oriented incremental detector before publishing either path. Post-resolution scans remain inside the coordinated read-modify-write window. The versioned shared fixture corpus at [`packages/core/test/fixtures/secret-detection-v1.mjs`](../../packages/core/test/fixtures/secret-detection-v1.mjs) pins structured/string outcomes shared with export plus byte-stream outcomes, placeholders, and every relevant split boundary. Policy-bearing failures redact every diagnostic file and value for a candidate assigned an excluded sensitivity class. No init/write operation accepts an unchecked selector, environment fallback, configuration bypass, or approval prompt.
 
 ## CLI contract
 
-Initial commands:
+Release 0.1 commands are:
 
 ```text
-bookie init <path>
-bookie validate [path] [--base <git-ref>] [--format text|json]
-bookie create --type <type> --project <path> [--input <json-file>]
-bookie amend <uid-or-path> --input <json-file>
-bookie evidence add <file> --project <path> --supports <path...>
-bookie search <query> [filters] [--format text|json]
-bookie export jsonl --ref <git-ref> --output <file>
-bookie inspect <uid-or-path> [--format yaml|json]
+bookie validate --vault <path> [--base <git-ref>] [--format text|json]
+bookie search --vault <path> <query> [--type <type>] [--project <path>] [--status <status>] [--state <state>] [--sensitivity <class>] [--tag <tag>] [--format text|json]
+bookie inspect --vault <path> (--uid <uid> | --path <path>) [--format yaml|json]
 ```
 
-Commands that mutate require an explicit vault and report every changed path. Interactive prompting is deferred to the Pi extension. Before BK-012 exposes a mutating command, [OQ-009](../planning/open-questions.md#oq-009-pre-write-secret-detection-policy) must pin deterministic pre-write secret detection and redacted failure behavior; CLI diagnostics and logs must also omit excluded-sensitivity identifiers and content under REQ-026.
+`init`, `create`, `amend`, `evidence add`, and file-targeted `export jsonl` are intentionally unavailable under resolved OQ-011 and ADR-0008. Invocation attempts are unknown-command errors and must not reach policy-neutral or policy-bearing write APIs.
+
+Every `--vault` is an explicit existing local vault filesystem path; the CLI performs no upward search. Options are accepted only in the positions and combinations shown, each scalar option occurs exactly once, and unknown, duplicate, conflicting, or missing options are invocation errors. A search query beginning with `--` uses the exact form `bookie search --vault <path> -- <query> ...`; bare `--` elsewhere is invalid. Search filter flags map one-for-one to `FilesystemSearchFilters`. Inspect YAML success writes the exact bounded `sourceText`; JSON writes the full inspect result.
+
+Release 0.1 accepts no authoring `--input`. The exact deterministic authoring request contracts resolved by OQ-010 remain specified for a future mutating surface but are not CLI-reachable until OQ-011's revisit trigger is met. The CLI generates no canonical metadata.
+
+No release 0.1 CLI command calls a canonical mutation API. Interactive authoring remains deferred to a later accepted surface. No command exposes ADR-0006's low-level export or its unchecked policy. Canonical JSONL remains available through the core stream API for trusted composition; CLI file publication is deferred until ADR-0008's revisit trigger.
+
+`--format` defaults to `text`. JSON mode writes exactly one LF-terminated JSON object to stdout using the public core result plus a stable command name; it never writes progress or diagnostics to stdout. Text success writes bounded inert fields to stdout; search escapes control characters so each untrusted hit occupies one line and emits a static stderr notice when result or output truncation occurs. Failures write bounded static diagnostics to stderr; JSON mode may additionally write the machine result to stdout. Neither mode prints parser/filesystem errors, input source paths, secret-match details, or excluded identifiers/content. The CLI emits no application logs. `SIGINT` and `SIGTERM` abort the active core operation; cancellation before completion returns exit `1` with static `CLI-CANCELLED` and preserves the operation's no-partial-write contract.
 
 Exit codes:
 
@@ -493,6 +495,8 @@ Exit codes:
 - Every schema-valid initial type, complete unknown decoded metadata, accepted Unicode/date/empty values, and exact Markdown body survives canonical JSONL 1.0 mapping.
 - Invalid/incomplete snapshots, output bounds, and missing/undeclared sensitivity produce zero sink calls.
 - A mixed-sensitivity export retains included records but omits records assigned a class in `policy.sensitivity.excluded_classes`; excluded UIDs, paths, and marker content appear in neither JSONL nor export diagnostics or logs.
+- Policy-bearing create, amend, and Evidence capture reject detected secrets before publication with only static `WRITE-SECRET` at `<redacted>`; split resource signatures are detected and no CLI/Pi bypass exists.
+- Release 0.1 CLI has no filesystem-writing command; static/process tests prove deferred command names are unavailable and no CLI module imports mutation or export operations.
 - CLI stdout is machine-safe in JSON mode and diagnostics go to stderr.
 - No core test requires Pi, Redis, Docker, or a network connection.
 
@@ -500,9 +504,10 @@ Exit codes:
 
 - Unit tests for path resolution, normalization, diagnostics, identity, hashing, filters, canonical JSON serialization, exact-commit provenance, and sink accounting.
 - Golden round-trip fixtures with comments, unknown fields, multiline YAML, Unicode, and Markdown links.
-- Boundary tests for empty vaults, large concepts, duplicate IDs, broken links, malformed YAML, symlink escapes, and interrupted writes.
+- Boundary tests cover large concepts, duplicate IDs, broken links, malformed YAML, and symlink escapes.
 - Integration tests in temporary Git repositories for base-ref immutability.
-- CLI process tests covering output, stderr, exit codes, cancellation, and no-partial-write behavior.
+- CLI process tests cover output, stderr, exit codes, cancellation, and rejection of deferred filesystem-writing command names.
+- Pre-write core adversarial tests reuse the shared detector fixtures, split resource signatures across scan chunks, assert zero publication and static redaction, and permit documented placeholders and ordinary binary resources; static CLI tests deny imports or invocation of every mutation surface.
 - Mixed-sensitivity JSONL fixtures assert positive inclusion, fail-closed missing/undeclared classes, and excluded UID, path, content, diagnostic, and log omission.
 - Export tests cover all initial types, recursive key ordering, duplicate UIDs, malformed/unsafe commit trees, refs that move after resolution, worktree divergence, exact and one-over limits, cancellation, sink failure, packaged schema availability, and a 50,000-record scale probe.
 
@@ -512,6 +517,8 @@ Exit codes:
 - [ADR-0004](../architecture/decisions/0004-typescript-monorepo.md)
 - [ADR-0005](../architecture/decisions/0005-yaml-document-ast.md)
 - [ADR-0006](../architecture/decisions/0006-exact-commit-streaming-export.md)
+- [ADR-0007](../architecture/decisions/0007-fail-closed-write-secret-policy.md)
+- [ADR-0008](../architecture/decisions/0008-read-query-only-release-cli.md)
 - [Security architecture](../architecture/security.md)
 
 ## Delivery notes

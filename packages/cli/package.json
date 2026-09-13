@@ -2,5 +2,21 @@
   "name": "@bookie/cli",
   "version": "0.0.0",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "bin": {
+    "bookie": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "npm run build:force --workspace @bookie/core && tsc -b --force",
+    "build:force": "npm run build:force --workspace @bookie/core && tsc -b --force",
+    "prepack": "npm run build:force",
+    "test": "npm run build && node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@bookie/core": "0.0.0"
+  }
 }

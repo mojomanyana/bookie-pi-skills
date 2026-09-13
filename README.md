@@ -2,7 +2,7 @@
 
 Bookie is a local-first, Git-native project ledger for people and agents. It keeps tasks, documents, research, decisions, activity checkpoints, files, and evidence in an [Open Knowledge Format (OKF) v0.2](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)-compatible bundle and exposes disciplined workflows through a Pi extension.
 
-> **Status:** the canonical profile in [SPEC-001](docs/specs/001-canonical-ledger.md) is verified. Lossless loading, vault validation, conflict-safe mutation, Evidence capture, bounded filesystem search/inspect, deterministic exact-commit JSONL export through BK-011, and dependency/CI maintenance through BK-024 are merged and verified. No implementation item is Ready; BK-012 CLI delivery remains blocked by OQ-009's write-facing secret policy. See the ordered [backlog](docs/planning/backlog.md).
+> **Status:** the canonical profile in [SPEC-001](docs/specs/001-canonical-ledger.md) is verified. Lossless loading, vault validation, conflict-safe mutation, Evidence capture, bounded filesystem search/inspect, deterministic exact-commit JSONL export through BK-011, and dependency/CI maintenance through BK-024 are merged and verified. ADR-0007 and OQ-010 resolve the write-facing secret policy and deterministic authoring contract; ADR-0008 and resolved OQ-011 make BK-012 Ready with a validate/search/inspect-only CLI scope while all filesystem-writing commands remain deferred. See the ordered [backlog](docs/planning/backlog.md).
 
 ## Design commitments
 
@@ -15,13 +15,13 @@ Bookie is a local-first, Git-native project ledger for people and agents. It kee
 
 ## Start here
 
-| Reader | First documents |
-|---|---|
-| Any contributor or agent | [Agent guide](AGENTS.md), [documentation map](docs/INDEX.md) |
-| Product/brainstorming | [Vision](docs/product/vision.md), [requirements](docs/product/requirements.md), [open questions](docs/planning/open-questions.md) |
-| Architecture | [System overview](docs/architecture/overview.md), [ADRs](docs/architecture/decisions/) |
-| Planning | [Roadmap](docs/planning/roadmap.md), [backlog](docs/planning/backlog.md), active specification |
-| Implementation | [Specifications](docs/specs/), [definition of done](docs/planning/definition-of-done.md) |
+| Reader                   | First documents                                                                                                                   |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| Any contributor or agent | [Agent guide](AGENTS.md), [documentation map](docs/INDEX.md)                                                                      |
+| Product/brainstorming    | [Vision](docs/product/vision.md), [requirements](docs/product/requirements.md), [open questions](docs/planning/open-questions.md) |
+| Architecture             | [System overview](docs/architecture/overview.md), [ADRs](docs/architecture/decisions/)                                            |
+| Planning                 | [Roadmap](docs/planning/roadmap.md), [backlog](docs/planning/backlog.md), active specification                                    |
+| Implementation           | [Specifications](docs/specs/), [definition of done](docs/planning/definition-of-done.md)                                          |
 
 ## Repository commands
 

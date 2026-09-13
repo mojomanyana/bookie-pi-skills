@@ -70,73 +70,77 @@ function cloneYamlValue(
   if (seen.has(value)) return { ok: false, reason: "input" };
   seen.add(value);
 
-  if (Array.isArray(value)) {
-    const keys = Reflect.ownKeys(value).filter((key) => key !== "length");
-    if (
-      keys.some(
-        (key) =>
-          typeof key !== "string" ||
-          !/^(?:0|[1-9][0-9]*)$/u.test(key) ||
-          Number(key) >= value.length,
-      ) ||
-      keys.length !== value.length
-    ) {
+  try {
+    if (Array.isArray(value)) {
+      const keys = Reflect.ownKeys(value).filter((key) => key !== "length");
+      if (
+        keys.some(
+          (key) =>
+            typeof key !== "string" ||
+            !/^(?:0|[1-9][0-9]*)$/u.test(key) ||
+            Number(key) >= value.length,
+        ) ||
+        keys.length !== value.length
+      ) {
+        return { ok: false, reason: "input" };
+      }
+      if (!debitCloneBudget(budget, value.length + 2)) {
+        return { ok: false, reason: "bounds" };
+      }
+      const clone: ReadonlyYamlValue[] = [];
+      for (const child of value) {
+        const childDepth =
+          child !== null && typeof child === "object" ? depth + 1 : depth;
+        const result = cloneYamlValue(child, childDepth, limits, seen, budget);
+        if (!result.ok) return result;
+        clone.push(result.value);
+      }
+      return { ok: true, value: clone };
+    }
+
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
       return { ok: false, reason: "input" };
     }
-    if (!debitCloneBudget(budget, value.length + 2)) {
-      return { ok: false, reason: "bounds" };
-    }
-    const clone: ReadonlyYamlValue[] = [];
-    for (const child of value) {
+    const clone = Object.create(null) as Record<string, ReadonlyYamlValue>;
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key !== "string" || hasLoneSurrogate(key)) {
+        return { ok: false, reason: "input" };
+      }
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (
+        descriptor === undefined ||
+        !descriptor.enumerable ||
+        !("value" in descriptor)
+      ) {
+        return { ok: false, reason: "input" };
+      }
+      if (!debitCloneBudget(budget, utf8ByteLength(key) + 2)) {
+        return { ok: false, reason: "bounds" };
+      }
       const childDepth =
-        child !== null && typeof child === "object" ? depth + 1 : depth;
-      const result = cloneYamlValue(child, childDepth, limits, seen, budget);
+        descriptor.value !== null && typeof descriptor.value === "object"
+          ? depth + 1
+          : depth;
+      const result = cloneYamlValue(
+        descriptor.value,
+        childDepth,
+        limits,
+        seen,
+        budget,
+      );
       if (!result.ok) return result;
-      clone.push(result.value);
+      Object.defineProperty(clone, key, {
+        value: result.value,
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
     }
     return { ok: true, value: clone };
+  } finally {
+    seen.delete(value);
   }
-
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) {
-    return { ok: false, reason: "input" };
-  }
-  const clone = Object.create(null) as Record<string, ReadonlyYamlValue>;
-  for (const key of Reflect.ownKeys(value)) {
-    if (typeof key !== "string" || hasLoneSurrogate(key)) {
-      return { ok: false, reason: "input" };
-    }
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (
-      descriptor === undefined ||
-      !descriptor.enumerable ||
-      !("value" in descriptor)
-    ) {
-      return { ok: false, reason: "input" };
-    }
-    if (!debitCloneBudget(budget, utf8ByteLength(key) + 2)) {
-      return { ok: false, reason: "bounds" };
-    }
-    const childDepth =
-      descriptor.value !== null && typeof descriptor.value === "object"
-        ? depth + 1
-        : depth;
-    const result = cloneYamlValue(
-      descriptor.value,
-      childDepth,
-      limits,
-      seen,
-      budget,
-    );
-    if (!result.ok) return result;
-    Object.defineProperty(clone, key, {
-      value: result.value,
-      enumerable: true,
-      writable: true,
-      configurable: true,
-    });
-  }
-  return { ok: true, value: clone };
 }
 
 function cloneYamlInputWithBudget(
