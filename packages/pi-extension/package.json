@@ -5,5 +5,27 @@
   "type": "module",
   "keywords": [
     "pi-package"
-  ]
+  ],
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
+  "scripts": {
+    "build": "npm run build:force --workspace @bookie/core && tsc -b --force",
+    "prepack": "npm run build",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "typecheck": "tsc -b --pretty false"
+  },
+  "dependencies": {
+    "@bookie/core": "0.0.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  }
 }
