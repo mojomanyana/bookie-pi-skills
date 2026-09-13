@@ -2,7 +2,7 @@
 
 ## Status
 
-In progress — behavior through BK-011 is merged and verified; resolved OQ-011 makes the reduced read-only BK-012 CLI delivery Ready
+Verified — behavior through the reduced read/query-only BK-012 scope is merged and verified; filesystem-writing CLI commands remain deferred under ADR-0008
 
 Owner: unassigned  
 Target release: 0.1  

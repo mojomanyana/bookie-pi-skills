@@ -518,7 +518,7 @@ test("backlog dependencies, states, and completion evidence stay coherent", () =
   }
 });
 
-test("BK-012 has an accepted read-only CLI contract", () => {
+test("BK-012 delivered the accepted read-only CLI contract", () => {
   const backlog = readFileSync(
     resolve(root, "docs/planning/backlog.md"),
     "utf8",
@@ -535,8 +535,13 @@ test("BK-012 has an accepted read-only CLI contract", () => {
   assert.match(openQuestions, /## OQ-010:[\s\S]*\*\*State:\*\* Resolved/u);
   assert.match(openQuestions, /## OQ-011:[\s\S]*\*\*State:\*\* Resolved/u);
   const backlogRow = backlog.match(/^\| BK-012 .*$/mu)?.[0] ?? "";
-  assert.match(backlogRow, /^\| BK-012 \| Ready\s+\|/u);
+  assert.match(backlogRow, /^\| BK-012 \| Done\s+\|/u);
+  assert.match(backlogRow, /\[evidence\]\(evidence\/BK-012\.md\)/u);
   assert.doesNotMatch(backlogRow.split("|")[5] ?? "", /OQ-011/u);
+  assert.match(
+    backlog.match(/^\| BK-013 .*$/mu)?.[0] ?? "",
+    /^\| BK-013 \| Ready\s+\|/u,
+  );
   for (const command of [
     "init",
     "create",
