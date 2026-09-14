@@ -1004,27 +1004,83 @@ test("parallel staging retains exactly one pending checkpoint", async (t) => {
     rejection.reason.message,
     "Bookie checkpoint is already staged.",
   );
-  await assert.rejects(
-    checkpoint.execute(
-      "already-staged",
-      {
-        vault,
-        requestPath: join(parent, "missing-secret-request.json"),
-        timing: "before-compaction",
-      },
-      undefined,
-      undefined,
-      context(repositoryRoot),
-    ),
-    (error) => {
-      assert.equal(error.message, "Bookie checkpoint is already staged.");
-      return true;
+  for (const params of [
+    {
+      vault,
+      requestPath: join(parent, "missing-staged-request.json"),
+      timing: "before-compaction",
     },
-  );
+    {
+      vault,
+      requestPath: join(parent, "missing-immediate-request.json"),
+      timing: "now",
+      approval: "explicit",
+    },
+  ]) {
+    await assert.rejects(
+      checkpoint.execute(
+        "already-staged",
+        params,
+        undefined,
+        undefined,
+        context(repositoryRoot),
+      ),
+      (error) => {
+        assert.equal(error.message, "Bookie checkpoint is already staged.");
+        return true;
+      },
+    );
+  }
   await extension.handlers.get("session_shutdown")[0](
     {},
     context(repositoryRoot),
   );
+});
+
+test("parallel immediate checkpoints reserve one session slot", async (t) => {
+  const vault = await temporaryVault(t);
+  const parent = resolve(vault, "..");
+  const requests = [];
+  for (const [name, uid] of [
+    ["immediate-one", "ACT-00000000000000000000000176"],
+    ["immediate-two", "ACT-00000000000000000000000177"],
+  ]) {
+    const requestPath = join(parent, `${name}.json`);
+    const request = checkpointRequest(`projects/fixture/activities/${name}.md`);
+    request.frontmatter.bookie.uid = uid;
+    await writeFile(requestPath, JSON.stringify(request));
+    requests.push({ requestPath, request });
+  }
+  const checkpoint = toolNamed(registeredTools(), "bookie_checkpoint");
+  const results = await Promise.allSettled(
+    requests.map(({ requestPath }) =>
+      checkpoint.execute(
+        "parallel-immediate",
+        { vault, requestPath, timing: "now", approval: "explicit" },
+        undefined,
+        undefined,
+        context(repositoryRoot),
+      ),
+    ),
+  );
+  assert.equal(
+    results.filter(({ status }) => status === "fulfilled").length,
+    1,
+  );
+  assert.equal(
+    results.find(({ status }) => status === "rejected").reason.message,
+    "Bookie checkpoint is already staged.",
+  );
+  let published = 0;
+  for (const { request } of requests) {
+    try {
+      await readFile(join(vault, request.path));
+      published += 1;
+    } catch (error) {
+      assert.equal(error.code, "ENOENT");
+    }
+  }
+  assert.equal(published, 1);
 });
 
 test("staged checkpoint remains reserved through its approval dialog", async (t) => {
