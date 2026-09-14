@@ -21,18 +21,18 @@ Open questions are not permission to guess. Resolve them by the listed deadline,
 
 ## OQ-003: Initial service authentication
 
-- **State:** Open; blocks service protocol acceptance.
+- **State:** Resolved 2026-09-15 by [ADR-0010](../architecture/decisions/0010-service-protocol-auth-and-projection.md) with deployment-owner approval.
 - **Question:** Should the first small-team deployment use per-user opaque tokens, reverse-proxy identity headers, or OIDC directly?
-- **Current direction:** Prefer short-lived identity from a private reverse proxy if an existing identity provider is available; otherwise hashed scoped tokens.
-- **Decision deadline:** Before BK-016.
+- **Decision:** Use standalone random opaque bearer tokens with digest-only verifier entries, expiration/revocation, constant-time comparison, separate admin credentials, and server-side per-vault scopes. Default Compose is loopback-only; remote access requires TLS ingress. A future verified reverse-proxy identity adapter may map to the same grants.
+- **Revisit trigger:** An identity-aware ingress already exists, more than 15 users require centralized lifecycle, or policy requires MFA or proof of possession.
 - **Owner:** Service architect and deployment owner.
 
 ## OQ-004: HTTP service framework
 
-- **State:** Open; blocks service runtime scaffolding.
+- **State:** Resolved 2026-09-15 by [ADR-0010](../architecture/decisions/0010-service-protocol-auth-and-projection.md) with repository-owner approval.
 - **Question:** Use Node's native HTTP stack, Fastify, or another maintained minimal framework?
-- **Current direction:** Compare cancellation, schema integration, security history, observability, and dependency cost; do not choose on benchmark throughput alone.
-- **Decision deadline:** Before BK-016.
+- **Decision:** Use the maintained Fastify major compatible with Node 24 for strict route schemas and lifecycle hooks. Bookie still owns composed cancellation, static redacted errors, safe explicit logs, dependency deadlines, and schema/plugin compatibility tests.
+- **Revisit trigger:** Maintained Node 24 support, required cancellation hooks, or strict schema/error behavior regresses.
 - **Owner:** Service implementer.
 
 ## OQ-005: Attachment policy defaults

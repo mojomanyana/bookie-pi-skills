@@ -13,7 +13,7 @@ This page is the stable entry point for product and engineering context.
 - [Data model](architecture/data-model.md) — OKF envelope, Bookie profile, entity rules, evidence, and audit semantics.
 - [Retrieval](architecture/retrieval.md) — derived indexing, ranking, embeddings, migration, and observability.
 - [Security](architecture/security.md) — assets, trust boundaries, threats, and controls.
-- [Architecture decisions](architecture/decisions/) — accepted load-bearing decisions.
+- [Architecture decisions](architecture/decisions/) — accepted load-bearing decisions, including the [service protocol, auth, and projection design](architecture/decisions/0010-service-protocol-auth-and-projection.md).
 
 ## Delivery
 
@@ -56,6 +56,7 @@ This page is the stable entry point for product and engineering context.
 - [Core filesystem search and inspect](../packages/core/src/filesystem-query.ts) and [tests](../packages/core/test/filesystem-query.test.mjs)
 - [Core canonical JSONL export](../packages/core/src/canonical-export.ts), [record schema](../schemas/export/1.0/canonical-record.schema.json), and [tests](../packages/core/test/canonical-export.test.mjs)
 - [Core concept mutation](../packages/core/src/concept-mutation.ts) and [tests](../packages/core/test/concept-mutation.test.mjs)
+- [Service protocol v1 schema](../schemas/service/v1/protocol.schema.json) and [contract tests](../test/service-design-contract.test.mjs)
 - [Example vault](../examples/vault/)
 - [Repository contract tests](../test/repository.test.mjs)
 
