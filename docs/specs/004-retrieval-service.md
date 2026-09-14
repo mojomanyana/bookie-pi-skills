@@ -2,7 +2,7 @@
 
 ## Status
 
-Ready — BK-016 service design accepted; BK-017 lexical implementation is next
+In progress — BK-016 service design is merged and verified; BK-017 authenticated lexical indexing/search is Ready
 
 Owner: service implementer
 

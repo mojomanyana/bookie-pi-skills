@@ -46,9 +46,10 @@ test("BK-016 records the accepted service architecture and advances lexical work
 
   const bk016 = backlog.match(/^\| BK-016 .*$/mu)?.[0] ?? "";
   const bk017 = backlog.match(/^\| BK-017 .*$/mu)?.[0] ?? "";
-  assert.match(bk016, /^\| BK-016 \| Ready\s+\|/u);
+  assert.match(bk016, /^\| BK-016 \| Done\s+\|/u);
+  assert.match(bk016, /\[evidence\]\(evidence\/BK-016\.md\)/u);
   assert.doesNotMatch(bk016.split("|")[5] ?? "", /OQ-00[34]/u);
-  assert.match(bk017, /^\| BK-017 \| Blocked\s+\|/u);
+  assert.match(bk017, /^\| BK-017 \| Ready\s+\|/u);
 });
 
 test("service protocol schema is strict and covers success, error, and boundaries", () => {
