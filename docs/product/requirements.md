@@ -27,7 +27,7 @@ These requirements are authoritative. Specifications may refine them but may not
 | ID | Requirement |
 |---|---|
 | REQ-011 | Durable writes shall occur only after an explicit user request or approval. |
-| REQ-012 | Checkpoints shall summarize outcomes, changed artifacts, decisions, evidence, unresolved work, and source session identity without requiring full transcript storage. |
+| REQ-012 | Checkpoints shall summarize outcomes, changed artifacts, decisions, evidence, validation, unresolved work, next action, and source session identity when available, using structured sensitivity-labelled fragments rather than full transcript storage. |
 | REQ-013 | Bookie tools and hooks shall never commit or push automatically. |
 | REQ-014 | Pi shall expose stable read, search, write, checkpoint, validate, and export capabilities through a custom extension. |
 | REQ-015 | File mutations shall be atomic with respect to concurrent Pi tool mutations of the same target. |

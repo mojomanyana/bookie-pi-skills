@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -20,10 +29,22 @@ async function temporaryVault(t) {
   return vault;
 }
 
-function registeredTools() {
+function registeredExtension() {
   const tools = [];
-  registerBookie({ registerTool: (tool) => tools.push(tool) });
-  return tools;
+  const handlers = new Map();
+  registerBookie({
+    registerTool: (tool) => tools.push(tool),
+    on: (event, handler) => {
+      const values = handlers.get(event) ?? [];
+      values.push(handler);
+      handlers.set(event, values);
+    },
+  });
+  return { tools, handlers };
+}
+
+function registeredTools() {
+  return registeredExtension().tools;
 }
 
 function toolNamed(tools, name) {
@@ -43,15 +64,55 @@ const context = (cwd, overrides = {}) => ({
   mode: "print",
   hasUI: false,
   isProjectTrusted: () => true,
-  ui: { confirm: async () => false },
+  ui: { confirm: async () => false, notify: () => {} },
   ...overrides,
 });
+
+const checkpointSections = [
+  "outcome",
+  "changed-artifacts",
+  "decisions",
+  "evidence",
+  "validation",
+  "unresolved-work",
+  "next-action",
+];
+
+function checkpointRequest(path = "projects/fixture/activities/session.md") {
+  return {
+    path,
+    frontmatter: {
+      type: "Activity",
+      title: "Session checkpoint",
+      status: "stable",
+      generated: { by: "human:test", at: "2026-09-14T13:00:00Z" },
+      bookie: {
+        profile: "1.0",
+        uid: "ACT-00000000000000000000000160",
+        project: "/projects/fixture/project.md",
+        occurred_at: "2026-09-14T13:00:00Z",
+        sensitivity: "public",
+      },
+    },
+    fragments: checkpointSections.map((section) => ({
+      section,
+      sensitivity: "public",
+      text: `Included ${section}.`,
+    })),
+  };
+}
 
 test("extension registers the BK-013 read-only tool contracts", () => {
   const tools = registeredTools();
   assert.deepEqual(
     tools.map(({ name }) => name),
-    ["bookie_read", "bookie_search", "bookie_validate", "bookie_write"],
+    [
+      "bookie_read",
+      "bookie_search",
+      "bookie_validate",
+      "bookie_write",
+      "bookie_checkpoint",
+    ],
   );
   for (const tool of tools) {
     assert.equal(tool.parameters.additionalProperties, false);
@@ -65,6 +126,10 @@ test("extension registers the BK-013 read-only tool contracts", () => {
   assert.deepEqual(
     toolNamed(tools, "bookie_write").parameters.properties.action.enum,
     ["create", "amend"],
+  );
+  assert.deepEqual(
+    toolNamed(tools, "bookie_checkpoint").parameters.properties.timing.enum,
+    ["now", "before-compaction"],
   );
 });
 
@@ -327,10 +392,19 @@ test("local and Git package manifests expose the built extension", async (t) => 
   );
   const installed = await import(`${builtExtension}?smoke=${Date.now()}`);
   const installedTools = [];
-  installed.default({ registerTool: (tool) => installedTools.push(tool) });
+  installed.default({
+    registerTool: (tool) => installedTools.push(tool),
+    on: () => {},
+  });
   assert.deepEqual(
     installedTools.map(({ name }) => name),
-    ["bookie_read", "bookie_search", "bookie_validate", "bookie_write"],
+    [
+      "bookie_read",
+      "bookie_search",
+      "bookie_validate",
+      "bookie_write",
+      "bookie_checkpoint",
+    ],
   );
 });
 
@@ -619,6 +693,689 @@ test("write rejects malformed and secret request files without publication", asy
   });
 });
 
+test("checkpoint preview and Activity omit excluded context before approval", async (t) => {
+  const vault = await temporaryVault(t);
+  const manifestPath = join(vault, "bookie.yaml");
+  await writeFile(
+    manifestPath,
+    (await readFile(manifestPath, "utf8"))
+      .replace("      - public\n", "      - public\n      - restricted\n")
+      .replace(
+        "    excluded_classes: []",
+        "    excluded_classes:\n      - restricted",
+      ),
+  );
+  const parent = resolve(vault, "..");
+  const externalPathSecret = ["sk-", "1234567890abcdefghijklmnopqrstuv"].join(
+    "",
+  );
+  const requestPath = join(parent, `${externalPathSecret}.json`);
+  const excluded = {
+    uid: "TSK-00000000000000000000000998",
+    path: "/projects/private/excluded.md",
+    marker: "EXCLUDED-CHECKPOINT-MARKER",
+  };
+  const request = checkpointRequest();
+  request.fragments.push({
+    section: "outcome",
+    sensitivity: "restricted",
+    text: `${excluded.uid} ${excluded.path} ${excluded.marker}`,
+  });
+  await writeFile(requestPath, JSON.stringify(request));
+  const checkpoint = toolNamed(registeredTools(), "bookie_checkpoint");
+  await assert.rejects(
+    checkpoint.execute(
+      "no-ui",
+      {
+        vault,
+        requestPath: join(parent, "missing.json"),
+        timing: "now",
+        approval: "confirm",
+      },
+      undefined,
+      undefined,
+      context(repositoryRoot),
+    ),
+    /requires explicit approval in non-interactive mode/u,
+  );
+
+  const target = join(vault, request.path);
+  let declinedMessage = "";
+  const declined = await checkpoint.execute(
+    "declined",
+    { vault, requestPath, timing: "now", approval: "confirm" },
+    undefined,
+    undefined,
+    context(repositoryRoot, {
+      mode: "tui",
+      hasUI: true,
+      ui: {
+        confirm: async (_title, message) => {
+          declinedMessage = message;
+          return false;
+        },
+        notify: () => {},
+      },
+    }),
+  );
+  assert.equal(JSON.parse(textResult(declined)).result.status, "declined");
+  assert.match(declinedMessage, /Included outcome\./u);
+  assert.equal(declinedMessage.includes(externalPathSecret), false);
+  assert.equal(declinedMessage.includes(requestPath), false);
+  assert.equal(declinedMessage.includes(vault), false);
+  for (const value of Object.values(excluded)) {
+    assert.equal(declinedMessage.includes(value), false);
+  }
+  await assert.rejects(readFile(target), { code: "ENOENT" });
+
+  let releaseQueue;
+  let queueEntered;
+  const entered = new Promise((resolve) => {
+    queueEntered = resolve;
+  });
+  const gate = new Promise((resolve) => {
+    releaseQueue = resolve;
+  });
+  const blocker = withFileMutationQueue(target, async () => {
+    queueEntered();
+    await gate;
+  });
+  await entered;
+  let settled = false;
+  const pendingWrite = checkpoint
+    .execute(
+      "approved",
+      { vault, requestPath, timing: "now", approval: "confirm" },
+      undefined,
+      undefined,
+      context(repositoryRoot, {
+        mode: "tui",
+        hasUI: true,
+        ui: { confirm: async () => true, notify: () => {} },
+      }),
+    )
+    .finally(() => {
+      settled = true;
+    });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(settled, false);
+  await assert.rejects(readFile(target), { code: "ENOENT" });
+  releaseQueue();
+  await blocker;
+  const written = await pendingWrite;
+  const writtenOutput = textResult(written);
+  const activity = await readFile(target, "utf8");
+  assert.match(writtenOutput, /"status":"created"/u);
+  assert.match(activity, /Included outcome\./u);
+  for (const value of Object.values(excluded)) {
+    assert.equal(writtenOutput.includes(value), false);
+    assert.equal(activity.includes(value), false);
+  }
+});
+
+test("staged checkpoint hook continues compaction on no UI or decline and writes on approval", async (t) => {
+  const vault = await temporaryVault(t);
+  const parent = resolve(vault, "..");
+  const requestPath = join(parent, "staged.json");
+  const request = checkpointRequest(
+    "projects/fixture/activities/staged-session.md",
+  );
+  request.frontmatter.bookie.uid = "ACT-00000000000000000000000161";
+  await writeFile(requestPath, JSON.stringify(request));
+
+  const extension = registeredExtension();
+  const checkpoint = toolNamed(extension.tools, "bookie_checkpoint");
+  const beforeCompact = extension.handlers.get("session_before_compact")?.[0];
+  const shutdown = extension.handlers.get("session_shutdown")?.[0];
+  assert.equal(typeof beforeCompact, "function");
+  assert.equal(typeof shutdown, "function");
+  assert.equal(extension.handlers.has("agent_end"), false);
+  assert.equal(extension.handlers.has("agent_settled"), false);
+
+  const staged = await checkpoint.execute(
+    "stage",
+    { vault, requestPath, timing: "before-compaction" },
+    undefined,
+    undefined,
+    context(repositoryRoot),
+  );
+  assert.equal(JSON.parse(textResult(staged)).result.status, "staged");
+  const secondRequestPath = join(parent, "second-staged.json");
+  const secondRequest = checkpointRequest(
+    "projects/fixture/activities/second-staged.md",
+  );
+  secondRequest.frontmatter.bookie.uid = "ACT-00000000000000000000000169";
+  await writeFile(secondRequestPath, JSON.stringify(secondRequest));
+  await assert.rejects(
+    checkpoint.execute(
+      "second-stage",
+      { vault, requestPath: secondRequestPath, timing: "before-compaction" },
+      undefined,
+      undefined,
+      context(repositoryRoot),
+    ),
+    /Bookie checkpoint is already staged\./u,
+  );
+  const target = join(vault, request.path);
+  assert.equal(
+    await beforeCompact({ signal: undefined }, context(repositoryRoot)),
+    undefined,
+  );
+  await assert.rejects(readFile(target), { code: "ENOENT" });
+
+  const notices = [];
+  assert.equal(
+    await beforeCompact(
+      { signal: undefined },
+      context(repositoryRoot, {
+        mode: "tui",
+        hasUI: true,
+        ui: {
+          confirm: async () => false,
+          notify: (message) => notices.push(message),
+        },
+      }),
+    ),
+    undefined,
+  );
+  await assert.rejects(readFile(target), { code: "ENOENT" });
+
+  await checkpoint.execute(
+    "stage-for-cancellation",
+    { vault, requestPath, timing: "before-compaction" },
+    undefined,
+    undefined,
+    context(repositoryRoot),
+  );
+  const controller = new AbortController();
+  let confirmationStarted;
+  const started = new Promise((resolve) => {
+    confirmationStarted = resolve;
+  });
+  const cancelledHook = beforeCompact(
+    { signal: controller.signal },
+    context(repositoryRoot, {
+      mode: "tui",
+      hasUI: true,
+      ui: {
+        confirm: async (_title, _message, options) => {
+          confirmationStarted();
+          return new Promise((_resolve, reject) => {
+            options.signal.addEventListener(
+              "abort",
+              () => reject(options.signal.reason),
+              { once: true },
+            );
+          });
+        },
+        notify: (message) => notices.push(message),
+      },
+    }),
+  );
+  await started;
+  controller.abort();
+  assert.equal(await cancelledHook, undefined);
+  await assert.rejects(readFile(target), { code: "ENOENT" });
+  assert.match(notices.at(-1), /cancelled/u);
+
+  await checkpoint.execute(
+    "restage",
+    { vault, requestPath, timing: "before-compaction" },
+    undefined,
+    undefined,
+    context(repositoryRoot),
+  );
+  assert.equal(
+    await beforeCompact(
+      { signal: undefined },
+      context(repositoryRoot, {
+        mode: "tui",
+        hasUI: true,
+        ui: {
+          confirm: async (_title, message) => {
+            assert.match(message, /Included outcome\./u);
+            return true;
+          },
+          notify: (message) => notices.push(message),
+        },
+      }),
+    ),
+    undefined,
+  );
+  assert.match(await readFile(target, "utf8"), /Included next-action\./u);
+  assert.ok(notices.every((message) => !message.includes(request.path)));
+
+  await shutdown({}, context(repositoryRoot));
+  await shutdown({}, context(repositoryRoot));
+  assert.equal(
+    await beforeCompact(
+      { signal: undefined },
+      context(repositoryRoot, {
+        mode: "tui",
+        hasUI: true,
+        ui: {
+          confirm: async () => {
+            throw new Error("no prepared checkpoint should prompt");
+          },
+          notify: (message) => notices.push(message),
+        },
+      }),
+    ),
+    undefined,
+  );
+  assert.match(notices.at(-1), /No prepared Bookie checkpoint/u);
+});
+
+test("parallel staging retains exactly one pending checkpoint", async (t) => {
+  const vault = await temporaryVault(t);
+  const parent = resolve(vault, "..");
+  const paths = [];
+  for (const [index, uid] of [
+    ["one", "ACT-00000000000000000000000170"],
+    ["two", "ACT-00000000000000000000000171"],
+  ]) {
+    const requestPath = join(parent, `parallel-${index}.json`);
+    const request = checkpointRequest(
+      `projects/fixture/activities/parallel-${index}.md`,
+    );
+    request.frontmatter.bookie.uid = uid;
+    await writeFile(requestPath, JSON.stringify(request));
+    paths.push(requestPath);
+  }
+  const extension = registeredExtension();
+  const checkpoint = toolNamed(extension.tools, "bookie_checkpoint");
+  const results = await Promise.allSettled(
+    paths.map((requestPath) =>
+      checkpoint.execute(
+        "parallel-stage",
+        { vault, requestPath, timing: "before-compaction" },
+        undefined,
+        undefined,
+        context(repositoryRoot),
+      ),
+    ),
+  );
+  assert.equal(
+    results.filter(({ status }) => status === "fulfilled").length,
+    1,
+  );
+  const rejection = results.find(({ status }) => status === "rejected");
+  assert.equal(
+    rejection.reason.message,
+    "Bookie checkpoint is already staged.",
+  );
+  await assert.rejects(
+    checkpoint.execute(
+      "already-staged",
+      {
+        vault,
+        requestPath: join(parent, "missing-secret-request.json"),
+        timing: "before-compaction",
+      },
+      undefined,
+      undefined,
+      context(repositoryRoot),
+    ),
+    (error) => {
+      assert.equal(error.message, "Bookie checkpoint is already staged.");
+      return true;
+    },
+  );
+  await extension.handlers.get("session_shutdown")[0](
+    {},
+    context(repositoryRoot),
+  );
+});
+
+test("staged checkpoint remains reserved through its approval dialog", async (t) => {
+  const vault = await temporaryVault(t);
+  const parent = resolve(vault, "..");
+  const firstPath = join(parent, "processing-first.json");
+  const secondPath = join(parent, "processing-second.json");
+  const first = checkpointRequest(
+    "projects/fixture/activities/processing-first.md",
+  );
+  first.frontmatter.bookie.uid = "ACT-00000000000000000000000172";
+  const second = checkpointRequest(
+    "projects/fixture/activities/processing-second.md",
+  );
+  second.frontmatter.bookie.uid = "ACT-00000000000000000000000173";
+  await writeFile(firstPath, JSON.stringify(first));
+  await writeFile(secondPath, JSON.stringify(second));
+  const extension = registeredExtension();
+  const checkpoint = toolNamed(extension.tools, "bookie_checkpoint");
+  await checkpoint.execute(
+    "processing-first",
+    { vault, requestPath: firstPath, timing: "before-compaction" },
+    undefined,
+    undefined,
+    context(repositoryRoot),
+  );
+  let releaseConfirmation;
+  let confirmationEntered;
+  const entered = new Promise((resolve) => {
+    confirmationEntered = resolve;
+  });
+  const gate = new Promise((resolve) => {
+    releaseConfirmation = resolve;
+  });
+  const hook = extension.handlers.get("session_before_compact")[0](
+    { signal: undefined },
+    context(repositoryRoot, {
+      mode: "tui",
+      hasUI: true,
+      ui: {
+        confirm: async () => {
+          confirmationEntered();
+          await gate;
+          return false;
+        },
+        notify: () => {},
+      },
+    }),
+  );
+  await entered;
+  await assert.rejects(
+    checkpoint.execute(
+      "processing-second",
+      { vault, requestPath: secondPath, timing: "before-compaction" },
+      undefined,
+      undefined,
+      context(repositoryRoot),
+    ),
+    /Bookie checkpoint is already staged\./u,
+  );
+  releaseConfirmation();
+  await hook;
+  const staged = await checkpoint.execute(
+    "processing-second-after-decline",
+    { vault, requestPath: secondPath, timing: "before-compaction" },
+    undefined,
+    undefined,
+    context(repositoryRoot),
+  );
+  assert.equal(JSON.parse(textResult(staged)).result.status, "staged");
+  await extension.handlers.get("session_shutdown")[0](
+    {},
+    context(repositoryRoot),
+  );
+});
+
+test("checkpoint rejects previews beyond Pi's line limit before staging", async (t) => {
+  const vault = await temporaryVault(t);
+  const parent = resolve(vault, "..");
+  const requestPath = join(parent, "too-many-lines.json");
+  const request = checkpointRequest(
+    "projects/fixture/activities/too-many-lines.md",
+  );
+  request.frontmatter.bookie.uid = "ACT-00000000000000000000000174";
+  request.fragments = request.fragments.map((fragment) => ({
+    ...fragment,
+    text: Array.from({ length: 300 }, () => "x").join("\n"),
+  }));
+  await writeFile(requestPath, JSON.stringify(request));
+  const extension = registeredExtension();
+  const checkpoint = toolNamed(extension.tools, "bookie_checkpoint");
+  await assert.rejects(
+    checkpoint.execute(
+      "too-many-lines",
+      { vault, requestPath, timing: "before-compaction" },
+      undefined,
+      undefined,
+      context(repositoryRoot),
+    ),
+    /Bookie checkpoint failed: bounds\./u,
+  );
+
+  const validPath = join(parent, "after-too-many-lines.json");
+  const valid = checkpointRequest(
+    "projects/fixture/activities/after-too-many-lines.md",
+  );
+  valid.frontmatter.bookie.uid = "ACT-00000000000000000000000175";
+  await writeFile(validPath, JSON.stringify(valid));
+  const staged = await checkpoint.execute(
+    "after-too-many-lines",
+    { vault, requestPath: validPath, timing: "before-compaction" },
+    undefined,
+    undefined,
+    context(repositoryRoot),
+  );
+  assert.equal(JSON.parse(textResult(staged)).result.status, "staged");
+  await extension.handlers.get("session_shutdown")[0](
+    {},
+    context(repositoryRoot),
+  );
+});
+
+test("staged checkpoint rejects sensitivity changes while waiting in Pi's queue", async (t) => {
+  const vault = await temporaryVault(t);
+  const manifestPath = join(vault, "bookie.yaml");
+  await writeFile(
+    manifestPath,
+    (await readFile(manifestPath, "utf8")).replace(
+      "      - public\n",
+      "      - public\n      - restricted\n",
+    ),
+  );
+  const parent = resolve(vault, "..");
+  const requestPath = join(parent, "policy-change.json");
+  const request = checkpointRequest(
+    "projects/fixture/activities/policy-change.md",
+  );
+  request.frontmatter.bookie.uid = "ACT-00000000000000000000000162";
+  request.fragments[0].sensitivity = "restricted";
+  request.fragments[0].text = "RESTRICTED-RACE-MARKER";
+  await writeFile(requestPath, JSON.stringify(request));
+  const extension = registeredExtension();
+  await toolNamed(extension.tools, "bookie_checkpoint").execute(
+    "stage-policy",
+    { vault, requestPath, timing: "before-compaction" },
+    undefined,
+    undefined,
+    context(repositoryRoot),
+  );
+  const target = join(vault, request.path);
+  let releaseQueue;
+  let queueEntered;
+  const entered = new Promise((resolve) => {
+    queueEntered = resolve;
+  });
+  const gate = new Promise((resolve) => {
+    releaseQueue = resolve;
+  });
+  const blocker = withFileMutationQueue(target, async () => {
+    queueEntered();
+    await gate;
+  });
+  await entered;
+  const notices = [];
+  const pendingHook = extension.handlers.get("session_before_compact")[0](
+    { signal: new AbortController().signal },
+    context(repositoryRoot, {
+      mode: "tui",
+      hasUI: true,
+      ui: {
+        confirm: async () => true,
+        notify: (message) => notices.push(message),
+      },
+    }),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  await writeFile(
+    manifestPath,
+    (await readFile(manifestPath, "utf8")).replace(
+      "    excluded_classes: []",
+      "    excluded_classes:\n      - restricted",
+    ),
+  );
+  releaseQueue();
+  await blocker;
+  await pendingHook;
+  await assert.rejects(readFile(target), { code: "ENOENT" });
+  assert.deepEqual(notices, [
+    "Bookie checkpoint failed; compaction will continue.",
+  ]);
+});
+
+test("checkpoint approval is bound to the resolved vault identity", async (t) => {
+  const originalVault = await temporaryVault(t);
+  const parent = resolve(originalVault, "..");
+  const replacementVault = join(parent, "replacement-vault");
+  await cp(fixture, replacementVault, { recursive: true });
+  const selectedVault = join(parent, "selected-vault");
+  await symlink(originalVault, selectedVault, "dir");
+  const requestPath = join(parent, "root-race.json");
+  const request = checkpointRequest("projects/fixture/activities/root-race.md");
+  request.frontmatter.bookie.uid = "ACT-00000000000000000000000163";
+  await writeFile(requestPath, JSON.stringify(request));
+  const checkpoint = toolNamed(registeredTools(), "bookie_checkpoint");
+  await assert.rejects(
+    checkpoint.execute(
+      "root-race",
+      {
+        vault: selectedVault,
+        requestPath,
+        timing: "now",
+        approval: "confirm",
+      },
+      undefined,
+      undefined,
+      context(repositoryRoot, {
+        mode: "tui",
+        hasUI: true,
+        ui: {
+          confirm: async (_title, message) => {
+            assert.match(
+              message,
+              /projects\/fixture\/activities\/root-race\.md/u,
+            );
+            assert.equal(message.includes(originalVault), false);
+            assert.equal(message.includes(selectedVault), false);
+            assert.equal(message.includes(requestPath), false);
+            await rm(selectedVault);
+            await symlink(replacementVault, selectedVault, "dir");
+            return true;
+          },
+          notify: () => {},
+        },
+      }),
+    ),
+    /Bookie checkpoint failed: MUTATION-CONFLICT\./u,
+  );
+  for (const vault of [originalVault, replacementVault]) {
+    await assert.rejects(readFile(join(vault, request.path)), {
+      code: "ENOENT",
+    });
+  }
+
+  await rm(selectedVault);
+  await symlink(originalVault, selectedVault, "dir");
+  const stagedRequest = checkpointRequest(
+    "projects/fixture/activities/staged-root-race.md",
+  );
+  stagedRequest.frontmatter.bookie.uid = "ACT-00000000000000000000000164";
+  await writeFile(requestPath, JSON.stringify(stagedRequest));
+  const extension = registeredExtension();
+  await toolNamed(extension.tools, "bookie_checkpoint").execute(
+    "stage-root-race",
+    { vault: selectedVault, requestPath, timing: "before-compaction" },
+    undefined,
+    undefined,
+    context(repositoryRoot),
+  );
+  await rm(selectedVault);
+  await symlink(replacementVault, selectedVault, "dir");
+  const notices = [];
+  await extension.handlers.get("session_before_compact")[0](
+    { signal: new AbortController().signal },
+    context(repositoryRoot, {
+      mode: "tui",
+      hasUI: true,
+      ui: {
+        confirm: async () => true,
+        notify: (message) => notices.push(message),
+      },
+    }),
+  );
+  assert.deepEqual(notices, [
+    "Bookie checkpoint failed; compaction will continue.",
+  ]);
+  for (const vault of [originalVault, replacementVault]) {
+    await assert.rejects(readFile(join(vault, stagedRequest.path)), {
+      code: "ENOENT",
+    });
+  }
+});
+
+test("checkpoint approval rejects target-parent substitution", async (t) => {
+  const vault = await temporaryVault(t);
+  const parent = resolve(vault, "..");
+  const requestPath = join(parent, "parent-race.json");
+  const request = checkpointRequest(
+    "projects/fixture/activities/parent-race.md",
+  );
+  request.frontmatter.bookie.uid = "ACT-00000000000000000000000165";
+  await writeFile(requestPath, JSON.stringify(request));
+  const activities = join(vault, "projects/fixture/activities");
+  const displaced = join(vault, "projects/fixture/activities-old");
+  await assert.rejects(
+    toolNamed(registeredTools(), "bookie_checkpoint").execute(
+      "parent-race",
+      { vault, requestPath, timing: "now", approval: "confirm" },
+      undefined,
+      undefined,
+      context(repositoryRoot, {
+        mode: "tui",
+        hasUI: true,
+        ui: {
+          confirm: async () => {
+            await rename(activities, displaced);
+            await mkdir(activities);
+            return true;
+          },
+          notify: () => {},
+        },
+      }),
+    ),
+    /Bookie checkpoint failed: MUTATION-CONFLICT\./u,
+  );
+  await assert.rejects(readFile(join(activities, "parent-race.md")), {
+    code: "ENOENT",
+  });
+  await assert.rejects(readFile(join(displaced, "parent-race.md")), {
+    code: "ENOENT",
+  });
+});
+
+test("checkpoint secret failures are static and publish nothing", async (t) => {
+  const vault = await temporaryVault(t);
+  const parent = resolve(vault, "..");
+  const requestPath = join(parent, "secret-checkpoint.json");
+  const request = checkpointRequest(
+    "projects/fixture/activities/rejected-session.md",
+  );
+  request.fragments[0].text = ["password", "checkpoint-must-not-leak"].join(
+    "=",
+  );
+  await writeFile(requestPath, JSON.stringify(request));
+  const target = join(vault, request.path);
+  await assert.rejects(
+    toolNamed(registeredTools(), "bookie_checkpoint").execute(
+      "secret",
+      { vault, requestPath, timing: "now", approval: "explicit" },
+      undefined,
+      undefined,
+      context(repositoryRoot),
+    ),
+    (error) => {
+      assert.equal(error.message, "Bookie checkpoint failed: secret-policy.");
+      assert.equal(error.message.includes("must-not-leak"), false);
+      return true;
+    },
+  );
+  await assert.rejects(readFile(target), { code: "ENOENT" });
+});
+
 test("BK-014 write source is policy-bearing and mutation-queued", async () => {
   const source = await readFile(join(packageRoot, "src/index.ts"), "utf8");
   for (const required of [
@@ -642,6 +1399,7 @@ test("extension keeps read behavior core-backed and has no network or Git side e
     "amendConcept(",
     "captureEvidence",
     "exportCanonicalJsonl",
+    "console.",
     "fetch(",
     "git commit",
     "git push",

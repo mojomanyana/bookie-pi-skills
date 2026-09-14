@@ -18,6 +18,7 @@ import {
   verifyParent,
 } from "./concept-mutation-filesystem.js";
 import type {
+  ParentSnapshot,
   ResolvedMutationTarget,
   TargetSource,
 } from "./concept-mutation-filesystem.js";
@@ -46,6 +47,7 @@ import {
   displayFileForCandidate,
   loadMutationManifest,
   schemaValidatorsOrUndefined,
+  mutationManifestHash,
   stableIdentity,
   validateCandidate,
 } from "./concept-mutation-validation.js";
@@ -277,6 +279,66 @@ function createInputCandidate(
   return validateCandidate(bytes, target, manifest, validators, limits);
 }
 
+interface PreparedDirectoryIdentity {
+  readonly path: string;
+  readonly dev: string;
+  readonly ino: string;
+  readonly mode: string;
+  readonly nlink: string;
+}
+
+export interface CreatePolicyPreconditions {
+  readonly expectedRoot: PreparedDirectoryIdentity;
+  readonly expectedTargetPath: string;
+  readonly expectedRelativePath: string;
+  readonly expectedParent: {
+    readonly path: string;
+    readonly identities: readonly PreparedDirectoryIdentity[];
+  };
+  readonly expectedManifestHash: `sha256:${string}`;
+}
+
+function matchesPreparedDirectory(
+  expected: PreparedDirectoryIdentity,
+  path: string,
+  metadata: ResolvedMutationTarget["rootMetadata"],
+): boolean {
+  return (
+    expected.path === path &&
+    expected.dev === metadata.dev.toString() &&
+    expected.ino === metadata.ino.toString() &&
+    expected.mode === metadata.mode.toString() &&
+    expected.nlink === metadata.nlink.toString() &&
+    metadata.isDirectory() &&
+    !metadata.isSymbolicLink()
+  );
+}
+
+function matchesCreatePreconditions(
+  expected: CreatePolicyPreconditions,
+  target: ResolvedMutationTarget,
+  parent: ParentSnapshot,
+): boolean {
+  return (
+    expected.expectedTargetPath === target.target &&
+    expected.expectedRelativePath === target.relativePath &&
+    matchesPreparedDirectory(
+      expected.expectedRoot,
+      target.root,
+      target.rootMetadata,
+    ) &&
+    expected.expectedParent.path === parent.parent &&
+    expected.expectedParent.identities.length === parent.identities.length &&
+    expected.expectedParent.identities.every((identity, index) => {
+      const current = parent.identities[index];
+      return (
+        current !== undefined &&
+        matchesPreparedDirectory(identity, current.path, current.metadata)
+      );
+    })
+  );
+}
+
 async function performCreate(
   target: ResolvedMutationTarget,
   request: CreateConceptRequest,
@@ -284,11 +346,20 @@ async function performCreate(
   signal: AbortSignal | undefined,
   enforceWritePolicy: boolean,
   classifyExcluded: (excluded: boolean) => void,
+  preconditions: CreatePolicyPreconditions | undefined,
 ): Promise<ConceptMutationResult> {
   const parent = await captureParent(target, signal);
   if (parent === undefined) {
     return failure("create", [
       mutationDiagnostic("MUTATION-PATH", target.bundlePath),
+    ]);
+  }
+  if (
+    preconditions !== undefined &&
+    !matchesCreatePreconditions(preconditions, target, parent)
+  ) {
+    return failure("create", [
+      mutationDiagnostic("MUTATION-CONFLICT", target.bundlePath),
     ]);
   }
   const initialState = await targetState(target.target);
@@ -325,6 +396,30 @@ async function performCreate(
     tracker,
   );
   if (!manifestResult.ok) return failure("create", manifestResult.diagnostics);
+  if (
+    preconditions !== undefined &&
+    mutationManifestHash(manifestResult.manifest) !==
+      preconditions.expectedManifestHash
+  ) {
+    return failure("create", [
+      mutationDiagnostic("MUTATION-CONFLICT", target.bundlePath),
+    ]);
+  }
+  if (
+    enforceWritePolicy &&
+    preconditions === undefined &&
+    request.frontmatter.type === "Activity"
+  ) {
+    const displayFile = displayFileForCandidate(
+      target.bundlePath,
+      request.frontmatter,
+      manifestResult.manifest,
+    );
+    classifyExcluded(displayFile === "<excluded>");
+    return failure("create", [
+      mutationDiagnostic("MUTATION-INPUT", displayFile),
+    ]);
+  }
   if (
     matchesExcludedPath(
       target.relativePath,
@@ -392,6 +487,22 @@ async function performCreate(
     "no-replace",
     signal,
     async () => {
+      if (preconditions !== undefined) {
+        const finalManifest = await loadMutationManifest(
+          target,
+          validators,
+          limits,
+          signal,
+          createPathTracker(),
+        );
+        if (
+          !finalManifest.ok ||
+          mutationManifestHash(finalManifest.manifest) !==
+            preconditions.expectedManifestHash
+        ) {
+          return "conflict";
+        }
+      }
       const state = await targetState(target.target);
       throwIfAborted(signal);
       return state === "absent"
@@ -537,6 +648,11 @@ async function performAmend(
     manifestResult.manifest,
   );
   classifyExcluded(displayFile === "<excluded>");
+  if (enforceWritePolicy && loaded.concept.frontmatter.type === "Activity") {
+    return failure("amend", [
+      mutationDiagnostic("MUTATION-INPUT", displayFile),
+    ]);
+  }
   if (!validRequest) {
     return failure("amend", [
       mutationDiagnostic("MUTATION-INPUT", displayFile),
@@ -668,6 +784,7 @@ async function createConceptInternal(
   request: CreateConceptRequest,
   options: ConceptMutationOptions,
   enforceWritePolicy: boolean,
+  preconditions?: CreatePolicyPreconditions,
 ): Promise<ConceptMutationResult> {
   const limits = mutationLimits(options);
   throwIfAborted(options.signal);
@@ -712,6 +829,7 @@ async function createConceptInternal(
           candidateClassified = true;
           excludedCandidate = excluded;
         },
+        preconditions,
       ),
   );
   return enforceWritePolicy
@@ -737,6 +855,15 @@ export async function createConceptWithPolicy(
   options: ConceptMutationOptions = {},
 ): Promise<ConceptMutationResult> {
   return createConceptInternal(root, request, options, true);
+}
+
+export async function createConceptWithPolicyPreconditions(
+  root: string | URL,
+  request: CreateConceptRequest,
+  preconditions: CreatePolicyPreconditions,
+  options: ConceptMutationOptions = {},
+): Promise<ConceptMutationResult> {
+  return createConceptInternal(root, request, options, true, preconditions);
 }
 
 async function amendConceptInternal(

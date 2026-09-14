@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { appendFileSync } from "node:fs";
 import {
   chmod,
   cp,
@@ -506,7 +507,6 @@ test("resource and traversal symlinks fail closed without exposing outside conte
 test("in-place file changes after reading make the vault snapshot incomplete", async (t) => {
   const vault = await temporaryVault(t);
   const manifestPath = join(vault, "bookie.yaml");
-  const original = await readFile(manifestPath, "utf8");
   await writeFile(
     join(vault, "index.md"),
     Array.from({ length: 20_000 }, (_, index) => `[link ${index}](#same)`).join(
@@ -515,9 +515,13 @@ test("in-place file changes after reading make the vault snapshot incomplete", a
   );
 
   const validation = validateVault(vault);
-  await new Promise((resolve) => setTimeout(resolve, 5));
-  await writeFile(manifestPath, `${original}\n# changed after read\n`);
-  const result = await validation;
+  let changes = 0;
+  const writer = setInterval(() => {
+    appendFileSync(manifestPath, `# changed during validation ${changes}\n`);
+    changes += 1;
+  }, 2);
+  const result = await validation.finally(() => clearInterval(writer));
+  assert.ok(changes > 0);
 
   assert.equal(result.valid, false);
   assert.equal(result.complete, false);
