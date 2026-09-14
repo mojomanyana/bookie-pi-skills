@@ -314,13 +314,10 @@ function createCheckpointTool(staging: CheckpointStaging) {
           "Bookie checkpoint requires explicit approval in non-interactive mode.",
         );
       }
-      let reserved = false;
-      if (params.timing === "before-compaction") {
-        if (!staging.reserve()) {
-          throw new Error("Bookie checkpoint is already staged.");
-        }
-        reserved = true;
+      if (!staging.reserve()) {
+        throw new Error("Bookie checkpoint is already staged.");
       }
+      let reserved = true;
       try {
         const snapshot = await readWriteRequest(
           params.requestPath,
