@@ -1,0 +1,746 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bookie.local/schemas/service/v1/protocol.schema.json",
+  "title": "Bookie retrieval service protocol version 1",
+  "$defs": {
+    "schemaVersion": { "const": "1" },
+    "vaultHandle": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,62}$"
+    },
+    "commit": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "conceptUid": {
+      "allOf": [
+        { "$ref": "urn:bookie:schema:common:1.0#/$defs/prefixedUlid" },
+        {
+          "type": "string",
+          "pattern": "^(?:PRJ|TSK|DOC|RSC|DSN|ACT|EVD|PER)-"
+        }
+      ]
+    },
+    "canonicalPath": {
+      "$ref": "urn:bookie:schema:common:1.0#/$defs/conceptPath"
+    },
+    "requestId": {
+      "type": "string",
+      "pattern": "^req_[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "buildId": {
+      "type": "string",
+      "pattern": "^bld_[0-9a-f]{64}$"
+    },
+    "jobId": {
+      "type": "string",
+      "pattern": "^job_[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "embeddingGeneration": {
+      "type": "string",
+      "pattern": "^emb_[0-9a-f]{64}$"
+    },
+    "degradation": {
+      "type": "string",
+      "enum": [
+        "none",
+        "semantic_unavailable",
+        "semantic_timeout",
+        "semantic_rate_limited"
+      ]
+    },
+    "workflowValue": {
+      "type": "string",
+      "enum": [
+        "active",
+        "paused",
+        "completed",
+        "archived",
+        "proposed",
+        "ready",
+        "in_progress",
+        "blocked",
+        "done",
+        "cancelled",
+        "accepted",
+        "rejected",
+        "superseded"
+      ]
+    },
+    "errorResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "code", "request_id", "retryable"],
+      "properties": {
+        "schema_version": { "$ref": "#/$defs/schemaVersion" },
+        "code": {
+          "type": "string",
+          "enum": [
+            "AUTH_INVALID",
+            "AUTH_FORBIDDEN",
+            "CONTENT_TYPE_INVALID",
+            "REQUEST_INVALID",
+            "REQUEST_TOO_LARGE",
+            "RATE_LIMITED",
+            "VAULT_UNAVAILABLE",
+            "INDEX_UNAVAILABLE",
+            "BUILD_NOT_FOUND",
+            "BUILD_CONFLICT",
+            "BUILD_NOT_ACTIVATABLE",
+            "DEPENDENCY_UNAVAILABLE",
+            "DEADLINE_EXCEEDED",
+            "CANCELLED",
+            "INTERNAL"
+          ]
+        },
+        "request_id": { "$ref": "#/$defs/requestId" },
+        "retryable": { "type": "boolean" },
+        "degradation": { "$ref": "#/$defs/degradation" },
+        "retry_after_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600
+        }
+      }
+    },
+    "healthResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "status"],
+      "properties": {
+        "schema_version": { "$ref": "#/$defs/schemaVersion" },
+        "status": { "type": "string", "enum": ["ok", "unavailable"] }
+      }
+    },
+    "filters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "projects",
+        "types",
+        "lifecycle",
+        "workflow",
+        "sensitivity",
+        "trust",
+        "freshness"
+      ],
+      "properties": {
+        "projects": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/canonicalPath" }
+        },
+        "types": {
+          "type": "array",
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "Project",
+              "Task",
+              "Document",
+              "Research",
+              "Decision",
+              "Activity",
+              "Evidence",
+              "Person"
+            ]
+          }
+        },
+        "lifecycle": {
+          "type": "array",
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": ["draft", "stable", "deprecated"]
+          }
+        },
+        "workflow": {
+          "type": "array",
+          "maxItems": 13,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/workflowValue" }
+        },
+        "sensitivity": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 63,
+            "pattern": "^[a-z](?:[a-z0-9]|-(?=[a-z0-9]))*$"
+          }
+        },
+        "trust": {
+          "type": "array",
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": ["unverified", "declared", "verified"]
+          }
+        },
+        "freshness": {
+          "type": "array",
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": ["fresh", "stale", "unknown"]
+          }
+        }
+      }
+    },
+    "searchRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "vault", "query", "filters", "limit"],
+      "properties": {
+        "schema_version": { "$ref": "#/$defs/schemaVersion" },
+        "vault": { "$ref": "#/$defs/vaultHandle" },
+        "query": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "filters": { "$ref": "#/$defs/filters" },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 50 },
+        "include_direct_relations": { "type": "boolean" }
+      }
+    },
+    "trust": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["level", "verified_by"],
+      "properties": {
+        "level": {
+          "type": "string",
+          "enum": ["unverified", "declared", "verified"]
+        },
+        "verified_by": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+        }
+      }
+    },
+    "freshness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "stale_after"],
+      "properties": {
+        "state": { "type": "string", "enum": ["fresh", "stale", "unknown"] },
+        "stale_after": {
+          "oneOf": [
+            {
+              "$ref": "urn:bookie:schema:common:1.0#/$defs/calendarDate"
+            },
+            { "type": "null" }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "unknown" } } },
+          "then": { "properties": { "stale_after": { "type": "null" } } }
+        },
+        {
+          "if": {
+            "properties": { "state": { "enum": ["fresh", "stale"] } }
+          },
+          "then": {
+            "properties": {
+              "stale_after": {
+                "$ref": "urn:bookie:schema:common:1.0#/$defs/calendarDate"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "score": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lexical", "semantic", "fused", "adjustments"],
+      "properties": {
+        "lexical": { "oneOf": [{ "type": "number" }, { "type": "null" }] },
+        "semantic": { "oneOf": [{ "type": "number" }, { "type": "null" }] },
+        "fused": { "type": "number" },
+        "adjustments": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["signal", "value"],
+            "properties": {
+              "signal": {
+                "type": "string",
+                "enum": ["lifecycle", "freshness", "trust"]
+              },
+              "value": { "type": "number" }
+            }
+          }
+        }
+      }
+    },
+    "searchResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "uid",
+        "path",
+        "source_commit",
+        "heading",
+        "excerpt",
+        "type",
+        "lifecycle",
+        "workflow",
+        "sensitivity",
+        "trust",
+        "freshness",
+        "score",
+        "untrusted",
+        "truncated"
+      ],
+      "properties": {
+        "uid": { "$ref": "#/$defs/conceptUid" },
+        "path": { "$ref": "#/$defs/canonicalPath" },
+        "source_commit": { "$ref": "#/$defs/commit" },
+        "heading": {
+          "oneOf": [
+            { "type": "string", "minLength": 1, "maxLength": 512 },
+            { "type": "null" }
+          ]
+        },
+        "excerpt": { "type": "string", "maxLength": 8192 },
+        "type": {
+          "type": "string",
+          "enum": [
+            "Project",
+            "Task",
+            "Document",
+            "Research",
+            "Decision",
+            "Activity",
+            "Evidence",
+            "Person"
+          ]
+        },
+        "lifecycle": {
+          "type": "string",
+          "enum": ["draft", "stable", "deprecated"]
+        },
+        "workflow": {
+          "oneOf": [{ "$ref": "#/$defs/workflowValue" }, { "type": "null" }]
+        },
+        "sensitivity": { "type": "string", "minLength": 1, "maxLength": 63 },
+        "trust": { "$ref": "#/$defs/trust" },
+        "freshness": { "$ref": "#/$defs/freshness" },
+        "score": { "$ref": "#/$defs/score" },
+        "untrusted": { "const": true },
+        "truncated": { "type": "boolean" }
+      }
+    },
+    "searchResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "request_id",
+        "mode",
+        "build_id",
+        "embedding_generation",
+        "source_commit",
+        "degradation",
+        "results",
+        "truncated"
+      ],
+      "properties": {
+        "schema_version": { "$ref": "#/$defs/schemaVersion" },
+        "request_id": { "$ref": "#/$defs/requestId" },
+        "mode": { "const": "shared" },
+        "build_id": { "$ref": "#/$defs/buildId" },
+        "embedding_generation": {
+          "oneOf": [
+            { "$ref": "#/$defs/embeddingGeneration" },
+            { "type": "null" }
+          ]
+        },
+        "source_commit": { "$ref": "#/$defs/commit" },
+        "degradation": { "$ref": "#/$defs/degradation" },
+        "results": {
+          "type": "array",
+          "maxItems": 50,
+          "items": { "$ref": "#/$defs/searchResult" }
+        },
+        "truncated": { "type": "boolean" }
+      }
+    },
+    "contextReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uid", "source_commit"],
+      "properties": {
+        "uid": { "$ref": "#/$defs/conceptUid" },
+        "source_commit": { "$ref": "#/$defs/commit" }
+      }
+    },
+    "contextRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "vault", "references", "max_bytes"],
+      "properties": {
+        "schema_version": { "$ref": "#/$defs/schemaVersion" },
+        "vault": { "$ref": "#/$defs/vaultHandle" },
+        "references": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/contextReference" }
+        },
+        "max_bytes": { "type": "integer", "minimum": 1, "maximum": 65536 }
+      }
+    },
+    "contextItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "uid",
+        "path",
+        "source_commit",
+        "content",
+        "trust",
+        "freshness",
+        "untrusted",
+        "truncated"
+      ],
+      "properties": {
+        "uid": { "$ref": "#/$defs/conceptUid" },
+        "path": { "$ref": "#/$defs/canonicalPath" },
+        "source_commit": { "$ref": "#/$defs/commit" },
+        "content": { "type": "string", "maxLength": 32768 },
+        "trust": { "$ref": "#/$defs/trust" },
+        "freshness": { "$ref": "#/$defs/freshness" },
+        "untrusted": { "const": true },
+        "truncated": { "type": "boolean" }
+      }
+    },
+    "contextResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "request_id",
+        "mode",
+        "build_id",
+        "source_commit",
+        "items",
+        "truncated"
+      ],
+      "properties": {
+        "schema_version": { "$ref": "#/$defs/schemaVersion" },
+        "request_id": { "$ref": "#/$defs/requestId" },
+        "mode": { "const": "shared" },
+        "build_id": { "$ref": "#/$defs/buildId" },
+        "source_commit": { "$ref": "#/$defs/commit" },
+        "items": {
+          "type": "array",
+          "maxItems": 20,
+          "items": { "$ref": "#/$defs/contextItem" }
+        },
+        "truncated": { "type": "boolean" }
+      }
+    },
+    "indexEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "vault",
+        "status",
+        "active_build",
+        "source_commit",
+        "embedding_generation"
+      ],
+      "properties": {
+        "vault": { "$ref": "#/$defs/vaultHandle" },
+        "status": {
+          "type": "string",
+          "enum": ["ready", "unavailable", "rebuilding"]
+        },
+        "active_build": {
+          "oneOf": [{ "$ref": "#/$defs/buildId" }, { "type": "null" }]
+        },
+        "source_commit": {
+          "oneOf": [{ "$ref": "#/$defs/commit" }, { "type": "null" }]
+        },
+        "embedding_generation": {
+          "oneOf": [
+            { "$ref": "#/$defs/embeddingGeneration" },
+            { "type": "null" }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "ready" } } },
+          "then": {
+            "properties": {
+              "active_build": { "$ref": "#/$defs/buildId" },
+              "source_commit": { "$ref": "#/$defs/commit" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "status": { "const": "unavailable" } } },
+          "then": {
+            "properties": {
+              "active_build": { "type": "null" },
+              "source_commit": { "type": "null" },
+              "embedding_generation": { "type": "null" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "status": { "const": "rebuilding" } } },
+          "then": {
+            "oneOf": [
+              {
+                "properties": {
+                  "active_build": { "$ref": "#/$defs/buildId" },
+                  "source_commit": { "$ref": "#/$defs/commit" }
+                }
+              },
+              {
+                "properties": {
+                  "active_build": { "type": "null" },
+                  "source_commit": { "type": "null" },
+                  "embedding_generation": { "type": "null" }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "indexResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "request_id", "indexes"],
+      "properties": {
+        "schema_version": { "$ref": "#/$defs/schemaVersion" },
+        "request_id": { "$ref": "#/$defs/requestId" },
+        "indexes": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/indexEntry" }
+        }
+      }
+    },
+    "rebuildRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "vault",
+        "source_commit",
+        "embedding_generation"
+      ],
+      "properties": {
+        "schema_version": { "$ref": "#/$defs/schemaVersion" },
+        "vault": { "$ref": "#/$defs/vaultHandle" },
+        "source_commit": { "$ref": "#/$defs/commit" },
+        "embedding_generation": {
+          "oneOf": [
+            { "$ref": "#/$defs/embeddingGeneration" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "jobState": {
+      "type": "string",
+      "enum": [
+        "queued",
+        "building",
+        "verifying",
+        "evaluating",
+        "complete",
+        "failed",
+        "cancelling",
+        "cancelled"
+      ]
+    },
+    "rebuildResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "request_id",
+        "job_id",
+        "build_id",
+        "state"
+      ],
+      "properties": {
+        "schema_version": { "$ref": "#/$defs/schemaVersion" },
+        "request_id": { "$ref": "#/$defs/requestId" },
+        "job_id": { "$ref": "#/$defs/jobId" },
+        "build_id": { "$ref": "#/$defs/buildId" },
+        "state": { "$ref": "#/$defs/jobState" }
+      }
+    },
+    "rebuildStatusResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "request_id",
+        "job_id",
+        "build_id",
+        "vault",
+        "source_commit",
+        "state",
+        "failure_code"
+      ],
+      "properties": {
+        "schema_version": { "$ref": "#/$defs/schemaVersion" },
+        "request_id": { "$ref": "#/$defs/requestId" },
+        "job_id": { "$ref": "#/$defs/jobId" },
+        "build_id": { "$ref": "#/$defs/buildId" },
+        "vault": { "$ref": "#/$defs/vaultHandle" },
+        "source_commit": { "$ref": "#/$defs/commit" },
+        "state": { "$ref": "#/$defs/jobState" },
+        "failure_code": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "INVALID_COMMIT",
+                "VALIDATION_FAILED",
+                "SECRET_DETECTED",
+                "POLICY_REJECTED",
+                "LIMIT_EXCEEDED",
+                "DEPENDENCY_FAILED",
+                "EVALUATION_FAILED",
+                "INTERRUPTED",
+                "CANCELLED",
+                "INTERNAL"
+              ]
+            },
+            { "type": "null" }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "failed" } } },
+          "then": {
+            "properties": {
+              "failure_code": {
+                "type": "string",
+                "enum": [
+                  "INVALID_COMMIT",
+                  "VALIDATION_FAILED",
+                  "SECRET_DETECTED",
+                  "POLICY_REJECTED",
+                  "LIMIT_EXCEEDED",
+                  "DEPENDENCY_FAILED",
+                  "EVALUATION_FAILED",
+                  "INTERRUPTED",
+                  "INTERNAL"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "state": { "const": "cancelled" } } },
+          "then": { "properties": { "failure_code": { "const": "CANCELLED" } } }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "queued",
+                  "building",
+                  "verifying",
+                  "evaluating",
+                  "complete",
+                  "cancelling"
+                ]
+              }
+            }
+          },
+          "then": { "properties": { "failure_code": { "type": "null" } } }
+        }
+      ]
+    },
+    "cancelResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "request_id", "job_id", "state"],
+      "properties": {
+        "schema_version": { "$ref": "#/$defs/schemaVersion" },
+        "request_id": { "$ref": "#/$defs/requestId" },
+        "job_id": { "$ref": "#/$defs/jobId" },
+        "state": { "type": "string", "enum": ["cancelling", "cancelled"] }
+      }
+    },
+    "activateRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "vault",
+        "build_id",
+        "expected_active_build"
+      ],
+      "properties": {
+        "schema_version": { "$ref": "#/$defs/schemaVersion" },
+        "vault": { "$ref": "#/$defs/vaultHandle" },
+        "build_id": { "$ref": "#/$defs/buildId" },
+        "expected_active_build": {
+          "oneOf": [{ "$ref": "#/$defs/buildId" }, { "type": "null" }]
+        }
+      }
+    },
+    "activateResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "request_id",
+        "active_build",
+        "previous_build",
+        "source_commit"
+      ],
+      "properties": {
+        "schema_version": { "$ref": "#/$defs/schemaVersion" },
+        "request_id": { "$ref": "#/$defs/requestId" },
+        "active_build": { "$ref": "#/$defs/buildId" },
+        "previous_build": {
+          "oneOf": [{ "$ref": "#/$defs/buildId" }, { "type": "null" }]
+        },
+        "source_commit": { "$ref": "#/$defs/commit" }
+      }
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/errorResponse" },
+    { "$ref": "#/$defs/healthResponse" },
+    { "$ref": "#/$defs/searchRequest" },
+    { "$ref": "#/$defs/searchResponse" },
+    { "$ref": "#/$defs/contextRequest" },
+    { "$ref": "#/$defs/contextResponse" },
+    { "$ref": "#/$defs/indexResponse" },
+    { "$ref": "#/$defs/rebuildRequest" },
+    { "$ref": "#/$defs/rebuildResponse" },
+    { "$ref": "#/$defs/rebuildStatusResponse" },
+    { "$ref": "#/$defs/cancelResponse" },
+    { "$ref": "#/$defs/activateRequest" },
+    { "$ref": "#/$defs/activateResponse" }
+  ]
+}
