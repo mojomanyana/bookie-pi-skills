@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 
+import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import registerBookie from "../dist/index.js";
 
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
@@ -37,13 +38,20 @@ function textResult(result) {
   return result.content[0].text;
 }
 
-const context = (cwd) => ({ cwd, isProjectTrusted: () => true });
+const context = (cwd, overrides = {}) => ({
+  cwd,
+  mode: "print",
+  hasUI: false,
+  isProjectTrusted: () => true,
+  ui: { confirm: async () => false },
+  ...overrides,
+});
 
 test("extension registers the BK-013 read-only tool contracts", () => {
   const tools = registeredTools();
   assert.deepEqual(
     tools.map(({ name }) => name),
-    ["bookie_read", "bookie_search", "bookie_validate"],
+    ["bookie_read", "bookie_search", "bookie_validate", "bookie_write"],
   );
   for (const tool of tools) {
     assert.equal(tool.parameters.additionalProperties, false);
@@ -53,6 +61,10 @@ test("extension registers the BK-013 read-only tool contracts", () => {
   assert.deepEqual(
     toolNamed(tools, "bookie_read").parameters.properties.selector.enum,
     ["path", "uid"],
+  );
+  assert.deepEqual(
+    toolNamed(tools, "bookie_write").parameters.properties.action.enum,
+    ["create", "amend"],
   );
 });
 
@@ -318,21 +330,318 @@ test("local and Git package manifests expose the built extension", async (t) => 
   installed.default({ registerTool: (tool) => installedTools.push(tool) });
   assert.deepEqual(
     installedTools.map(({ name }) => name),
-    ["bookie_read", "bookie_search", "bookie_validate"],
+    ["bookie_read", "bookie_search", "bookie_validate", "bookie_write"],
   );
 });
 
-test("BK-013 source remains read-only, local, and core-backed", async () => {
+test("write requires explicit approval and uses policy-bearing create", async (t) => {
+  const vault = await temporaryVault(t);
+  const parent = resolve(vault, "..");
+  const requestPath = join(parent, "create.json");
+  const target = join(vault, "people/new-person.md");
+  const request = {
+    path: "people/new-person.md",
+    frontmatter: {
+      type: "Person",
+      title: "New person",
+      status: "draft",
+      generated: { by: "human:test", at: "2026-09-13T16:00:00Z" },
+      bookie: {
+        profile: "1.0",
+        uid: "PER-00000000000000000000000100",
+        created_at: "2026-09-13T16:00:00Z",
+        sensitivity: "public",
+      },
+    },
+    bodyText: "# New person\n",
+  };
+  await writeFile(requestPath, JSON.stringify(request));
+  const write = toolNamed(registeredTools(), "bookie_write");
+
+  await assert.rejects(
+    write.execute(
+      "ambiguous",
+      { vault, action: "create", requestPath, approval: "confirm" },
+      undefined,
+      undefined,
+      context(repositoryRoot),
+    ),
+    /requires explicit approval in non-interactive mode/u,
+  );
+  await assert.rejects(readFile(target), { code: "ENOENT" });
+
+  await assert.rejects(
+    write.execute(
+      "declined",
+      { vault, action: "create", requestPath, approval: "confirm" },
+      undefined,
+      undefined,
+      context(repositoryRoot, {
+        mode: "tui",
+        hasUI: true,
+        ui: { confirm: async () => false },
+      }),
+    ),
+    /was not approved/u,
+  );
+  await assert.rejects(readFile(target), { code: "ENOENT" });
+
+  const controller = new AbortController();
+  let confirmationStarted;
+  const started = new Promise((resolve) => {
+    confirmationStarted = resolve;
+  });
+  const abortedConfirmation = write.execute(
+    "aborted-confirmation",
+    { vault, action: "create", requestPath, approval: "confirm" },
+    controller.signal,
+    undefined,
+    context(repositoryRoot, {
+      mode: "tui",
+      hasUI: true,
+      ui: {
+        confirm: async (_title, _message, options) => {
+          confirmationStarted();
+          return new Promise((_resolve, reject) => {
+            options.signal.addEventListener(
+              "abort",
+              () => reject(options.signal.reason),
+              { once: true },
+            );
+          });
+        },
+      },
+    }),
+  );
+  await started;
+  controller.abort();
+  await assert.rejects(
+    abortedConfirmation,
+    (error) => error?.name === "AbortError",
+  );
+  await assert.rejects(readFile(target), { code: "ENOENT" });
+
+  const substituted = {
+    ...request,
+    path: "people/substituted.md",
+    frontmatter: {
+      ...request.frontmatter,
+      title: "Substituted",
+      bookie: {
+        ...request.frontmatter.bookie,
+        uid: "PER-00000000000000000000000109",
+      },
+    },
+  };
+  let releaseQueue;
+  let queueEntered;
+  const entered = new Promise((resolve) => {
+    queueEntered = resolve;
+  });
+  const gate = new Promise((resolve) => {
+    releaseQueue = resolve;
+  });
+  const blocker = withFileMutationQueue(target, async () => {
+    queueEntered();
+    await gate;
+  });
+  await entered;
+  let settled = false;
+  const pending = write
+    .execute(
+      "approved",
+      { vault, action: "create", requestPath, approval: "confirm" },
+      undefined,
+      undefined,
+      context(repositoryRoot, {
+        mode: "tui",
+        hasUI: true,
+        ui: {
+          confirm: async (title, message) => {
+            assert.equal(title, "Approve Bookie create?");
+            assert.match(message, /sha256:[0-9a-f]{64}/u);
+            await writeFile(requestPath, JSON.stringify(substituted));
+            return true;
+          },
+        },
+      }),
+    )
+    .finally(() => {
+      settled = true;
+    });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(settled, false);
+  await assert.rejects(readFile(target), { code: "ENOENT" });
+  releaseQueue();
+  await blocker;
+  const result = await pending;
+  const payload = JSON.parse(textResult(result));
+  assert.equal(payload.result.ok, true);
+  assert.equal(payload.result.operation, "create");
+  assert.match(
+    await readFile(target, "utf8"),
+    /PER-00000000000000000000000100/u,
+  );
+  await assert.rejects(readFile(join(vault, "people/substituted.md")), {
+    code: "ENOENT",
+  });
+});
+
+test("parallel amendments serialize and report a stale conflict", async (t) => {
+  const vault = await temporaryVault(t);
+  const tools = registeredTools();
+  const read = await toolNamed(tools, "bookie_read").execute(
+    "source",
+    { vault, selector: "path", value: "/projects/fixture/tasks/task.md" },
+    undefined,
+    undefined,
+    context(repositoryRoot),
+  );
+  const sourceHash = JSON.parse(textResult(read)).result.source.sourceHash;
+  const parent = resolve(vault, "..");
+  const requests = ["first", "second"].map((name) => ({
+    path: join(parent, `${name}.json`),
+    request: {
+      path: "projects/fixture/tasks/task.md",
+      expectedSourceHash: sourceHash,
+      edits: [],
+      bodyText: `# ${name}\n`,
+    },
+  }));
+  await Promise.all(
+    requests.map(({ path, request }) =>
+      writeFile(path, JSON.stringify(request)),
+    ),
+  );
+  const write = toolNamed(tools, "bookie_write");
+  const settled = await Promise.allSettled(
+    requests.map(({ path }) =>
+      write.execute(
+        "parallel",
+        { vault, action: "amend", requestPath: path, approval: "explicit" },
+        undefined,
+        undefined,
+        context(repositoryRoot),
+      ),
+    ),
+  );
+  assert.equal(
+    settled.filter(({ status }) => status === "fulfilled").length,
+    1,
+  );
+  const rejected = settled.find(({ status }) => status === "rejected");
+  assert.equal(rejected.status, "rejected");
+  assert.match(rejected.reason.message, /MUTATION-CONFLICT/u);
+  assert.match(
+    await readFile(join(vault, "projects/fixture/tasks/task.md"), "utf8"),
+    /^# (first|second)$/mu,
+  );
+});
+
+test("write rejects malformed and secret request files without publication", async (t) => {
+  const vault = await temporaryVault(t);
+  const parent = resolve(vault, "..");
+  const write = toolNamed(registeredTools(), "bookie_write");
+  const malformed = join(parent, "malformed.json");
+  await writeFile(malformed, "not json");
+  await assert.rejects(
+    write.execute(
+      "malformed",
+      { vault, action: "create", requestPath: malformed, approval: "explicit" },
+      undefined,
+      undefined,
+      context(repositoryRoot),
+    ),
+    /Bookie write request file is invalid/u,
+  );
+
+  const exact = join(parent, "exact-limit.json");
+  await writeFile(exact, `{${" ".repeat(1_999_998)}}`);
+  await assert.rejects(
+    write.execute(
+      "exact-limit",
+      { vault, action: "create", requestPath: exact, approval: "explicit" },
+      undefined,
+      undefined,
+      context(repositoryRoot),
+    ),
+    /Bookie write failed: MUTATION-PATH\./u,
+  );
+  const over = join(parent, "over-limit.json");
+  await writeFile(over, `{${" ".repeat(1_999_999)}}`);
+  await assert.rejects(
+    write.execute(
+      "over-limit",
+      { vault, action: "create", requestPath: over, approval: "explicit" },
+      undefined,
+      undefined,
+      context(repositoryRoot),
+    ),
+    /Bookie write request file is invalid\./u,
+  );
+
+  const secret = join(parent, "secret.json");
+  await writeFile(
+    secret,
+    JSON.stringify({
+      path: "people/rejected.md",
+      frontmatter: {
+        type: "Person",
+        title: "Rejected",
+        status: "draft",
+        generated: { by: "human:test", at: "2026-09-13T16:00:00Z" },
+        bookie: {
+          profile: "1.0",
+          uid: "PER-00000000000000000000000101",
+          created_at: "2026-09-13T16:00:00Z",
+          sensitivity: "public",
+        },
+      },
+      bodyText: "password=do-not-persist-this-value",
+    }),
+  );
+  await assert.rejects(
+    write.execute(
+      "secret",
+      { vault, action: "create", requestPath: secret, approval: "explicit" },
+      undefined,
+      undefined,
+      context(repositoryRoot),
+    ),
+    (error) => {
+      assert.equal(error.message, "Bookie write failed: WRITE-SECRET.");
+      assert.equal(error.message.includes("do-not-persist"), false);
+      return true;
+    },
+  );
+  await assert.rejects(readFile(join(vault, "people/rejected.md")), {
+    code: "ENOENT",
+  });
+});
+
+test("BK-014 write source is policy-bearing and mutation-queued", async () => {
+  const source = await readFile(join(packageRoot, "src/index.ts"), "utf8");
+  for (const required of [
+    "createConceptWithPolicy",
+    "amendConceptWithPolicy",
+    "withFileMutationQueue",
+  ]) {
+    assert.match(source, new RegExp(`\\b${required}\\b`, "u"));
+  }
+  assert.equal(source.includes("createConcept("), false);
+  assert.equal(source.includes("amendConcept("), false);
+});
+
+test("extension keeps read behavior core-backed and has no network or Git side effects", async () => {
   const source = await readFile(join(packageRoot, "src/index.ts"), "utf8");
   for (const required of ["inspectConcept", "searchVault", "validateVault"]) {
     assert.match(source, new RegExp(`\\b${required}\\b`, "u"));
   }
   for (const forbidden of [
-    "createConcept",
-    "amendConcept",
+    "createConcept(",
+    "amendConcept(",
     "captureEvidence",
     "exportCanonicalJsonl",
-    "withFileMutationQueue",
     "fetch(",
     "git commit",
     "git push",

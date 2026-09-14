@@ -2,7 +2,7 @@
 
 ## Status
 
-In progress — BK-013 implements the packaged read, filesystem-search, and validation slice; write, checkpoint, service retrieval, and export tools remain later backlog work
+In progress — BK-013 implements packaged read, filesystem-search, and validation; BK-014 adds approved queued create/amend; checkpoint, service retrieval, and export tools remain later backlog work
 
 Owner: unassigned  
 Target release: 0.1  
