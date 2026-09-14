@@ -1,7 +1,11 @@
 import {
+  amendConceptWithPolicy,
+  createConceptWithPolicy,
   inspectConcept,
   searchVault,
   validateVault,
+  type AmendConceptRequest,
+  type CreateConceptRequest,
   type FilesystemSearchFilters,
 } from "@bookie/core";
 import { StringEnum, Type } from "@earendil-works/pi-ai";
@@ -11,8 +15,13 @@ import {
   defineTool,
   formatSize,
   truncateHead,
+  withFileMutationQueue,
   type ExtensionAPI,
+  type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { createHash } from "node:crypto";
+import { constants } from "node:fs";
+import { open } from "node:fs/promises";
 import { resolve } from "node:path";
 
 const MAX_READ_CONTENT_BYTES = 40_000;
@@ -21,6 +30,7 @@ const MAX_SEARCH_EXCERPT_BYTES = 1_024;
 const MAX_SEARCH_TEXT_BYTES = 32_000;
 const MAX_VALIDATE_DIAGNOSTICS = 100;
 const NOTICE_ALLOWANCE_BYTES = 512;
+const MAX_WRITE_REQUEST_BYTES = 2_000_000;
 
 interface BookieToolDetails {
   readonly mode: "filesystem";
@@ -69,7 +79,7 @@ function inertJson(value: object, spaces?: number): string {
 }
 
 function serializedToolResult(
-  tool: "bookie_read" | "bookie_search" | "bookie_validate",
+  tool: "bookie_read" | "bookie_search" | "bookie_validate" | "bookie_write",
   result: object,
 ): string {
   const compact = inertJson({ tool, result });
@@ -86,7 +96,7 @@ function serializedToolResult(
 }
 
 function boundedResult(
-  tool: "bookie_read" | "bookie_search" | "bookie_validate",
+  tool: "bookie_read" | "bookie_search" | "bookie_validate" | "bookie_write",
   result: object,
   mode: "filesystem",
   complete: boolean,
@@ -108,6 +118,94 @@ function boundedResult(
     totalBytes: truncation.totalBytes,
   };
   return { content: [{ type: "text" as const, text }], details };
+}
+
+interface WriteRequestSnapshot {
+  readonly request: unknown;
+  readonly sourceHash: `sha256:${string}`;
+}
+
+async function readWriteRequest(
+  path: string,
+  cwd: string,
+  signal: AbortSignal | undefined,
+): Promise<WriteRequestSnapshot> {
+  signal?.throwIfAborted();
+  if (constants.O_NOFOLLOW === undefined) {
+    throw new Error("Bookie write request file is invalid.");
+  }
+  const absolutePath = vaultRoot(path, cwd);
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    handle = await open(
+      absolutePath,
+      constants.O_RDONLY | constants.O_NOFOLLOW,
+    );
+    const before = await handle.stat({ bigint: true });
+    if (
+      !before.isFile() ||
+      before.nlink !== 1n ||
+      before.size > BigInt(MAX_WRITE_REQUEST_BYTES)
+    ) {
+      throw new Error("unsafe request file");
+    }
+    const storage = Buffer.allocUnsafe(MAX_WRITE_REQUEST_BYTES + 1);
+    let offset = 0;
+    while (offset < storage.byteLength) {
+      signal?.throwIfAborted();
+      const { bytesRead } = await handle.read(
+        storage,
+        offset,
+        storage.byteLength - offset,
+        offset,
+      );
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    if (offset > MAX_WRITE_REQUEST_BYTES) throw new Error("large request file");
+    const bytes = storage.subarray(0, offset);
+    signal?.throwIfAborted();
+    const after = await handle.stat({ bigint: true });
+    if (
+      before.dev !== after.dev ||
+      before.ino !== after.ino ||
+      before.size !== after.size ||
+      before.mtimeNs !== after.mtimeNs ||
+      before.ctimeNs !== after.ctimeNs ||
+      BigInt(bytes.byteLength) !== before.size
+    ) {
+      throw new Error("changed request file");
+    }
+    const source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    return {
+      request: JSON.parse(source) as unknown,
+      sourceHash: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+    };
+  } catch {
+    signal?.throwIfAborted();
+    throw new Error("Bookie write request file is invalid.");
+  } finally {
+    await handle?.close();
+  }
+}
+
+async function requireWriteApproval(
+  action: "create" | "amend",
+  approval: "explicit" | "confirm",
+  sourceHash: `sha256:${string}`,
+  vault: string,
+  requestPath: string,
+  signal: AbortSignal | undefined,
+  ctx: ExtensionContext,
+): Promise<void> {
+  if (approval === "explicit") return;
+  const approved = await ctx.ui.confirm(
+    `Approve Bookie ${action}?`,
+    `${inertJson({ vault, requestPath, sourceHash })}\nThis operation modifies the canonical vault without committing or pushing.`,
+    signal === undefined ? undefined : { signal },
+  );
+  signal?.throwIfAborted();
+  if (!approved) throw new Error("Bookie write was not approved.");
 }
 
 const readTool = defineTool({
@@ -192,6 +290,74 @@ const searchTool = defineTool({
   },
 });
 
+const writeTool = defineTool({
+  name: "bookie_write",
+  label: "Bookie Write",
+  description:
+    "Create or amend one canonical Bookie concept from a bounded JSON request file. Requires explicit approval, policy validation, and queued mutation; output is bounded to Pi's 50KB/2000-line limits.",
+  parameters: Type.Object(
+    {
+      vault: Type.String({ minLength: 1 }),
+      action: StringEnum(["create", "amend"] as const),
+      requestPath: Type.String({ minLength: 1 }),
+      approval: StringEnum(["explicit", "confirm"] as const),
+    },
+    { additionalProperties: false },
+  ),
+  async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+    if (params.approval === "confirm" && !ctx.hasUI) {
+      throw new Error(
+        "Bookie write requires explicit approval in non-interactive mode.",
+      );
+    }
+    const snapshot = await readWriteRequest(
+      params.requestPath,
+      ctx.cwd,
+      signal,
+    );
+    await requireWriteApproval(
+      params.action,
+      params.approval,
+      snapshot.sourceHash,
+      params.vault,
+      params.requestPath,
+      signal,
+      ctx,
+    );
+    const options = {
+      ...(signal === undefined ? {} : { signal }),
+      runExclusive: <T>(
+        absoluteTargetPath: string,
+        mutation: () => Promise<T>,
+      ) => withFileMutationQueue(absoluteTargetPath, mutation),
+    };
+    const result =
+      params.action === "create"
+        ? await createConceptWithPolicy(
+            vaultRoot(params.vault, ctx.cwd),
+            snapshot.request as CreateConceptRequest,
+            options,
+          )
+        : await amendConceptWithPolicy(
+            vaultRoot(params.vault, ctx.cwd),
+            snapshot.request as AmendConceptRequest,
+            options,
+          );
+    if (!result.ok) {
+      if (result.changedPaths.length > 0) {
+        throw new Error(
+          "Bookie write may have changed canonical files; reread and validate before retrying.",
+        );
+      }
+      const codes = [...new Set(result.diagnostics.map(({ code }) => code))]
+        .sort()
+        .join(",");
+      throw new Error(`Bookie write failed: ${codes || "MUTATION-INPUT"}.`);
+    }
+    return boundedResult("bookie_write", result, "filesystem", true);
+  },
+});
+
 const validateTool = defineTool({
   name: "bookie_validate",
   label: "Bookie Validate",
@@ -226,4 +392,5 @@ export default function registerBookie(pi: ExtensionAPI): void {
   pi.registerTool(readTool);
   pi.registerTool(searchTool);
   pi.registerTool(validateTool);
+  pi.registerTool(writeTool);
 }
