@@ -92,3 +92,11 @@ Open questions are not permission to guess. Resolve them by the listed deadline,
 - **Decision:** Defer every filesystem-writing CLI command. Release 0.1 CLI exposes validate, search, and inspect only. Canonical JSONL remains available through the core stream API, but file-targeted CLI export is deferred because its path-based temporary publication has the same substitution race. Existing policy-bearing core create, amend, and Evidence APIs remain reusable but are not CLI-reachable. No plain `rename()`, cooperating lock, logical marker, or narrowed same-principal race assumption substitutes for the accepted guarantees.
 - **Revisit trigger:** A small audited native helper has an accepted platform/filesystem support matrix and adversarial tests for atomic no-replace publication plus directory-relative no-follow writes, or Node exposes equivalent portable primitives.
 - **Owner:** Product owner and security reviewer.
+
+## OQ-012: Checkpoint preparation and sensitivity boundary
+
+- **State:** Resolved 2026-09-14 by [ADR-0009](../architecture/decisions/0009-structured-checkpoint-preparation.md) with product-owner approval.
+- **Question:** How can Pi preview and capture a mixed-sensitivity checkpoint when compaction events lack canonical Activity metadata and free-form transcript classification would expose or misclassify excluded content?
+- **Decision:** Callers supply complete Activity metadata and structured sensitivity-labelled fragments. Core validates labels against the manifest, removes excluded fragments, rejects detected secrets, and renders the deterministic preview/write body. The extension may retain only prepared state for a pre-compaction approval and never derives checkpoints from raw transcripts or ordinary agent completion.
+- **Revisit trigger:** A measured workflow requires transcript-derived summarization, deterministic metadata generation, or durable pending drafts across sessions.
+- **Owner:** Product owner and security reviewer.

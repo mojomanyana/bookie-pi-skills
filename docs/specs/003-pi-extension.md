@@ -2,11 +2,11 @@
 
 ## Status
 
-In progress — BK-013 implements packaged read, filesystem-search, and validation; BK-014 adds approved queued create/amend; checkpoint, service retrieval, and export tools remain later backlog work
+In progress — BK-013 implements packaged read, filesystem-search, and validation; BK-014 adds approved queued create/amend; BK-015 adds structured checkpoint preparation and pre-compaction approval; service retrieval and export tools remain later backlog work
 
 Owner: unassigned  
 Target release: 0.1  
-Depends on: SPEC-002, Pi extension/package APIs
+Depends on: SPEC-002, [ADR-0009](../architecture/decisions/0009-structured-checkpoint-preparation.md), Pi extension/package APIs
 
 ## Goal
 
@@ -39,12 +39,14 @@ Provide a distributable Pi package that exposes safe Bookie read, search, write,
 
 - `bookie_read`: resolve UID/path and return bounded canonical content plus metadata.
 - `bookie_search`: search local overlay and optional service; expose mode and score sources.
-- `bookie_write`: create/amend/supersede/archive using typed actions; no generic arbitrary-file write.
-- `bookie_checkpoint`: prepare a preview from session context, require confirmation where UI exists, then create one Activity.
+- `bookie_write`: create/amend/supersede/archive using typed actions; no generic arbitrary-file write. Activity create/amend is rejected here and routes exclusively through `bookie_checkpoint`'s structured preparation boundary.
+- `bookie_checkpoint`: prepare a deterministic preview from complete caller-supplied Activity metadata and structured sensitivity-labelled fragments through core. It either writes immediately after explicit/TUI approval or stages the already-prepared request for cancellable confirmation at the next compaction event.
 - `bookie_validate`: validate selected files or vault, optionally against a base ref.
 - `bookie_export`: produce a dry-run or local artifact; external destination execution belongs to SPEC-005.
 
 Non-interactive calls that require approval must fail with a clear instruction unless the user explicitly supplied an approval flag in the originating tool parameters.
+
+Per ADR-0009, checkpoint preparation accepts no raw transcript and generates no path, UID, project, actor, timestamp, or sensitivity. The required fragment sections are outcome, changed artifacts, decisions, evidence, validation, unresolved work, and next action; source session is optional. Core validates sensitivity labels against the manifest, rejects missing/undeclared classes and detected secrets, omits complete excluded fragments before preview, and renders a bounded body behind an opaque prepared-publication value detached from publicly returned data. Confirmation identifies only the canonical target and a digest of filtered input; it does not retain or display raw vault or external request-file paths. `createCheckpointWithPolicy()` rechecks the prepared vault/target/parent identities and complete manifest hash inside the queued mutation and reloads that manifest again after temporary staging before creating the Activity. A staged checkpoint is session-local and is discarded at shutdown. Only one draft slot may be preparing, pending, confirming, or publishing; reservation occurs before request-file I/O, and further sequential or concurrent staging attempts fail statically until the slot is released. A confirmation that would exceed Pi's byte or line limit is rejected rather than truncated.
 
 ## Acceptance criteria
 
@@ -52,7 +54,7 @@ Non-interactive calls that require approval must fail with a clear instruction u
 - All six tools load, advertise accurate descriptions, and call core rather than duplicate policy.
 - Mutation tests prove serialization through the file mutation queue.
 - Checkpoint preview/confirm/write succeeds in TUI and refuses ambiguous approval in print/JSON mode.
-- Declining a checkpoint writes nothing and does not cancel compaction.
+- Declining or cancelling a checkpoint writes nothing and does not cancel compaction; no-UI compaction also continues without reading or writing a draft.
 - A mixed-sensitivity checkpoint retains included context but omits excluded UIDs, paths, and marker content from its preview, written Activity, diagnostics, and logs.
 - No lifecycle hook creates canonical files during ordinary agent completion.
 - Service outage returns labelled local fallback results; total retrieval failure throws or returns an explicit failed/degraded contract rather than an empty success.
@@ -66,7 +68,8 @@ Non-interactive calls that require approval must fail with a clear instruction u
 - Tool contract tests against temporary example vaults.
 - Parallel mutation test that would lose an update without queueing.
 - TUI, RPC/print, cancellation, decline, service-failure, and output-boundary tests.
-- Mixed-sensitivity checkpoint tests capture preview output, Activity bytes, diagnostics, and logs, proving included content remains and excluded identifiers/content do not.
+- Mixed-sensitivity checkpoint tests capture preview output, Activity bytes, diagnostics, and notifications, proving included content remains and excluded identifiers/content do not.
+- Preparation tests cover required sections, missing/undeclared classes, excluded Activity classification, detected secrets, input/output bounds, cancellation, and manifest snapshot changes. Hook tests cover a staged write, decline, cancellation, no UI, no staged draft, shutdown cleanup, and absence of `agent_end`/`agent_settled` writers.
 - Package smoke test through `pi -e` or local package installation in CI where Pi is available.
 - Static test denying `git commit`, `git push`, credential logging, and writes outside core mutation APIs.
 

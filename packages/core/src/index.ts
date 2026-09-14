@@ -1,6 +1,25 @@
 export const OKF_VERSION = "0.2" as const;
 
 export {
+  CHECKPOINT_SECTIONS,
+  MAX_CHECKPOINT_PREVIEW_BYTES,
+  createCheckpointWithPolicy,
+  prepareCheckpoint,
+} from "./checkpoint-preparation.js";
+export type {
+  CheckpointFragment,
+  CheckpointPreview,
+  CheckpointSection,
+  PrepareCheckpointFailure,
+  PrepareCheckpointFailureReason,
+  PrepareCheckpointOptions,
+  PrepareCheckpointRequest,
+  PreparedCheckpointPublication,
+  PrepareCheckpointResult,
+  PrepareCheckpointSuccess,
+} from "./checkpoint-preparation.js";
+
+export {
   DEFAULT_MAX_CANONICAL_JSONL_BYTES,
   exportCanonicalJsonl,
 } from "./canonical-export.js";

@@ -1,12 +1,16 @@
 import {
   amendConceptWithPolicy,
+  createCheckpointWithPolicy,
   createConceptWithPolicy,
   inspectConcept,
+  prepareCheckpoint,
   searchVault,
   validateVault,
   type AmendConceptRequest,
+  type CheckpointPreview,
   type CreateConceptRequest,
   type FilesystemSearchFilters,
+  type PreparedCheckpointPublication,
 } from "@bookie/core";
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import {
@@ -79,7 +83,12 @@ function inertJson(value: object, spaces?: number): string {
 }
 
 function serializedToolResult(
-  tool: "bookie_read" | "bookie_search" | "bookie_validate" | "bookie_write",
+  tool:
+    | "bookie_read"
+    | "bookie_search"
+    | "bookie_validate"
+    | "bookie_write"
+    | "bookie_checkpoint",
   result: object,
 ): string {
   const compact = inertJson({ tool, result });
@@ -96,7 +105,12 @@ function serializedToolResult(
 }
 
 function boundedResult(
-  tool: "bookie_read" | "bookie_search" | "bookie_validate" | "bookie_write",
+  tool:
+    | "bookie_read"
+    | "bookie_search"
+    | "bookie_validate"
+    | "bookie_write"
+    | "bookie_checkpoint",
   result: object,
   mode: "filesystem",
   complete: boolean,
@@ -206,6 +220,171 @@ async function requireWriteApproval(
   );
   signal?.throwIfAborted();
   if (!approved) throw new Error("Bookie write was not approved.");
+}
+
+interface PendingCheckpoint {
+  readonly publication: PreparedCheckpointPublication;
+  readonly preview: CheckpointPreview;
+  readonly approvalHash: `sha256:${string}`;
+  readonly targetPath: string;
+}
+
+function checkpointConfirmationMessage(pending: PendingCheckpoint): string {
+  const message = `${inertJson({
+    targetPath: pending.targetPath,
+    approvalHash: pending.approvalHash,
+  })}\n--- checkpoint preview (untrusted) ---\n${wrapUntrustedSource(pending.preview.bodyText)}`;
+  if (
+    truncateHead(message, {
+      maxBytes: DEFAULT_MAX_BYTES,
+      maxLines: DEFAULT_MAX_LINES,
+    }).truncated
+  ) {
+    throw new Error("Bookie checkpoint failed: bounds.");
+  }
+  return message;
+}
+
+async function publishCheckpoint(
+  pending: PendingCheckpoint,
+  signal: AbortSignal | undefined,
+) {
+  const result = await createCheckpointWithPolicy(pending.publication, {
+    ...(signal === undefined ? {} : { signal }),
+    runExclusive: <T>(absoluteTargetPath: string, mutation: () => Promise<T>) =>
+      withFileMutationQueue(absoluteTargetPath, mutation),
+  });
+  if (!result.ok) {
+    if (result.changedPaths.length > 0) {
+      throw new Error(
+        "Bookie checkpoint may have changed canonical files; reread and validate before retrying.",
+      );
+    }
+    const codes = [...new Set(result.diagnostics.map(({ code }) => code))]
+      .sort()
+      .join(",");
+    throw new Error(`Bookie checkpoint failed: ${codes || "MUTATION-INPUT"}.`);
+  }
+  return result;
+}
+
+interface CheckpointStaging {
+  reserve(): boolean;
+  commit(pending: PendingCheckpoint): boolean;
+  release(): void;
+}
+
+function createCheckpointTool(staging: CheckpointStaging) {
+  return defineTool({
+    name: "bookie_checkpoint",
+    label: "Bookie Checkpoint",
+    description:
+      "Prepare a policy-filtered untrusted checkpoint preview and either create one Activity after approval or stage it for pre-compaction approval. Validation and output are bounded to Pi's 50KB/2000-line limits.",
+    parameters: Type.Object(
+      {
+        vault: Type.String({ minLength: 1 }),
+        requestPath: Type.String({ minLength: 1 }),
+        timing: StringEnum(["now", "before-compaction"] as const),
+        approval: Type.Optional(StringEnum(["explicit", "confirm"] as const)),
+      },
+      { additionalProperties: false },
+    ),
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      if (
+        params.timing === "now" &&
+        params.approval !== "explicit" &&
+        params.approval !== "confirm"
+      ) {
+        throw new Error("Bookie checkpoint requires an approval mode.");
+      }
+      if (
+        params.timing === "before-compaction" &&
+        params.approval !== undefined
+      ) {
+        throw new Error(
+          "Bookie staged checkpoint approval occurs before compaction; omit approval.",
+        );
+      }
+      if (
+        params.timing === "now" &&
+        params.approval === "confirm" &&
+        !ctx.hasUI
+      ) {
+        throw new Error(
+          "Bookie checkpoint requires explicit approval in non-interactive mode.",
+        );
+      }
+      let reserved = false;
+      if (params.timing === "before-compaction") {
+        if (!staging.reserve()) {
+          throw new Error("Bookie checkpoint is already staged.");
+        }
+        reserved = true;
+      }
+      try {
+        const snapshot = await readWriteRequest(
+          params.requestPath,
+          ctx.cwd,
+          signal,
+        );
+        const root = vaultRoot(params.vault, ctx.cwd);
+        const prepared = await prepareCheckpoint(
+          root,
+          snapshot.request as Parameters<typeof prepareCheckpoint>[1],
+          signal === undefined ? {} : { signal },
+        );
+        if (!prepared.ok) {
+          throw new Error(`Bookie checkpoint failed: ${prepared.reason}.`);
+        }
+        const pending: PendingCheckpoint = {
+          publication: prepared.publication,
+          preview: prepared.preview,
+          approvalHash: `sha256:${createHash("sha256")
+            .update(JSON.stringify(prepared.preparedInput))
+            .digest("hex")}`,
+          targetPath: prepared.preparedInput.path,
+        };
+        const confirmationMessage = checkpointConfirmationMessage(pending);
+        if (params.timing === "before-compaction") {
+          if (!staging.commit(pending)) {
+            throw new Error("Bookie checkpoint is already staged.");
+          }
+          reserved = false;
+          return boundedResult(
+            "bookie_checkpoint",
+            { status: "staged", preview: prepared.preview },
+            "filesystem",
+            true,
+          );
+        }
+        if (params.approval === "confirm") {
+          const approved = await ctx.ui.confirm(
+            "Approve Bookie checkpoint?",
+            confirmationMessage,
+            signal === undefined ? undefined : { signal },
+          );
+          signal?.throwIfAborted();
+          if (!approved) {
+            return boundedResult(
+              "bookie_checkpoint",
+              { status: "declined", preview: prepared.preview },
+              "filesystem",
+              true,
+            );
+          }
+        }
+        const result = await publishCheckpoint(pending, signal);
+        return boundedResult(
+          "bookie_checkpoint",
+          { status: result.outcome, sourceHash: result.sourceHash },
+          "filesystem",
+          true,
+        );
+      } finally {
+        if (reserved) staging.release();
+      }
+    },
+  });
 }
 
 const readTool = defineTool({
@@ -389,8 +568,85 @@ const validateTool = defineTool({
 });
 
 export default function registerBookie(pi: ExtensionAPI): void {
+  type CheckpointState =
+    | { readonly status: "preparing" }
+    | {
+        readonly status: "pending" | "processing";
+        readonly pending: PendingCheckpoint;
+      };
+  let checkpointState: CheckpointState | undefined;
+  const checkpointTool = createCheckpointTool({
+    reserve() {
+      if (checkpointState !== undefined) return false;
+      checkpointState = { status: "preparing" };
+      return true;
+    },
+    commit(pending) {
+      if (checkpointState?.status !== "preparing") return false;
+      checkpointState = { status: "pending", pending };
+      return true;
+    },
+    release() {
+      if (checkpointState?.status === "preparing") checkpointState = undefined;
+    },
+  });
+
   pi.registerTool(readTool);
   pi.registerTool(searchTool);
   pi.registerTool(validateTool);
   pi.registerTool(writeTool);
+  pi.registerTool(checkpointTool);
+
+  pi.on("session_before_compact", async (event, ctx) => {
+    if (!ctx.hasUI) return;
+    if (checkpointState === undefined) {
+      ctx.ui.notify(
+        "No prepared Bookie checkpoint is staged; compaction will continue.",
+        "info",
+      );
+      return;
+    }
+    if (checkpointState.status !== "pending") return;
+    const pending = checkpointState.pending;
+    const processing: CheckpointState = { status: "processing", pending };
+    checkpointState = processing;
+    try {
+      const approved = await ctx.ui.confirm(
+        "Create staged Bookie checkpoint?",
+        checkpointConfirmationMessage(pending),
+        { signal: event.signal },
+      );
+      event.signal?.throwIfAborted();
+      if (!approved) {
+        ctx.ui.notify(
+          "Bookie checkpoint declined; compaction will continue.",
+          "info",
+        );
+        return;
+      }
+      await publishCheckpoint(pending, event.signal);
+      ctx.ui.notify(
+        "Bookie checkpoint created; compaction will continue.",
+        "info",
+      );
+    } catch {
+      if (event.signal?.aborted) {
+        ctx.ui.notify(
+          "Bookie checkpoint cancelled; compaction will continue.",
+          "info",
+        );
+      } else {
+        ctx.ui.notify(
+          "Bookie checkpoint failed; compaction will continue.",
+          "error",
+        );
+      }
+    } finally {
+      if (checkpointState === processing) checkpointState = undefined;
+    }
+  });
+
+  pi.on("session_shutdown", () => {
+    checkpointState = undefined;
+  });
 }

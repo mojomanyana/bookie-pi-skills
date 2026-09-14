@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { loadConcept } from "./concept-loader.js";
 import type { LoadedConcept, ReadonlyYamlMapping } from "./concept-loader.js";
 import type { ResolvedMutationTarget } from "./concept-mutation-filesystem.js";
@@ -37,6 +39,12 @@ import {
 } from "./vault-validator.js";
 import { DiagnosticCollector } from "./vault-diagnostics.js";
 import { throwIfAborted } from "./vault-cancellation.js";
+
+export function mutationManifestHash(manifest: Manifest): `sha256:${string}` {
+  return `sha256:${createHash("sha256")
+    .update(JSON.stringify(manifest))
+    .digest("hex")}`;
+}
 
 export interface Candidate {
   readonly bytes: Uint8Array;
