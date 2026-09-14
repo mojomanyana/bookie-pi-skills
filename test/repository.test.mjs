@@ -544,10 +544,9 @@ test("delivered CLI and Pi slices retain accepted backlog evidence", () => {
   const bk014Row = backlog.match(/^\| BK-014 .*$/mu)?.[0] ?? "";
   assert.match(bk014Row, /^\| BK-014 \| Done\s+\|/u);
   assert.match(bk014Row, /\[evidence\]\(evidence\/BK-014\.md\)/u);
-  assert.match(
-    backlog.match(/^\| BK-015 .*$/mu)?.[0] ?? "",
-    /^\| BK-015 \| Ready\s+\|/u,
-  );
+  const bk015Row = backlog.match(/^\| BK-015 .*$/mu)?.[0] ?? "";
+  assert.match(bk015Row, /^\| BK-015 \| Done\s+\|/u);
+  assert.match(bk015Row, /\[evidence\]\(evidence\/BK-015\.md\)/u);
   for (const command of [
     "init",
     "create",

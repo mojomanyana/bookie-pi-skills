@@ -2,7 +2,7 @@
 
 ## Status
 
-In progress — BK-013 implements packaged read, filesystem-search, and validation; BK-014 adds approved queued create/amend; BK-015 adds structured checkpoint preparation and pre-compaction approval; service retrieval and export tools remain later backlog work
+In progress — packaged read, filesystem-search, validation, approved queued create/amend, and structured checkpoint/pre-compaction workflows through BK-015 are merged and verified; service retrieval and export tools remain later backlog work
 
 Owner: unassigned  
 Target release: 0.1  
