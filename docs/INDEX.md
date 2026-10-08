@@ -15,8 +15,11 @@ This page is the stable entry point for product and engineering context.
 - [Security](architecture/security.md) — assets, trust boundaries, threats, and controls.
 - [Architecture decisions](architecture/decisions/) — accepted load-bearing decisions, including the [service protocol, auth, and projection design](architecture/decisions/0010-service-protocol-auth-and-projection.md).
 
+- [Bounded rebuild admission](architecture/decisions/0011-bounded-rebuild-admission.md) — accepted ADR-0011 resolves OQ-013; core source metadata and isolated preflight primitives are local/unmerged, and the disconnected v2 recipe codec has golden vectors; a disconnected artifact inventory/verifier is local; reproducible staging/image qualification, builder verification, controller integration, and scale verification remain pending.
+
 ## Delivery
 
+- [Next-session handoff](planning/next-session.md) — current product picture, checkout state, verification and remaining BK-017 work.
 - [Roadmap](planning/roadmap.md) — release sequence and exit gates.
 - [Backlog](planning/backlog.md) — ordered issue-ready work.
 - [Definition of done](planning/definition-of-done.md) — completion criteria.

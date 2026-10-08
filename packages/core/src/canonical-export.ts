@@ -327,7 +327,11 @@ export async function exportCanonicalJsonl(
   );
   throwIfAborted(signal);
 
-  if (!snapshot.valid || snapshot.sourceCommit === undefined) {
+  if (
+    !snapshot.valid ||
+    snapshot.sourceCommit === undefined ||
+    snapshot.sourceManifest === undefined
+  ) {
     return failure({
       root: snapshot.root,
       secretPolicy,
@@ -412,6 +416,7 @@ export async function exportCanonicalJsonl(
     root: snapshot.root,
     sourceCommit: snapshot.sourceCommit,
     secretPolicy,
+    sourceManifest: snapshot.sourceManifest,
     recordCount: records.length,
     byteLength,
     outputHash: `sha256:${outputHash.digest("hex")}`,
@@ -432,5 +437,6 @@ export type {
   CanonicalJsonlRecordV1,
   CanonicalJsonlSink,
   CanonicalExportSecretPolicy,
+  CanonicalSourceManifest,
   InitialBookieConceptType,
 } from "./canonical-export-model.js";

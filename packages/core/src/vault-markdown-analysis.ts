@@ -4,21 +4,33 @@ interface MarkdownNode {
   readonly type: string;
   readonly url?: string;
   readonly identifier?: string;
+  readonly value?: string;
+  readonly alt?: string;
   readonly children?: readonly MarkdownNode[];
 }
 
 export interface MarkdownAnalysis {
   readonly destinations: readonly string[];
+  readonly headings: readonly string[];
   readonly maximumContainerDepth: number;
 }
 
 const containerTypes = new Set(["blockquote", "list", "listItem"]);
+
+function headingText(node: MarkdownNode): string {
+  if (node.type === "text" || node.type === "inlineCode")
+    return node.value ?? "";
+  if (node.type === "image" || node.type === "imageReference")
+    return node.alt ?? "";
+  return (node.children ?? []).map(headingText).join("");
+}
 
 export function analyzeMarkdown(body: string): MarkdownAnalysis {
   const tree = fromMarkdown(body) as MarkdownNode;
   const definitions = new Map<string, string>();
   const references: string[] = [];
   const destinations: string[] = [];
+  const headings: string[] = [];
   const stack: Array<{
     readonly node: MarkdownNode;
     readonly containerDepth: number;
@@ -29,6 +41,7 @@ export function analyzeMarkdown(body: string): MarkdownAnalysis {
     const current = stack.pop();
     if (current === undefined) break;
     const { node } = current;
+    if (node.type === "heading") headings.push(headingText(node));
     const containerDepth =
       current.containerDepth + (containerTypes.has(node.type) ? 1 : 0);
     maximumContainerDepth = Math.max(maximumContainerDepth, containerDepth);
@@ -61,5 +74,5 @@ export function analyzeMarkdown(body: string): MarkdownAnalysis {
     const destination = definitions.get(identifier);
     if (destination !== undefined) destinations.push(destination);
   }
-  return { destinations, maximumContainerDepth };
+  return { destinations, headings, maximumContainerDepth };
 }

@@ -3,7 +3,12 @@ import { spawn } from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
 import { Buffer } from "node:buffer";
+import { fileURLToPath } from "node:url";
 
+import type {
+  ApprovedGitCommitRequest,
+  ApprovedGitCommitResult,
+} from "./approved-git-source.js";
 import { loadConcept } from "./concept-loader.js";
 import { throwIfAborted } from "./vault-cancellation.js";
 import { createDiagnostic, DiagnosticCollector } from "./vault-diagnostics.js";
@@ -728,6 +733,103 @@ async function resolveGitBase(
   return { commit, prefix };
 }
 
+/**
+ * History proof only: no client authorization, mount proof, vault validation, or
+ * activation permission. Deployment owns the ref/window. Recheck at activation.
+ * Read and hash raw commit objects: revision walkers honor grafts/shallow state.
+ */
+export async function resolveApprovedGitCommit(
+  root: string | URL,
+  request: ApprovedGitCommitRequest,
+): Promise<ApprovedGitCommitResult> {
+  if (
+    (typeof root !== "string" && !(root instanceof URL)) ||
+    !isObject(request) ||
+    Object.keys(request).some(
+      (key) =>
+        !["sourceRef", "approvedRef", "rollbackWindow", "signal"].includes(key),
+    ) ||
+    typeof request.sourceRef !== "string" ||
+    typeof request.approvedRef !== "string" ||
+    !request.approvedRef.startsWith("refs/") ||
+    request.approvedRef.startsWith("refs/replace/") ||
+    !validBaseRef(request.approvedRef) ||
+    !Number.isSafeInteger(request.rollbackWindow) ||
+    request.rollbackWindow < 0 ||
+    request.rollbackWindow > 1024 ||
+    (request.signal !== undefined && !(request.signal instanceof AbortSignal))
+  )
+    throw new TypeError("Git approval request is invalid.");
+  const { sourceRef, approvedRef, rollbackWindow, signal } = request;
+  const denied = { ok: false, reason: "source-not-approved" } as const;
+  throwIfAborted(signal);
+  if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})(?![\s\S])/u.test(sourceRef))
+    return denied;
+  try {
+    const path = root instanceof URL ? fileURLToPath(root) : root;
+    // show-ref --verify binds the exact configured name. rev-parse on a ref
+    // name can guess refs/tags/<name> when that literal ref is absent.
+    const approvedObject = decodeGitLine(
+      await runGitBuffered(
+        path,
+        ["show-ref", "--verify", "--hash", approvedRef],
+        signal,
+        128,
+      ),
+      128,
+    );
+    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})(?![\s\S])/u.test(approvedObject))
+      return denied;
+    // Peel an annotated tag only through this captured immutable object ID.
+    const { commit: approvedTip } = await resolveGitBase(
+      path,
+      approvedObject,
+      signal,
+    );
+    if (sourceRef.length !== approvedTip.length) return denied;
+    let current = approvedTip;
+    for (let distance = 0; distance <= rollbackWindow; distance++) {
+      const bytes = Buffer.from(
+        await runGitBuffered(
+          path,
+          ["cat-file", "commit", current],
+          signal,
+          1_048_576,
+        ),
+      );
+      const digest = createHash(current.length === 40 ? "sha1" : "sha256")
+        .update(`commit ${bytes.byteLength}\0`)
+        .update(bytes)
+        .digest("hex");
+      if (digest !== current) return denied;
+      const end = bytes.indexOf("\n\n");
+      if (end === -1) return denied;
+      const headers = bytes.subarray(0, end).toString("latin1").split("\n");
+      const oid = (value: string): boolean =>
+        value.length === current.length && /^[a-f0-9]+$/u.test(value);
+      if (!headers[0]?.startsWith("tree ") || !oid(headers[0].slice(5)))
+        return denied;
+      let firstParent: string | undefined;
+      let pastParents = false;
+      for (const header of headers.slice(1)) {
+        if (header.startsWith("parent ")) {
+          if (pastParents || !oid(header.slice(7))) return denied;
+          firstParent ??= header.slice(7);
+        } else pastParents = true;
+      }
+      // Even the requested commit must have been read and verified, not merely named.
+      if (current === sourceRef)
+        return { ok: true, sourceCommit: sourceRef, approvedTip };
+      if (firstParent === undefined) return denied;
+      current = firstParent;
+    }
+    return denied;
+  } catch {
+    throwIfAborted(signal);
+    return denied;
+  }
+}
+
 function normalizeTreeEntries(
   entries: readonly GitEntry[],
   prefix: string,
@@ -799,6 +901,62 @@ export async function readLocalGitCommitRoot(
     prefix: resolved.prefix,
     entries,
   };
+}
+
+/** Targeted metadata-only lookup; no recursive tree/corpus enumeration. */
+export async function readLocalGitCommitManifest(
+  root: string,
+  sourceCommit: string,
+  maximumBytes: number,
+  signal: AbortSignal | undefined,
+): Promise<Readonly<{ prefix: string; bytes: Uint8Array }>> {
+  const source = await resolveGitBase(root, sourceCommit, signal);
+  if (source.commit !== sourceCommit || hasGitMetadataSegment(source.prefix))
+    throw new GitFailure();
+  const path =
+    source.prefix === "" ? "bookie.yaml" : `${source.prefix}/bookie.yaml`;
+  if (!validGitPath(path)) throw new GitFailure();
+  const entries = parseTreeEntries(
+    await runGitRecords(
+      root,
+      [
+        "ls-tree",
+        "-z",
+        "-l",
+        "--full-tree",
+        source.commit,
+        "--",
+        `:(top,literal)${path}`,
+      ],
+      signal,
+      1,
+    ),
+  );
+  const entry = entries[0];
+  if (
+    entries.length !== 1 ||
+    entry === undefined ||
+    entry.path !== path ||
+    entry.type !== "blob" ||
+    !ordinaryModes.has(entry.mode) ||
+    entry.oid.length !== sourceCommit.length ||
+    entry.size === undefined ||
+    entry.size > maximumBytes
+  )
+    throw new GitFailure();
+  const bytes = await runGitBuffered(
+    root,
+    ["cat-file", "blob", entry.oid],
+    signal,
+    maximumBytes,
+  );
+  const digest = createHash(sourceCommit.length === 40 ? "sha1" : "sha256")
+    .update(`blob ${bytes.byteLength}\0`)
+    .update(bytes)
+    .digest("hex");
+  if (bytes.byteLength !== entry.size || digest !== entry.oid)
+    throw new GitFailure();
+  return { prefix: source.prefix, bytes };
 }
 
 const MAX_TREE_PATHS_PER_GIT_CALL = 128;

@@ -1,0 +1,74 @@
+[
+  {
+    "name": "root-sha1",
+    "input": {
+      "vaultUid": "VLT-01ARZ3NDEKTSV4RRFFQ69G5FAY",
+      "objectFormat": "sha1",
+      "sourceCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "vaultScope": "",
+      "profile": "1.0",
+      "manifestHash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "policy": {
+        "secretPolicy": "reject-detected",
+        "secretPolicyVersion": "fixture-secret-1",
+        "approvedSensitivityClasses": ["public", "internal"],
+        "provider": null
+      },
+      "versions": {
+        "canonicalExportVersion": "1.0",
+        "projectionSchemaVersion": "1",
+        "parserVersion": "fixture-parser-1",
+        "chunkerVersion": "heading-utf8-1",
+        "preprocessingVersion": "markdown-trim-1"
+      },
+      "maxChunkBytes": 8192,
+      "runtimeArtifactHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "embeddingGeneration": null
+    },
+    "scopeSerialized": "[\"bookie-vault-scope\",1,\"\"]",
+    "policySerialized": "[\"bookie-index-policy\",1,\"reject-detected\",\"fixture-secret-1\",[\"internal\",\"public\"],null]",
+    "expected": {
+      "serialized": "[\"bookie-build-inputs\",2,\"VLT-01ARZ3NDEKTSV4RRFFQ69G5FAY\",\"sha1\",\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"sha256:432dccdb8c0c04329632fd7d1144f15b14eea25b50c594bd21098b3d3e61913f\",\"1.0\",\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"sha256:9648918858496b2bbee2ec8b78eac8ed5af366951469cb4734e2fc5d86bdffd9\",\"1.0\",\"1\",\"fixture-parser-1\",\"heading-utf8-1\",\"markdown-trim-1\",8192,\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",null]",
+      "scopeHash": "sha256:432dccdb8c0c04329632fd7d1144f15b14eea25b50c594bd21098b3d3e61913f",
+      "policyHash": "sha256:9648918858496b2bbee2ec8b78eac8ed5af366951469cb4734e2fc5d86bdffd9",
+      "recipeHash": "sha256:1165c8431c11d03c52b1ce26aa0d3e1765dcc13d7fb25a22cac12b5b033d872b",
+      "buildId": "bld_1165c8431c11d03c52b1ce26aa0d3e1765dcc13d7fb25a22cac12b5b033d872b"
+    }
+  },
+  {
+    "name": "unicode-sha256-empty-approval",
+    "input": {
+      "vaultUid": "VLT-01ARZ3NDEKTSV4RRFFQ69G5FAY",
+      "objectFormat": "sha256",
+      "sourceCommit": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "vaultScope": "nested/space \"vault\"-😀",
+      "profile": "1.0",
+      "manifestHash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "policy": {
+        "secretPolicy": "reject-detected",
+        "secretPolicyVersion": "fixture-secret-1",
+        "approvedSensitivityClasses": [],
+        "provider": null
+      },
+      "versions": {
+        "canonicalExportVersion": "1.0",
+        "projectionSchemaVersion": "1",
+        "parserVersion": "fixture-parser-1",
+        "chunkerVersion": "heading-utf8-1",
+        "preprocessingVersion": "markdown-trim-1"
+      },
+      "maxChunkBytes": 16,
+      "runtimeArtifactHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "embeddingGeneration": null
+    },
+    "scopeSerialized": "[\"bookie-vault-scope\",1,\"nested/space \\\"vault\\\"-😀\"]",
+    "policySerialized": "[\"bookie-index-policy\",1,\"reject-detected\",\"fixture-secret-1\",[],null]",
+    "expected": {
+      "serialized": "[\"bookie-build-inputs\",2,\"VLT-01ARZ3NDEKTSV4RRFFQ69G5FAY\",\"sha256\",\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"sha256:a2e91c2b7c14a6af330a9ef3af72d9c289cf0896571a29f609d8e6fb3b64ec33\",\"1.0\",\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"sha256:b5d3bf697910f820e92f1a4824a936726af5ef573cfda64ef5ad747b6362dafd\",\"1.0\",\"1\",\"fixture-parser-1\",\"heading-utf8-1\",\"markdown-trim-1\",16,\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",null]",
+      "scopeHash": "sha256:a2e91c2b7c14a6af330a9ef3af72d9c289cf0896571a29f609d8e6fb3b64ec33",
+      "policyHash": "sha256:b5d3bf697910f820e92f1a4824a936726af5ef573cfda64ef5ad747b6362dafd",
+      "recipeHash": "sha256:ba7c01c2cf861bd2c055d83f3dbb2fe036678a27b0a27d67ccc8ebed509f9c5a",
+      "buildId": "bld_ba7c01c2cf861bd2c055d83f3dbb2fe036678a27b0a27d67ccc8ebed509f9c5a"
+    }
+  }
+]

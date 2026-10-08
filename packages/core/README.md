@@ -20,6 +20,26 @@ Results expose `valid`, `complete`, `diagnosticsTruncated`, the real root, and d
 
 Traversal never accepts symlinks, multiply linked files, or a platform without no-follow opens: each directory/file ancestor is snapshotted with high-resolution identity metadata around enumeration or reading, and deduplicated identities are rechecked at completion. Resources are hashed incrementally without loading the entire file, and failed reads still debit streamed-byte limits. Diagnostics for parsed records assigned an excluded sensitivity class redact source and field-derived path hierarchies as `<excluded>`.
 
+## Approved Git history
+
+`resolveApprovedGitCommit(root, { sourceRef, approvedRef, rollbackWindow, signal? })` is the history-only primitive used by [SPEC-004](../../docs/specs/004-retrieval-service.md#bk-017-approved-history-ingestion-slice). Deployment supplies a full local `refs/...` name and 0–1,024 first-parent edges; zero admits only the once-resolved tip. The requested commit must be a full lowercase object ID. Each traversed raw commit is bounded to 1 MiB and hash-verified; literal first parents, not replacement/graft/shallow revision-walker state, prove ancestry. Missing objects never trigger a fetch. Success returns `sourceCommit` and `approvedTip`; failure is static `source-not-approved`, invalid configuration throws static `TypeError`, and cancellation rejects `AbortError`.
+
+This does not validate a vault or read-only mount, authenticate clients, approve sensitivity/provider input, or authorize activation. The caller owns the deadline and must re-evaluate approval at activation. The service's isolated-ingestion wrapper adds full canonical/policy validation without changing portable core APIs.
+
+## Approved source manifest
+
+`readApprovedSourceManifest(root, { sourceRef, approvedRef, rollbackWindow, vaultUid, signal? })` proves approved history, then reads only that commit's bounded ordinary `bookie.yaml` blob. It checks blob size/hash, strict UTF-8/YAML (65,536 bytes/depth 64), the profile schema, and expected vault UID. Success returns frozen `sourceCommit`, `approvedTip`, `objectFormat`, repository-relative `vaultScope`, and `manifest: { vaultUid, profile, hash, sensitivityClasses }`. Relative paths and mutable URL/request inputs are captured before asynchronous work. Failures are static `source-not-approved` or `manifest-unavailable`; malformed requests throw static `TypeError`, cancellation rejects `AbortError`.
+
+This is **metadata only**: it does not read concept/resource contents, validate the complete vault, return corpus counts/build IDs, grant indexing permission, or prove read-only mounts. Scope/manifest identity must not be logged or exposed as new HTTP fields. The service's local/unmerged [isolated source preflight](../../apps/service/README.md#isolated-source-preflight) now adds its deployment guard before source Git reads and a deadline-controlled process; controller admission/capacity and durable claims remain pending. Neither Git/network writes nor Redis/provider calls are introduced.
+
+After building, try the synthetic success/error/boundary tests:
+
+```bash
+node --test packages/core/test/approved-source-manifest.test.mjs
+```
+
+See [SPEC-004](../../docs/specs/004-retrieval-service.md#bk-017-approved-source-manifest-slice) for the precise boundary and deferred work.
+
 ## Safe concept mutation
 
 `createConcept(root, request, options?)` writes one complete schema-valid profile concept to an absent canonical vault-relative path. `amendConcept(root, request, options?)` applies non-overlapping set/remove paths to the retained private YAML Document and optionally replaces the exact body text. Amend requires the `sha256:...` token returned by `computeConceptSourceHash()` over the bytes previously read, preserves stable type/profile/UID identity, checks again immediately before publication, and returns an observable conflict instead of overwriting a changed source.
@@ -44,10 +64,10 @@ Search omits every record assigned a manifest-excluded sensitivity class from hi
 
 ## Canonical JSONL export
 
-`exportCanonicalJsonl(root, { sourceRef, write }, options?)` resolves one local ref once, reads and completely validates only the exact commit's Git objects, and sends UID-sorted canonical JSONL 1.0 lines sequentially to the caller's byte sink. It never mixes worktree/index bytes into commit provenance, fetches, runs hooks or filters, writes canonical files, commits, pushes, or calls a network service. Success reports the resolved commit, selected secret policy, record/byte counts, and exact output SHA-256.
+`exportCanonicalJsonl(root, { sourceRef, write }, options?)` resolves one local ref once, reads and completely validates only the exact commit's Git objects, and sends UID-sorted canonical JSONL 1.0 lines sequentially to the caller's byte sink. It never mixes worktree/index bytes into commit provenance, fetches, runs hooks or filters, writes canonical files, commits, pushes, or calls a network service. Success reports the resolved commit, selected secret policy, record/byte counts, exact output SHA-256, and `sourceManifest` (vault UID, profile, exact manifest-blob SHA-256, and declared sensitivity classes). Manifest metadata is read from the same validated Git commit, not the working tree, and does not alter JSONL lines.
 
 Each line contains stable identity, canonical path, exact concept-blob hash, complete decoded frontmatter including unknown extensions, and exact Markdown body. Recursive object keys are deterministic; arrays and accepted scalar/date/empty values retain their semantics. Source traversal, parsing, Evidence hashing, diagnostics, output, and cancellation are bounded before the sink is invoked.
 
-Declared excluded records are validated but omitted. Missing/undeclared sensitivity or any included canonical field that exposes an excluded UID or path fails before output with static redaction. Secret detection is optional but defaults to `secretPolicy: "reject-detected"`; fixed local high-confidence signatures fail with static `EXPORT-SECRET` before output. The explicit `"allow-unchecked"` policy skips only that heuristic, is reported in the result, and never weakens sensitivity rules. Invalid, incomplete, or oversized snapshots likewise invoke the sink zero times. Once output starts, cancellation or a sink failure can leave a caller-owned prefix; discard it. File callers must stage privately and publish only after success.
+Declared excluded records are validated but omitted. Missing/undeclared sensitivity or any included canonical field that exposes an excluded UID or path fails before output with static redaction. Policy also checks decoded Markdown headings and link destinations so entity decoding or inline formatting cannot introduce excluded identities or detected secrets into a later projection; canonical Markdown bytes remain unchanged. Secret detection is optional but defaults to `secretPolicy: "reject-detected"`; fixed local high-confidence signatures fail with static `EXPORT-SECRET` before output. The explicit `"allow-unchecked"` policy skips only that heuristic, is reported in the result, and never weakens sensitivity rules. Invalid, incomplete, or oversized snapshots likewise invoke the sink zero times. Once output starts, cancellation or a sink failure can leave a caller-owned prefix; discard it. File callers must stage privately and publish only after success.
 
 The package declares Node `>=24`; `npm pack` builds code, declarations, and canonical schema assets from a clean source checkout. `npm run benchmark:vault --workspace @bookie/core -- 50000`, `npm run benchmark:query --workspace @bookie/core -- 50000`, and `npm run benchmark:export --workspace @bookie/core -- 50000` reproduce the bounded scale probes. Append `mixed` to the export benchmark to alternate included and excluded records at the same scale.

@@ -11,6 +11,7 @@ export interface ValidationLimits {
 
 export interface Manifest {
   readonly profile: "1.0";
+  readonly vault: { readonly uid: string };
   readonly allowed_concept_types: readonly string[];
   readonly policy: {
     readonly evidence_roots: readonly string[];

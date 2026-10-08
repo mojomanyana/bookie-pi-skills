@@ -50,6 +50,13 @@ export interface CanonicalJsonlExportOptions {
   readonly signal?: AbortSignal;
 }
 
+export interface CanonicalSourceManifest {
+  readonly vaultUid: string;
+  readonly profile: "1.0";
+  readonly hash: ConceptSourceHash;
+  readonly sensitivityClasses: readonly string[];
+}
+
 export interface CanonicalJsonlExportSuccess {
   readonly ok: true;
   readonly format: "bookie-canonical-jsonl";
@@ -57,6 +64,7 @@ export interface CanonicalJsonlExportSuccess {
   readonly root: string;
   readonly sourceCommit: string;
   readonly secretPolicy: CanonicalExportSecretPolicy;
+  readonly sourceManifest: CanonicalSourceManifest;
   readonly recordCount: number;
   readonly byteLength: number;
   readonly outputHash: ConceptSourceHash;

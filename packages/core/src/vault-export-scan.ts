@@ -7,6 +7,7 @@ import { loadConcept } from "./concept-loader.js";
 import type { ConceptSourceHash } from "./concept-mutation-model.js";
 import type {
   CanonicalExportSecretPolicy,
+  CanonicalSourceManifest,
   InitialBookieConceptType,
 } from "./canonical-export-model.js";
 import { throwIfAborted } from "./vault-cancellation.js";
@@ -63,11 +64,13 @@ export interface ExportSnapshotRecord {
   readonly sensitivity: string | null;
   readonly excluded: boolean;
   readonly localTargets: ReadonlySet<string>;
+  readonly projectedMarkdownStrings: readonly string[];
 }
 
 export interface ExportSnapshotResult {
   readonly root: string;
   readonly sourceCommit?: string;
+  readonly sourceManifest?: CanonicalSourceManifest;
   readonly records: readonly ExportSnapshotRecord[];
   readonly valid: boolean;
   readonly complete: boolean;
@@ -329,12 +332,12 @@ async function validateSnapshotMarkdownLinks(
   signal: AbortSignal | undefined,
   localTargets: Set<string>,
   redactedPaths: Set<string>,
-): Promise<void> {
+): Promise<readonly string[]> {
   const analysis = await analyzeBoundedMarkdown(body, signal);
   if (analysis === undefined) {
     collector.add(createDiagnostic("MARKDOWN-LINK", displayFile));
     collector.markIncomplete();
-    return;
+    return [];
   }
   for (const destination of analysis.destinations) {
     const target = localLinkTarget(destination, sourcePath);
@@ -351,6 +354,9 @@ async function validateSnapshotMarkdownLinks(
       collector.add(createDiagnostic("MARKDOWN-LINK", displayFile));
     }
   }
+  // Parsed headings and URLs decode entities and remove inline formatting.
+  // Apply export policy to the exact strings downstream projections may emit.
+  return [...analysis.headings, ...analysis.destinations];
 }
 
 function sourceHash(bytes: Uint8Array): ConceptSourceHash {
@@ -885,7 +891,7 @@ export async function scanGitCommitForExport(
         addRedactedReferences(sourcePath, frontmatter, redactedPaths);
       }
       const localTargets = new Set<string>();
-      await validateSnapshotMarkdownLinks(
+      const projectedMarkdownStrings = await validateSnapshotMarkdownLinks(
         loaded.concept.bodyText,
         sourcePath,
         displayFile,
@@ -990,6 +996,7 @@ export async function scanGitCommitForExport(
           sensitivity !== null &&
           manifest.policy.sensitivity.excluded_classes.includes(sensitivity),
         localTargets,
+        projectedMarkdownStrings,
       });
     }
 
@@ -1035,6 +1042,9 @@ export async function scanGitCommitForExport(
           matcher.matches(record.path) ||
           valueContainsIdentity(record.frontmatter, matcher) ||
           matcher.matches(record.bodyText) ||
+          record.projectedMarkdownStrings.some((value) =>
+            matcher.matches(value),
+          ) ||
           (record.localTargets.size > 0 &&
             [...record.localTargets].some((target) =>
               excludedPaths.has(target),
@@ -1057,6 +1067,7 @@ export async function scanGitCommitForExport(
           title: record.title,
           frontmatter: record.frontmatter,
           body_markdown: record.bodyText,
+          projectedMarkdownStrings: record.projectedMarkdownStrings,
         }),
       )
     ) {
@@ -1071,6 +1082,18 @@ export async function scanGitCommitForExport(
     return {
       root,
       sourceCommit,
+      ...(complete && diagnostics.length === 0
+        ? {
+            sourceManifest: Object.freeze({
+              vaultUid: manifest.vault.uid,
+              profile: manifest.profile,
+              hash: sourceHash(manifestBytes),
+              sensitivityClasses: Object.freeze([
+                ...manifest.policy.sensitivity.classes,
+              ]),
+            }),
+          }
+        : {}),
       records: Object.freeze(exportRecords),
       valid: complete && diagnostics.length === 0,
       complete,
