@@ -16,10 +16,12 @@
     ]
   },
   "scripts": {
-    "build": "npm run build:force --workspace @bookie/core && tsc -b --force",
-    "prepack": "npm run build",
-    "test": "npm run build && node --test test/*.test.mjs",
-    "typecheck": "tsc -b --pretty false"
+    "build": "tsc -b --force && node ../../packages/core/scripts/copy-schemas.mjs",
+    "prepack": "npm run build:force",
+    "test": "npm run build && npm run test:built",
+    "typecheck": "tsc -b --pretty false",
+    "build:force": "tsc -b --force && node ../../packages/core/scripts/copy-schemas.mjs",
+    "test:built": "node --test test/*.test.mjs"
   },
   "dependencies": {
     "@bookie/core": "0.0.0"

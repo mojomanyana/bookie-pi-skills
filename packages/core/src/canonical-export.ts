@@ -1,9 +1,6 @@
+import { positiveLimit } from "./bounded-limit.js";
 import { createHash } from "node:crypto";
 
-import {
-  DEFAULT_MAX_CONCEPT_BYTES,
-  DEFAULT_MAX_YAML_DEPTH,
-} from "./concept-loader.js";
 import type { ReadonlyYamlValue } from "./concept-loader.js";
 import type {
   CanonicalJsonlExportFailure,
@@ -21,14 +18,7 @@ import { compareText, createDiagnostic } from "./vault-diagnostics.js";
 import type { ValidationLimits } from "./vault-model.js";
 import { scanGitCommitForExport } from "./vault-export-scan.js";
 import type { ExportSnapshotRecord } from "./vault-export-scan.js";
-import {
-  DEFAULT_MAX_MANIFEST_BYTES,
-  DEFAULT_MAX_TOTAL_CONCEPT_BYTES,
-  DEFAULT_MAX_TOTAL_RESOURCE_BYTES,
-  DEFAULT_MAX_VAULT_CONCEPTS,
-  DEFAULT_MAX_VAULT_DIAGNOSTICS,
-  DEFAULT_MAX_VAULT_ENTRIES,
-} from "./vault-validator.js";
+import { validationLimits } from "./vault-limits.js";
 
 export const DEFAULT_MAX_CANONICAL_JSONL_BYTES = 536_870_912;
 
@@ -63,64 +53,9 @@ function isObject(value: unknown): value is Readonly<Record<string, unknown>> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function positiveLimit(
-  name: string,
-  value: number | undefined,
-  maximum: number,
-): number {
-  if (value === undefined) return maximum;
-  if (!Number.isSafeInteger(value) || value <= 0 || value > maximum) {
-    throw new TypeError(
-      `${name} must be a positive integer no greater than ${maximum}`,
-    );
-  }
-  return value;
-}
-
 function exportLimits(options: CanonicalJsonlExportOptions): ExportLimits {
   return {
-    validation: {
-      maxManifestBytes: positiveLimit(
-        "maxManifestBytes",
-        options.maxManifestBytes,
-        DEFAULT_MAX_MANIFEST_BYTES,
-      ),
-      maxConceptBytes: positiveLimit(
-        "maxConceptBytes",
-        options.maxConceptBytes,
-        DEFAULT_MAX_CONCEPT_BYTES,
-      ),
-      maxYamlDepth: positiveLimit(
-        "maxYamlDepth",
-        options.maxYamlDepth,
-        DEFAULT_MAX_YAML_DEPTH,
-      ),
-      maxEntries: positiveLimit(
-        "maxEntries",
-        options.maxEntries,
-        DEFAULT_MAX_VAULT_ENTRIES,
-      ),
-      maxConcepts: positiveLimit(
-        "maxConcepts",
-        options.maxConcepts,
-        DEFAULT_MAX_VAULT_CONCEPTS,
-      ),
-      maxTotalConceptBytes: positiveLimit(
-        "maxTotalConceptBytes",
-        options.maxTotalConceptBytes,
-        DEFAULT_MAX_TOTAL_CONCEPT_BYTES,
-      ),
-      maxTotalResourceBytes: positiveLimit(
-        "maxTotalResourceBytes",
-        options.maxTotalResourceBytes,
-        DEFAULT_MAX_TOTAL_RESOURCE_BYTES,
-      ),
-      maxDiagnostics: positiveLimit(
-        "maxDiagnostics",
-        options.maxDiagnostics,
-        DEFAULT_MAX_VAULT_DIAGNOSTICS,
-      ),
-    },
+    validation: validationLimits(options),
     maxOutputBytes: positiveLimit(
       "maxOutputBytes",
       options.maxOutputBytes,

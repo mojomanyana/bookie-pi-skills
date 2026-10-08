@@ -1,5 +1,6 @@
 import { posix } from "node:path";
 import { types } from "node:util";
+import { ownDataFields } from "./closed-data.js";
 import type { SourcePreflightResult } from "./source-preflight.js";
 import {
   compileSourceDeployments,
@@ -19,27 +20,7 @@ import { hashRuntimeArtifact } from "./runtime-artifact.js";
 function invalid(): never {
   throw new TypeError("Build recipe assembly is invalid.");
 }
-function fields(value: unknown, keys: readonly string[]): readonly unknown[] {
-  if (
-    value === null ||
-    typeof value !== "object" ||
-    types.isProxy(value) ||
-    Array.isArray(value)
-  )
-    invalid();
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  if (Reflect.ownKeys(descriptors).length !== keys.length) invalid();
-  return keys.map((key) => {
-    const field = descriptors[key];
-    if (
-      !Object.hasOwn(descriptors, key) ||
-      field === undefined ||
-      !Object.hasOwn(field, "value")
-    )
-      invalid();
-    return field.value as unknown;
-  });
-}
+
 const commit = /^(?:[a-f0-9]{40}|[a-f0-9]{64})(?![\s\S])/u;
 const digest = /^sha256:[a-f0-9]{64}(?![\s\S])/u;
 const label = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?![\s\S])/u;
@@ -60,7 +41,7 @@ export async function assembleMeasuredInputRecipe(
     if (arguments.length !== 3) invalid();
     const config = compileSourceDeployments([deployment])[0]!;
     const [ok, sourceCommit, approvedTip, objectFormat, vaultScope, manifest] =
-      fields(source, [
+      ownDataFields(source, [
         "ok",
         "sourceCommit",
         "approvedTip",
@@ -68,7 +49,7 @@ export async function assembleMeasuredInputRecipe(
         "vaultScope",
         "manifest",
       ]);
-    const [vaultUid, profile, manifestHash, sensitivityClasses] = fields(
+    const [vaultUid, profile, manifestHash, sensitivityClasses] = ownDataFields(
       manifest,
       ["vaultUid", "profile", "hash", "sensitivityClasses"],
     );

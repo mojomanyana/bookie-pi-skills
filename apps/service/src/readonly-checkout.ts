@@ -113,9 +113,15 @@ export function assertReadonlyMountProfile(
     if (!/^0{1,32}$/u.test(field(name))) reject();
   const mounts = mountTable(text);
   const containing = (path: string): Mount => {
-    const found = mounts
-      .filter((mount) => beneath(path, mount.point))
-      .sort((a, b) => b.point.length - a.point.length)[0];
+    // Pick the deepest containing mount without allocating and sorting per lookup.
+    let found: Mount | undefined;
+    for (const mount of mounts) {
+      if (
+        beneath(path, mount.point) &&
+        (found === undefined || mount.point.length > found.point.length)
+      )
+        found = mount;
+    }
     if (found === undefined) reject();
     return found;
   };

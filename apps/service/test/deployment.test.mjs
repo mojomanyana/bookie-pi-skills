@@ -130,6 +130,31 @@ test("mount proof uses per-mount read-only flags, handles escaping, and rejects 
     assert.throws(() => check(table), rejected);
 });
 
+test("nested mount selection is independent of mount-table order and retains alias rejection", () => {
+  const rows = [
+    ...mounts.trimEnd().split("\n"),
+    "4 2 8:2 /nested-source /vault/nested ro - ext4 /dev/nested rw",
+    "5 1 8:3 / /vault-other rw - ext4 /dev/other rw",
+  ];
+  const paths = ["/vault/nested", "/vault/nested/.git"];
+  for (let offset = 0; offset < rows.length; offset++) {
+    const rotated = [...rows.slice(offset), ...rows.slice(0, offset)];
+    for (const order of [rotated, [...rotated].reverse()]) {
+      const table = `${order.join("\n")}\n`;
+      assert.doesNotThrow(() => check(table, status, paths));
+      assert.throws(
+        () =>
+          check(
+            table + "6 1 8:2 /nested-source /alias rw - ext4 /dev/nested rw\n",
+            status,
+            paths,
+          ),
+        rejected,
+      );
+    }
+  }
+});
+
 test("malformed or ambiguous kernel metadata and insufficient process hardening fail closed", () => {
   for (const table of [
     "",

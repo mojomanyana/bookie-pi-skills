@@ -1,3 +1,4 @@
+import { positiveLimit } from "./bounded-limit.js";
 import type {
   ReadonlyYamlMapping,
   ReadonlyYamlValue,
@@ -116,20 +117,6 @@ interface CaptureLimits extends MutationLimits {
 }
 
 const emptyDiagnostics = Object.freeze([]) as readonly [];
-
-function positiveLimit(
-  name: string,
-  value: number | undefined,
-  maximum: number,
-): number {
-  if (value === undefined) return maximum;
-  if (!Number.isSafeInteger(value) || value <= 0 || value > maximum) {
-    throw new TypeError(
-      `${name} must be a positive integer no greater than ${maximum}`,
-    );
-  }
-  return value;
-}
 
 function captureLimits(options: CaptureEvidenceOptions): CaptureLimits {
   if (

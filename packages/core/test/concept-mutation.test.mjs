@@ -1100,6 +1100,12 @@ test("amend preserves unknown YAML structure and untouched body bytes", async (t
     "inert",
   );
   assert.equal(Object.prototype.polluted, undefined);
+  for (const key of ["description", "summary"]) {
+    assert.equal(
+      loaded.concept.frontmatter[key],
+      beforeLoaded.concept.frontmatter[key],
+    );
+  }
   assert.equal(loaded.concept.bodyText, beforeLoaded.concept.bodyText);
 
   const validated = await validateVault(vault);

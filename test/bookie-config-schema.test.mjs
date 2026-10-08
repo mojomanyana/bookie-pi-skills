@@ -174,6 +174,8 @@ const invalidFixtures = {
   "attachment-unsafe": expectedError("maximum", "/policy/attachment_max_bytes"),
 };
 
+const validate = createAjv().compile(schema);
+
 test("bookie config schema is valid JSON Schema 2020-12 in Ajv strict mode", () => {
   const ajv = createAjv();
   assert.equal(ajv.validateSchema(schema), true, ajv.errorsText(ajv.errors));
@@ -205,8 +207,6 @@ test("bookie config valid fixtures cover minimal, example, and boundaries", asyn
     "Every valid fixture must be enumerated",
   );
 
-  const validate = createAjv().compile(schema);
-
   for (const name of validFixtures) {
     await t.test(name, () => {
       const fixture = readFixture("valid", name);
@@ -225,7 +225,6 @@ test("bookie config valid fixtures cover minimal, example, and boundaries", asyn
 test("bookie config schema leaves excluded-class membership to runtime policy", () => {
   const fixture = structuredClone(readFixture("valid", "minimal"));
   fixture.policy.sensitivity.excluded_classes = ["restricted"];
-  const validate = createAjv().compile(schema);
 
   assert.equal(validate(fixture), true, JSON.stringify(validate.errors));
 });
@@ -255,7 +254,6 @@ test("bookie config required properties reject omission at every level", async (
     ["policy", "sensitivity", "classes"],
     ["policy", "sensitivity", "excluded_classes"],
   ];
-  const validate = createAjv().compile(schema);
 
   for (const path of requiredProperties) {
     await t.test(path.join("."), () => {
@@ -310,7 +308,6 @@ test("bookie config rejects wrong JSON types at every typed location", async (t)
     ],
     ["policy.attachment_max_bytes", ["policy", "attachment_max_bytes"], "1"],
   ];
-  const validate = createAjv().compile(schema);
 
   for (const [name, path, value] of wrongTypes) {
     await t.test(name, () => {
@@ -375,7 +372,6 @@ test("bookie config arrays reject duplicates and vault title rejects empty", asy
       "uniqueItems",
     ],
   ];
-  const validate = createAjv().compile(schema);
 
   for (const [name, mutate, keyword] of invalidMutations) {
     await t.test(name, () => {
@@ -405,7 +401,6 @@ test("evidence roots reject line-separator bypasses and lone surrogates", async 
     ["U+2029 then C0", `safe\u2029\u0001escape`],
     ["lone UTF-16 surrogate", `safe\ud800escape`],
   ];
-  const validate = createAjv().compile(schema);
 
   for (const [name, evidenceRoot] of invalidRoots) {
     await t.test(name, () => {
@@ -438,7 +433,6 @@ test("bookie config invalid fixtures cover strict, lexical, and numeric boundari
     "Every invalid fixture must have an asserted failure reason",
   );
 
-  const validate = createAjv().compile(schema);
   for (const [name, expectedErrors] of Object.entries(invalidFixtures)) {
     await t.test(name, () => {
       const fixture = readFixture("invalid", name);

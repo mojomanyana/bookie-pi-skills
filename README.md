@@ -2,7 +2,15 @@
 
 Bookie is a local-first, Git-native project ledger for people and agents. It keeps tasks, documents, research, decisions, activity checkpoints, files, and evidence in an [Open Knowledge Format (OKF) v0.2](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)-compatible bundle and exposes disciplined workflows through a Pi extension.
 
-> **Status:** the canonical profile in [SPEC-001](docs/specs/001-canonical-ledger.md) is verified. Lossless loading, vault validation, conflict-safe mutation, Evidence capture, bounded filesystem search/inspect, deterministic exact-commit JSONL export, the read/query-only CLI through BK-012, and Pi read/search/validate/write/checkpoint workflows through BK-015 are merged and verified alongside dependency/CI maintenance through BK-024. ADR-0008 defers all filesystem-writing CLI commands without weakening publication guarantees. The authenticated retrieval-service protocol and threat-reviewed Redis projection design in BK-016 are merged and verified; BK-017 remains the next Ready item: its authenticated HTTP contract is merged in PR #27; projection, fenced Redis candidate storage, approved-history ingestion, a Linux read-only source-deployment guard, metadata-only approved source-manifest reads, isolated deployment-checked source preflight, a disconnected v2 input-recipe codec with measured offline input assembly, a build-time runtime staging helper/inventory, included-only output-stream evidence with isolated-process rechecks and a disconnected output-descriptor codec are local/unmerged; controller integration, Redis search, activation, and full deployment are not yet delivered. [ADR-0011](docs/architecture/decisions/0011-bounded-rebuild-admission.md) is accepted for the next admission/identity refinement; clean-install artifact provenance/image qualification and builder-side verification, full implementation of that contract, and controller wiring remain pending. See the ordered [backlog](docs/planning/backlog.md).
+## Current status
+
+| Area | Available now | Remaining work |
+| --- | --- | --- |
+| Canonical core | Lossless Markdown/YAML, validation, conflict-safe mutation, Evidence capture, local search/inspect and exact-commit JSONL export. | Verified through BK-011. |
+| CLI and Pi | Read/query CLI; Pi read, search, validate, approved writes and curated checkpoints. | CLI filesystem-writing commands are deferred by ADR-0008. |
+| Shared retrieval | Authenticated HTTP contract, projection, ingestion, source preflight, artifact and Redis candidate primitives. | BK-017 controller integration, verified artifacts, Redis search, activation and deployment qualification. |
+
+The canonical profile is verified. Shared retrieval is still incomplete: controller integration and deployment qualification are still pending. See the [backlog](docs/planning/backlog.md) for acceptance and the [handoff](docs/planning/next-session.md) for development status. Shared-code and build improvements are recorded in [BK-025](docs/planning/evidence/BK-025.md).
 
 ## Design commitments
 
@@ -26,19 +34,20 @@ Bookie is a local-first, Git-native project ledger for people and agents. It kee
 ## Repository commands
 
 ```bash
-npm test
+nvm use
+npm ci
 npm run check
 ```
 
-These checks validate the planning contract, schemas, policy fixtures, internal links, specification completeness, and complete valid/invalid OKF vault fixtures. Runtime product tests are added with each implementation increment.
+Use the [Node 24 toolchain](docs/planning/toolchain.md). `npm run check` runs formatting, lint, typechecking and all repository/workspace tests, including packaging. `npm test` runs just the test workflow. Redis and hardened deployment checks require their documented environments; see the [service commands](apps/service/README.md).
 
-## Intended repository shape
+## Repository shape
 
 ```text
-apps/service/          shared retrieval/indexing service (planned)
+apps/service/          authenticated service and unfinished retrieval implementation
 packages/core/         lossless parsing, validation, safe mutation, and local query
-packages/cli/          automation and CI interface (planned)
-packages/pi-extension/ Pi package, tools, commands, and hooks (planned)
+packages/cli/          read/query automation and CI interface
+packages/pi-extension/ Pi tools, approved writes, and checkpoint hooks
 docs/                  product, architecture, planning, and executable specs
 examples/vault/        minimal OKF + Bookie fixture
 test/                  repository-level contract tests

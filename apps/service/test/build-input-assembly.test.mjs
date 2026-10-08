@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
+import { runtimeFixture } from "./helpers/runtime-fixture.mjs";
 import { assembleMeasuredInputRecipe } from "../dist/build-input-assembly.js";
 import { hashRuntimeArtifact } from "../dist/runtime-artifact.js";
 
@@ -37,50 +35,7 @@ const receipt = {
     sensitivityClasses: ["public"],
   },
 };
-const schemas = [
-  "bookie-common.schema.json",
-  "profile/1.0/bookie-config.schema.json",
-  ...[
-    "activity",
-    "decision",
-    "document",
-    "evidence",
-    "person",
-    "project",
-    "research",
-    "task",
-  ].map((name) => `types/${name}.schema.json`),
-  "service/v1/protocol.schema.json",
-];
-async function artifact(t) {
-  const root = await mkdtemp(join(tmpdir(), "bookie-assembly-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const file = async (name, contents) => {
-    const path = join(root, name);
-    await mkdir(join(path, ".."), { recursive: true });
-    await writeFile(path, contents);
-  };
-  for (const [name, contents] of [
-    ["package.json", "{}"],
-    ["package-lock.json", "{}"],
-    ["apps/service/package.json", "{}"],
-    ["apps/service/dist/server.js", "export default 1;"],
-    ["packages/core/package.json", "{}"],
-    ["packages/core/dist/index.js", "export default 2;"],
-    ["node_modules/module/index.js", "export default 3;"],
-  ])
-    await file(name, contents);
-  for (const name of schemas) {
-    await file(`packages/core/dist/schemas/${name}`, JSON.stringify({ name }));
-    if (
-      ["bookie-common.schema.json", "service/v1/protocol.schema.json"].includes(
-        name,
-      )
-    )
-      await file(`schemas/${name}`, JSON.stringify({ name }));
-  }
-  return { root, file };
-}
+const artifact = (t) => runtimeFixture(t, "bookie-assembly-");
 const bad = { name: "TypeError", message: "Build recipe assembly is invalid." };
 
 test("assembly measures artifact bytes and binds claimed preflight metadata, policy, scope and implementation versions", async (t) => {

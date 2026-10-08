@@ -172,12 +172,19 @@ function createAjv() {
   return ajv;
 }
 
+const validators = new Map();
 function loadValidator(type) {
-  const ajv = createAjv();
-  ajv.addSchema(readJson(commonSchemaPath));
-  return ajv.compile(
-    readJson(resolve(typeSchemaRoot, `${type.toLowerCase()}.schema.json`)),
-  );
+  if (!validators.has(type)) {
+    const ajv = createAjv();
+    ajv.addSchema(readJson(commonSchemaPath));
+    validators.set(
+      type,
+      ajv.compile(
+        readJson(resolve(typeSchemaRoot, `${type.toLowerCase()}.schema.json`)),
+      ),
+    );
+  }
+  return validators.get(type);
 }
 
 function normalizeErrors(errors) {

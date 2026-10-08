@@ -12,6 +12,7 @@ import type {
 } from "./canonical-export-model.js";
 import { throwIfAborted } from "./vault-cancellation.js";
 import {
+  addSchemaDiagnostics,
   createDiagnostic,
   DiagnosticCollector,
   mapConceptDiagnostic,
@@ -35,12 +36,12 @@ import type {
   BookiePolicySource,
   BookieRecord,
   Manifest,
-  SchemaError,
   SchemaValidators,
   ValidationLimits,
   VaultEntries,
 } from "./vault-model.js";
 import {
+  trustedPolicySource,
   validateCandidateIdentity,
   validateCurrentTree,
 } from "./vault-policy.js";
@@ -89,26 +90,6 @@ function rootLabel(root: unknown): string {
     return resolve(root instanceof URL ? fileURLToPath(root) : root);
   } catch {
     return "<invalid>";
-  }
-}
-
-function addSchemaDiagnostics(
-  collector: DiagnosticCollector,
-  code: "MANIFEST-SCHEMA" | "CONCEPT-SCHEMA",
-  file: string,
-  errors: readonly SchemaError[] | null | undefined,
-): void {
-  if (errors === null || errors === undefined || errors.length === 0) {
-    collector.add(createDiagnostic(code, file));
-    return;
-  }
-  for (const error of errors) {
-    collector.add(
-      createDiagnostic(code, file, {
-        instancePath: error.instancePath,
-        keyword: error.keyword,
-      }),
-    );
   }
 }
 
@@ -206,73 +187,6 @@ function addRedactedReferences(
       if (isObject(relation)) add(relation.target);
     }
   }
-}
-
-function trustedPolicySource(
-  path: string,
-  displayFile: string,
-  type: string,
-  frontmatter: Readonly<Record<string, unknown>>,
-  bookie: Readonly<Record<string, unknown>>,
-): BookiePolicySource {
-  const status =
-    typeof frontmatter.status === "string" ? frontmatter.status : undefined;
-  const profile =
-    typeof bookie.profile === "string" ? bookie.profile : undefined;
-  const uid = typeof bookie.uid === "string" ? bookie.uid : undefined;
-  const project =
-    typeof bookie.project === "string" ? bookie.project : undefined;
-  const state = typeof bookie.state === "string" ? bookie.state : undefined;
-  const sensitivity =
-    typeof bookie.sensitivity === "string" ? bookie.sensitivity : undefined;
-  const sha256 = typeof bookie.sha256 === "string" ? bookie.sha256 : undefined;
-  let relations: BookieData["relations"];
-  if (Array.isArray(bookie.relations)) {
-    const trusted = [];
-    let malformed = false;
-    for (const relation of bookie.relations) {
-      if (
-        !isObject(relation) ||
-        typeof relation.kind !== "string" ||
-        typeof relation.target !== "string" ||
-        (relation.target_uid !== undefined &&
-          typeof relation.target_uid !== "string")
-      ) {
-        malformed = true;
-        break;
-      }
-      trusted.push({
-        kind: relation.kind,
-        target: relation.target,
-        ...(relation.target_uid === undefined
-          ? {}
-          : { target_uid: relation.target_uid }),
-      });
-    }
-    if (!malformed) relations = trusted;
-  }
-  const supports =
-    Array.isArray(bookie.supports) &&
-    bookie.supports.every((support) => typeof support === "string")
-      ? bookie.supports
-      : undefined;
-  return {
-    path,
-    displayFile,
-    type,
-    ...(status === undefined ? {} : { status }),
-    frontmatter,
-    bookie: {
-      ...(profile === undefined ? {} : { profile }),
-      ...(uid === undefined ? {} : { uid }),
-      ...(project === undefined ? {} : { project }),
-      ...(state === undefined ? {} : { state }),
-      ...(sensitivity === undefined ? {} : { sensitivity }),
-      ...(relations === undefined ? {} : { relations }),
-      ...(supports === undefined ? {} : { supports }),
-      ...(sha256 === undefined ? {} : { sha256 }),
-    },
-  };
 }
 
 function containsGitMetadataSegment(path: string): boolean {

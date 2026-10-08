@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import {
-  mkdtemp,
   mkdir,
   chmod,
   readFile,
@@ -8,66 +7,22 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { runtimeFixture } from "./helpers/runtime-fixture.mjs";
 import {
   hashRuntimeArtifact,
   verifyRuntimeArtifact,
 } from "../dist/runtime-artifact.js";
 
 async function fixture(t) {
-  const root = await mkdtemp(join(tmpdir(), "bookie-artifact-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  for (const path of [
-    "apps/service/dist",
-    "packages/core/dist",
-    "node_modules/module",
-  ])
-    await mkdir(join(root, path), { recursive: true });
-  for (const [name, contents] of [
-    ["apps/service/dist/server.js", "export default 1;"],
-    ["packages/core/dist/index.js", "export default 2;"],
-    ["node_modules/module/index.js", "export default 3;"],
-    ["package-lock.json", '{"lockfileVersion":3}'],
-    ["package.json", "{}"],
-    ["apps/service/package.json", "{}"],
-    ["packages/core/package.json", "{}"],
-  ])
-    await writeFile(join(root, name), contents);
-  for (const name of schemaFiles) {
-    const path = join(root, "packages/core/dist/schemas", name);
-    await mkdir(join(path, ".."), { recursive: true });
-    await writeFile(path, JSON.stringify({ name }));
-    if (
-      ["bookie-common.schema.json", "service/v1/protocol.schema.json"].includes(
-        name,
-      )
-    ) {
-      const servicePath = join(root, "schemas", name);
-      await mkdir(join(servicePath, ".."), { recursive: true });
-      await writeFile(servicePath, JSON.stringify({ name }));
-    }
-  }
+  const { root, file } = await runtimeFixture(t, "bookie-artifact-");
+  await file("package-lock.json", '{"lockfileVersion":3}');
+  const name = "export/1.0/canonical-record.schema.json";
+  await file(`packages/core/dist/schemas/${name}`, JSON.stringify({ name }));
   return root;
 }
 const bad = { name: "TypeError", message: "Runtime artifact is invalid." };
-const schemaFiles = [
-  "bookie-common.schema.json",
-  "service/v1/protocol.schema.json",
-  "profile/1.0/bookie-config.schema.json",
-  "export/1.0/canonical-record.schema.json",
-  ...[
-    "activity",
-    "decision",
-    "document",
-    "evidence",
-    "person",
-    "project",
-    "research",
-    "task",
-  ].map((type) => `types/${type}.schema.json`),
-];
 
 test("artifact inventory is byte-deterministic across relocation, and code, dependencies, lock and Node profile affect it", async (t) => {
   const a = await fixture(t);

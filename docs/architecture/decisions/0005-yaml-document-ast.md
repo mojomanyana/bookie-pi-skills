@@ -47,7 +47,7 @@ Pin the supported major, update through the repository dependency procedure, and
 
 ## Validation
 
-[`test/yaml-roundtrip-decision.test.mjs`](../../../test/yaml-roundtrip-decision.test.mjs) makes the selection evidence reproducible: all 16 example/valid-vault concepts parse, direct Document serialization is exact for 0 of 16 frontmatter sources, and a synthetic mutation retains comments, key order, quoting, unknown nodes, and literal scalar style. Core loader tests separately pin byte-identical LF/CRLF/no-final-newline serialization, malformed/security boundaries, source-range containment, and the hostile-input budget.
+The original selection experiment parsed all 16 example/valid-vault concepts; direct Document serialization was exact for 0 of 16 frontmatter sources. Its synthetic mutation retained comments, ordering, quoting, unknown nodes and scalar styles. BK-025 retired that dependency-only experiment after production coverage was established. [Core loader tests](../../../packages/core/test/concept-loader.test.mjs) pin byte-identical LF/CRLF/no-final-newline serialization, malformed/security boundaries, source ranges and hostile-input bounds. [Core mutation tests](../../../packages/core/test/concept-mutation.test.mjs) preserve comments, unknown fields, body bytes, quoting, literal/folded styles and their decoded values through the real API.
 
 ## Revisit triggers
 

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { posix } from "node:path";
 import { types } from "node:util";
+import { ownDataFields } from "./closed-data.js";
 
 /** Codec inputs only: neither a source authorization nor runtime-artifact attestation. */
 export interface BuildRecipeInputs {
@@ -38,27 +39,7 @@ export interface EncodedBuildRecipe {
 function invalid(): never {
   throw new TypeError("Build recipe inputs are invalid.");
 }
-function fields(value: unknown, keys: readonly string[]): readonly unknown[] {
-  if (
-    value === null ||
-    typeof value !== "object" ||
-    types.isProxy(value) ||
-    Array.isArray(value)
-  )
-    invalid();
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  if (Reflect.ownKeys(descriptors).length !== keys.length) invalid();
-  return keys.map((key) => {
-    const field = descriptors[key];
-    if (
-      !Object.hasOwn(descriptors, key) ||
-      field === undefined ||
-      !Object.hasOwn(field, "value")
-    )
-      invalid();
-    return field.value as unknown;
-  });
-}
+
 function matches(value: unknown, pattern: RegExp): value is string {
   return typeof value === "string" && pattern.test(value);
 }
@@ -112,7 +93,7 @@ export function encodeBuildInputRecipe(
       maxChunkBytes,
       runtimeArtifactHash,
       embeddingGeneration,
-    ] = fields(input, [
+    ] = ownDataFields(input, [
       "vaultUid",
       "objectFormat",
       "sourceCommit",
@@ -145,7 +126,7 @@ export function encodeBuildInputRecipe(
       secretPolicyVersion,
       approvedSensitivityClasses,
       provider,
-    ] = fields(policy, [
+    ] = ownDataFields(policy, [
       "secretPolicy",
       "secretPolicyVersion",
       "approvedSensitivityClasses",
@@ -184,7 +165,7 @@ export function encodeBuildInputRecipe(
     }
     if (new Set(classes).size !== classes.length) invalid();
     classes.sort();
-    const versionValues = fields(versions, [
+    const versionValues = ownDataFields(versions, [
       "canonicalExportVersion",
       "projectionSchemaVersion",
       "parserVersion",

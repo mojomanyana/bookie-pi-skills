@@ -52,7 +52,7 @@ This page is the stable entry point for product and engineering context.
 - [Complete valid vault fixture](../fixtures/valid-vault/)
 - [Invalid vault fixtures](../fixtures/invalid-vaults/)
 - [Vault fixture tests](../test/vault-fixtures.test.mjs)
-- [YAML decision evidence](../test/yaml-roundtrip-decision.test.mjs)
+- [Production YAML preservation tests](../packages/core/test/concept-loader.test.mjs) and [mutation goldens](../packages/core/test/concept-mutation.test.mjs)
 - [Core concept loader](../packages/core/src/concept-loader.ts) and [tests](../packages/core/test/concept-loader.test.mjs)
 - [Core vault validator](../packages/core/src/vault-validator.ts), [Git-base policy](../packages/core/src/vault-git-base.ts), and [tests](../packages/core/test/git-base-validation.test.mjs)
 - [Core evidence capture](../packages/core/src/evidence-capture.ts) and [tests](../packages/core/test/evidence-capture.test.mjs)

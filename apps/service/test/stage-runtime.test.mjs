@@ -7,30 +7,15 @@ import {
   rm,
   stat,
   symlink,
-  writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
+import { fileWriter, writeRuntimeSchemas } from "./helpers/runtime-fixture.mjs";
 import { stageRuntimeArtifact } from "../dist/stage-runtime.js";
 import { hashRuntimeArtifact } from "../dist/runtime-artifact.js";
 
-const schemas = [
-  "bookie-common.schema.json",
-  "profile/1.0/bookie-config.schema.json",
-  ...[
-    "activity",
-    "decision",
-    "document",
-    "evidence",
-    "person",
-    "project",
-    "research",
-    "task",
-  ].map((name) => `types/${name}.schema.json`),
-  "service/v1/protocol.schema.json",
-];
 const pkg = (name, dependencies = {}, extras = {}) =>
   JSON.stringify({
     name,
@@ -44,11 +29,7 @@ async function fixture(t) {
   t.after(() => rm(parent, { recursive: true, force: true }));
   const source = join(parent, "source");
   const dest = (name) => join(parent, name);
-  const write = async (name, data) => {
-    const file = join(source, name);
-    await mkdir(join(file, ".."), { recursive: true });
-    await writeFile(file, data);
-  };
+  const write = fileWriter(source);
   await write("package.json", pkg("root"));
   await write("package-lock.json", '{"lockfileVersion":3}');
   await write(
@@ -64,15 +45,7 @@ async function fixture(t) {
     "import { core } from '@bookie/core'; import { dep } from 'dep'; import { readFileSync } from 'node:fs'; const schema = readFileSync(new URL('../../../schemas/service/v1/protocol.schema.json', import.meta.url), 'utf8'); export default `${core}:${dep}:${schema.length}`;",
   );
   await write("packages/core/dist/index.js", "export const core = 'core';");
-  for (const name of schemas) {
-    await write(`packages/core/dist/schemas/${name}`, JSON.stringify({ name }));
-    if (
-      ["bookie-common.schema.json", "service/v1/protocol.schema.json"].includes(
-        name,
-      )
-    )
-      await write(`schemas/${name}`, JSON.stringify({ name }));
-  }
+  await writeRuntimeSchemas(write);
   await write(
     "node_modules/dep/package.json",
     pkg("dep", { trans: "1.0.0" }, { exports: "./index.js" }),

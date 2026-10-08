@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { loadConcept } from "./concept-loader.js";
 import { throwIfAborted } from "./vault-cancellation.js";
 import {
+  addSchemaDiagnostics,
   createDiagnostic,
   DiagnosticCollector,
   mapConceptDiagnostic,
@@ -20,7 +21,7 @@ import {
   verifyTrackedPaths,
 } from "./vault-filesystem.js";
 import { getSchemaValidators, readVaultManifest } from "./vault-manifest.js";
-import type { Manifest, SchemaError, ValidationLimits } from "./vault-model.js";
+import type { Manifest, ValidationLimits } from "./vault-model.js";
 
 export interface ScannedQueryConcept {
   readonly sourcePath: string;
@@ -75,25 +76,6 @@ function displayFileFor(
     excludedClasses.includes(bookie.sensitivity)
     ? "<excluded>"
     : path;
-}
-
-function addSchemaDiagnostics(
-  collector: DiagnosticCollector,
-  file: string,
-  errors: readonly SchemaError[] | null | undefined,
-): void {
-  if (errors === null || errors === undefined || errors.length === 0) {
-    collector.add(createDiagnostic("CONCEPT-SCHEMA", file));
-    return;
-  }
-  for (const error of errors) {
-    collector.add(
-      createDiagnostic("CONCEPT-SCHEMA", file, {
-        instancePath: error.instancePath,
-        keyword: error.keyword,
-      }),
-    );
-  }
 }
 
 function addRedactedReferences(
@@ -529,7 +511,12 @@ export async function scanVaultForQuery(
       continue;
     }
     if (!validate(frontmatter)) {
-      addSchemaDiagnostics(collector, displayFile, validate.errors);
+      addSchemaDiagnostics(
+        collector,
+        "CONCEPT-SCHEMA",
+        displayFile,
+        validate.errors,
+      );
       reject(sourcePath, frontmatter);
       continue;
     }

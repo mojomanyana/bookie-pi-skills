@@ -1,3 +1,4 @@
+import { positiveLimit } from "./bounded-limit.js";
 import { Document } from "yaml";
 
 import {
@@ -150,20 +151,6 @@ function fail(
   return { ok: false, diagnostics: [diagnostic(code, file, range)] };
 }
 
-function validateLimit(
-  name: string,
-  value: number | undefined,
-  maximum: number,
-): number {
-  if (value === undefined) return maximum;
-  if (!Number.isSafeInteger(value) || value <= 0 || value > maximum) {
-    throw new TypeError(
-      `${name} must be a positive integer no greater than ${maximum}`,
-    );
-  }
-  return value;
-}
-
 function hasOpeningDelimiter(bytes: Uint8Array): boolean {
   return (
     (bytes[0] === 0x2d &&
@@ -241,12 +228,12 @@ export function loadConcept(
   input: Uint8Array,
   options: LoadConceptOptions,
 ): LoadConceptResult {
-  const maxBytes = validateLimit(
+  const maxBytes = positiveLimit(
     "maxBytes",
     options.maxBytes,
     DEFAULT_MAX_CONCEPT_BYTES,
   );
-  const maxDepth = validateLimit(
+  const maxDepth = positiveLimit(
     "maxDepth",
     options.maxDepth,
     DEFAULT_MAX_YAML_DEPTH,

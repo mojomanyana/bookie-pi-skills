@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { types } from "node:util";
+import { ownDataFields } from "./closed-data.js";
 
 /** Private, disconnected v2 candidate-manifest output evidence (format 1). */
 export interface OutputDescriptorInputs {
@@ -21,27 +21,7 @@ const digestPattern = /^sha256:[0-9a-f]{64}$/u;
 function invalid(): never {
   throw new TypeError("Output descriptor is invalid.");
 }
-function fields(value: unknown, keys: readonly string[]): readonly unknown[] {
-  if (
-    value === null ||
-    typeof value !== "object" ||
-    types.isProxy(value) ||
-    Array.isArray(value)
-  )
-    invalid();
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  if (Reflect.ownKeys(descriptors).length !== keys.length) invalid();
-  return keys.map((key) => {
-    const field = descriptors[key];
-    if (
-      !Object.hasOwn(descriptors, key) ||
-      field === undefined ||
-      !Object.hasOwn(field, "value")
-    )
-      invalid();
-    return field.value as unknown;
-  });
-}
+
 function hash(value: unknown): value is string {
   return typeof value === "string" && digestPattern.test(value);
 }
@@ -59,19 +39,22 @@ export function encodeOutputDescriptor(
   input: OutputDescriptorInputs,
 ): EncodedOutputDescriptor {
   try {
-    const [recipeHash, canonical, concepts, chunks] = fields(input, [
+    const [recipeHash, canonical, concepts, chunks] = ownDataFields(input, [
       "recipeHash",
       "canonical",
       "concepts",
       "chunks",
     ]);
-    const [canonicalHash, bytes, records] = fields(canonical, [
+    const [canonicalHash, bytes, records] = ownDataFields(canonical, [
       "hash",
       "bytes",
       "records",
     ]);
-    const [conceptCount, conceptHash] = fields(concepts, ["count", "hash"]);
-    const [chunkCount, chunkHash] = fields(chunks, ["count", "hash"]);
+    const [conceptCount, conceptHash] = ownDataFields(concepts, [
+      "count",
+      "hash",
+    ]);
+    const [chunkCount, chunkHash] = ownDataFields(chunks, ["count", "hash"]);
     if (
       !hash(recipeHash) ||
       !hash(canonicalHash) ||
