@@ -197,6 +197,98 @@ test("an npm alias retains its import path but checks the installed package iden
   await assert.rejects(stat(dest("alias-mismatch")), { code: "ENOENT" });
 });
 
+test("optional declarations override dependencies before independent peer requirements merge", async (t) => {
+  const { source, dest, write } = await fixture(t);
+  for (const [label, peers, meta, required] of [
+    ["no-peer", {}, {}, false],
+    [
+      "optional-peer",
+      { absent: "1.0.0" },
+      { absent: { optional: true } },
+      false,
+    ],
+    ["required-peer", { absent: "1.0.0" }, {}, true],
+  ]) {
+    await write(
+      "apps/service/package.json",
+      pkg(
+        "@bookie/service",
+        { "@bookie/core": "0.0.0", absent: "1.0.0" },
+        {
+          optionalDependencies: { absent: "2.0.0" },
+          peerDependencies: peers,
+          peerDependenciesMeta: meta,
+        },
+      ),
+    );
+    if (required) {
+      await assert.rejects(stageRuntimeArtifact(source, dest(label)), bad);
+      await assert.rejects(stat(dest(label)), { code: "ENOENT" });
+    } else {
+      assert.match(
+        await stageRuntimeArtifact(source, dest(label)),
+        /^sha256:[a-f0-9]{64}$/,
+      );
+      await assert.rejects(stat(join(dest(label), "node_modules/absent")), {
+        code: "ENOENT",
+      });
+    }
+  }
+});
+
+test("an overriding optional npm alias stages its effective identity and rejects incompatible peers", async (t) => {
+  const { source, dest, write } = await fixture(t);
+  await write(
+    "apps/service/dist/server.js",
+    "import { value } from 'alias'; export default value;",
+  );
+  await write(
+    "node_modules/alias/package.json",
+    pkg("effective-dep", {}, { exports: "./index.js" }),
+  );
+  await write(
+    "node_modules/alias/index.js",
+    "export const value = 'effective optional alias';",
+  );
+  for (const [label, peers] of [
+    ["no-peer", {}],
+    ["matching-peer", { alias: "npm:effective-dep@2.0.0" }],
+    ["conflicting-peer", { alias: "npm:superseded-dep@1.0.0" }],
+  ]) {
+    await write(
+      "apps/service/package.json",
+      pkg(
+        "@bookie/service",
+        {
+          "@bookie/core": "0.0.0",
+          alias: "npm:superseded-dep@1.0.0",
+        },
+        {
+          optionalDependencies: { alias: "npm:effective-dep@2.0.0" },
+          peerDependencies: peers,
+        },
+      ),
+    );
+    if (label === "conflicting-peer") {
+      await assert.rejects(stageRuntimeArtifact(source, dest(label)), bad);
+      await assert.rejects(stat(dest(label)), { code: "ENOENT" });
+    } else {
+      assert.match(
+        await stageRuntimeArtifact(source, dest(label)),
+        /^sha256:[a-f0-9]{64}$/,
+      );
+      assert.equal(
+        (
+          await import(
+            pathToFileURL(join(dest(label), "apps/service/dist/server.js")).href
+          )
+        ).default,
+        "effective optional alias",
+      );
+    }
+  }
+});
+
 test("a symlinked intermediate installed dependency directory cannot escape the source", async (t) => {
   const { source, dest } = await fixture(t);
   const nested = join(source, "node_modules/dep/node_modules");

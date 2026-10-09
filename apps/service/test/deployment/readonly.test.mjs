@@ -344,6 +344,25 @@ test(
       },
     );
     await t.test(
+      "read-only detached Git object mount rejects a visible writable backing alias",
+      async () => {
+        const root = await fixture();
+        const objects = join(parent, "detached-objects");
+        await cp(join(root, ".git/objects"), objects, { recursive: true });
+        await ownership(objects);
+        const mount = `type=bind,src=${objects},dst=/vault/.git/objects,readonly`;
+        const options = { mounts: [mount] };
+        assert.equal((await run(root, options)).ok, true);
+        assert.equal(
+          (await run(root, { ...options, preflight: true })).ok,
+          true,
+        );
+        await reject(root, {
+          mounts: [mount, `type=bind,src=${objects},dst=/object-alias`],
+        });
+      },
+    );
+    await t.test(
       "root identity, retained capabilities and privilege escalation are rejected",
       async () => {
         const root = await fixture();

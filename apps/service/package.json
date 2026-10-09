@@ -9,6 +9,7 @@
     "test": "npm run build && npm run test:built",
     "test:redis": "npm run build && node --test test/redis/*.test.mjs",
     "test:deployment": "npm run build && node --test test/deployment/*.test.mjs",
+    "test:runtime": "node scripts/qualify-runtime.mjs",
     "typecheck": "tsc -b --pretty false",
     "test:built": "node --test test/*.test.mjs"
   },

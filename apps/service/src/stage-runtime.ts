@@ -151,12 +151,18 @@ export async function stageRuntimeArtifact(
             (key === "peerDependencies" &&
               object(entry) &&
               entry.optional === true);
+          // npm's optional declaration replaces the same-name dependency,
+          // including alias identity. Peers remain independent requirements.
           if (
+            key === "peerDependencies" &&
             dependencies[dep] !== undefined &&
             dependencies[dep].identity !== identity
           )
             invalid();
-          if (dependencies[dep]?.kind !== "required")
+          if (
+            key !== "peerDependencies" ||
+            dependencies[dep]?.kind !== "required"
+          )
             dependencies[dep] = {
               identity,
               kind: optional ? "optional" : "required",

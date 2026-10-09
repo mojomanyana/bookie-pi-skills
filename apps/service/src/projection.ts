@@ -1,4 +1,6 @@
 import { Worker } from "node:worker_threads";
+import { types } from "node:util";
+import { ownDataFields } from "./closed-data.js";
 
 import {
   exportCanonicalJsonl,
@@ -98,39 +100,61 @@ function object(value: unknown): value is Readonly<Record<string, unknown>> {
 export function snapshotProjectionConfig(
   config: ProjectionConfig,
 ): ProjectionConfig {
-  if (
-    !object(config) ||
-    Object.keys(config).length !== 4 ||
-    typeof config.vaultUid !== "string" ||
-    !/^VLT-[0-7][0-9A-HJKMNP-TV-Z]{25}(?![\s\S])/u.test(config.vaultUid) ||
-    !Array.isArray(config.approvedSensitivityClasses) ||
-    config.approvedSensitivityClasses.length > 64 ||
-    !config.approvedSensitivityClasses.every(
-      (value) =>
-        typeof value === "string" &&
-        value.length <= 63 &&
-        /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?![\s\S])/u.test(value) &&
-        value !== "unknown" &&
-        value !== "unclassified",
-    ) ||
-    new Set(config.approvedSensitivityClasses).size !==
-      config.approvedSensitivityClasses.length ||
-    !Number.isSafeInteger(config.maxChunkBytes) ||
-    config.maxChunkBytes < 16 ||
-    config.maxChunkBytes > 65_536 ||
-    !Number.isSafeInteger(config.maxChunks) ||
-    config.maxChunks < 1 ||
-    config.maxChunks > 250_000
-  )
+  try {
+    const [vaultUid, approvedSensitivityClasses, maxChunkBytes, maxChunks] =
+      ownDataFields(config, [
+        "vaultUid",
+        "approvedSensitivityClasses",
+        "maxChunkBytes",
+        "maxChunks",
+      ]);
+    if (
+      typeof vaultUid !== "string" ||
+      !/^VLT-[0-7][0-9A-HJKMNP-TV-Z]{25}(?![\s\S])/u.test(vaultUid) ||
+      types.isProxy(approvedSensitivityClasses) ||
+      !Array.isArray(approvedSensitivityClasses) ||
+      typeof maxChunkBytes !== "number" ||
+      !Number.isSafeInteger(maxChunkBytes) ||
+      maxChunkBytes < 16 ||
+      maxChunkBytes > 65_536 ||
+      typeof maxChunks !== "number" ||
+      !Number.isSafeInteger(maxChunks) ||
+      maxChunks < 1 ||
+      maxChunks > 250_000
+    )
+      throw new TypeError();
+    // Bound the native array before taking one closed descriptor snapshot.
+    const length = approvedSensitivityClasses.length;
+    if (length > 64) throw new TypeError();
+    const items = Object.getOwnPropertyDescriptors(approvedSensitivityClasses);
+    if (Reflect.ownKeys(items).length !== length + 1) throw new TypeError();
+    const classes: string[] = [];
+    for (let i = 0; i < length; i++) {
+      const item = items[String(i)];
+      if (
+        !Object.hasOwn(items, String(i)) ||
+        item === undefined ||
+        !Object.hasOwn(item, "value") ||
+        typeof item.value !== "string" ||
+        item.value.length > 63 ||
+        !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?![\s\S])/u.test(item.value) ||
+        item.value === "unknown" ||
+        item.value === "unclassified"
+      )
+        throw new TypeError();
+      classes.push(item.value);
+    }
+    if (new Set(classes).size !== classes.length) throw new TypeError();
+    return Object.freeze({
+      vaultUid,
+      approvedSensitivityClasses: Object.freeze(classes.sort()),
+      maxChunkBytes,
+      maxChunks,
+    });
+  } catch {
+    // Unsupported reflective inputs must retain the static public boundary.
     throw new TypeError("projection config is invalid");
-  return Object.freeze({
-    vaultUid: config.vaultUid,
-    approvedSensitivityClasses: Object.freeze(
-      [...config.approvedSensitivityClasses].sort(),
-    ),
-    maxChunkBytes: config.maxChunkBytes,
-    maxChunks: config.maxChunks,
-  });
+  }
 }
 
 function checkAbort(signal: AbortSignal | undefined): void {

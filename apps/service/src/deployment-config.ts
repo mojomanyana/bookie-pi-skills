@@ -1,4 +1,6 @@
 import { posix } from "node:path";
+import { beneath } from "./path-boundary.js";
+export { beneath } from "./path-boundary.js";
 import {
   snapshotProjectionConfig,
   type ProjectionConfig,
@@ -15,9 +17,6 @@ export interface SourceDeployment {
 }
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-export function beneath(path: string, root: string): boolean {
-  return root === "/" || path === root || path.startsWith(`${root}/`);
 }
 function path(value: unknown): value is string {
   return (

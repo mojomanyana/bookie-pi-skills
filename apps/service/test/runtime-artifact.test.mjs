@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import {
   mkdir,
+  readdir,
+  lstat,
   chmod,
   readFile,
   rm,
@@ -27,6 +29,8 @@ const bad = { name: "TypeError", message: "Runtime artifact is invalid." };
 test("artifact inventory is byte-deterministic across relocation, and code, dependencies, lock and Node profile affect it", async (t) => {
   const a = await fixture(t);
   const b = await fixture(t);
+  await writeFile(join(a, "runtime-profile.json"), '{"version":1}');
+  await writeFile(join(b, "runtime-profile.json"), '{"version":1}');
   const first = await hashRuntimeArtifact(a);
   assert.match(first, /^sha256:[a-f0-9]{64}$/);
   assert.equal(await hashRuntimeArtifact(b), first);
@@ -37,6 +41,7 @@ test("artifact inventory is byte-deterministic across relocation, and code, depe
     "package-lock.json",
     "apps/service/package.json",
     "packages/core/package.json",
+    "runtime-profile.json",
   ]) {
     const old = await readFile(join(a, file));
     await writeFile(join(a, file), Buffer.concat([old, Buffer.from("!")]));
@@ -123,6 +128,48 @@ test("verification rejects a changed dependency or a forged/malformed expected d
   await assert.rejects(verifyRuntimeArtifact(root, "sha256:fake"), bad);
   await writeFile(join(root, "node_modules/module/index.js"), "changed");
   await assert.rejects(verifyRuntimeArtifact(root, expected), bad);
+});
+
+test("inventory accepts exact independently enumerated entry/byte totals and option endpoints", async (t) => {
+  const root = await fixture(t);
+  const names = await readdir(root, { recursive: true });
+  const entries = names.length + 1; // includes the root directory
+  let bytes = 0;
+  for (const name of names) {
+    const info = await lstat(join(root, name));
+    if (info.isFile()) bytes += info.size;
+  }
+  const expected = await hashRuntimeArtifact(root);
+  assert.equal(
+    await hashRuntimeArtifact(root, { maxFiles: entries, maxBytes: bytes }),
+    expected,
+  );
+  assert.equal(
+    await hashRuntimeArtifact(root, { maxFiles: 100000, maxBytes: 2147483648 }),
+    expected,
+  );
+  await assert.rejects(
+    hashRuntimeArtifact(root, { maxFiles: entries - 1 }),
+    bad,
+  );
+  await assert.rejects(hashRuntimeArtifact(root, { maxBytes: bytes - 1 }), bad);
+  for (const key of ["maxBytes", "maxFiles"]) {
+    for (const value of [
+      0,
+      -1,
+      1.5,
+      NaN,
+      Infinity,
+      "1",
+      key === "maxBytes" ? 2147483649 : 100001,
+    ])
+      await assert.rejects(hashRuntimeArtifact(root, { [key]: value }), bad);
+  }
+  // Minimum permitted options are valid but cannot fit this complete fixture.
+  await assert.rejects(
+    hashRuntimeArtifact(root, { maxFiles: 1, maxBytes: 1 }),
+    bad,
+  );
 });
 
 test("missing runtime parts, symlinks, and bounded inventory failures reject without a digest", async (t) => {

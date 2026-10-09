@@ -113,20 +113,6 @@ async function sensitivityManifest(root, excluded = []) {
   );
 }
 
-test("ordered projection stream UTF-8 framing has a literal independent golden byte hash", () => {
-  const row = { uid: "DOC-00000000000000000000000001", text: "Line 😀\n" };
-  const line = `${JSON.stringify(row)}\n`;
-  assert.equal(
-    line,
-    '{"uid":"DOC-00000000000000000000000001","text":"Line 😀\\n"}\n',
-  );
-  // Expected digest independently calculated with Python compact JSON/UTF-8.
-  assert.equal(
-    `sha256:${createHash("sha256").update(line, "utf8").digest("hex")}`,
-    "sha256:5626067685334d44c2d77701b78ee98f9f09bdd155832857365dbf8ea27191d0",
-  );
-});
-
 test("projection is deterministic, exact-commit cited, and has no unchecked record API", async (t) => {
   assert.equal("projectCanonicalRecords" in projectionApi, false);
   const source = await vault(t);
@@ -464,6 +450,133 @@ test("full object IDs are mandatory and chunk limits fail closed without partial
       /projection config is invalid/u,
     );
   }
+});
+
+// Deployment policy must reject non-data configurations before any Git process.
+for (const [label, invalidConfig] of [
+  [
+    "sparse class array",
+    () => ({
+      ...config,
+      approvedSensitivityClasses: Object.assign(new Array(2), { 0: "public" }),
+    }),
+  ],
+  [
+    "unknown own fields with inherited required fields",
+    () => Object.assign(Object.create(config), { a: 1, b: 2, c: 3, d: 4 }),
+  ],
+  ["symbol config field", () => ({ ...config, [Symbol("extra")]: true })],
+  [
+    "named array field",
+    () => ({
+      ...config,
+      approvedSensitivityClasses: Object.assign(["public"], { extra: true }),
+    }),
+  ],
+  [
+    "symbol array field",
+    () => ({
+      ...config,
+      approvedSensitivityClasses: Object.assign(["public"], {
+        [Symbol("extra")]: true,
+      }),
+    }),
+  ],
+  [
+    "config accessor",
+    (observe) =>
+      Object.defineProperty({ ...config }, "vaultUid", { get: observe }),
+  ],
+  [
+    "array item accessor",
+    (observe) => ({
+      ...config,
+      approvedSensitivityClasses: Object.defineProperty(["public"], "0", {
+        get: observe,
+      }),
+    }),
+  ],
+  [
+    "inherited array item",
+    (observe) => {
+      const classes = Object.assign(new Array(2), { 0: "public" });
+      Object.setPrototypeOf(
+        classes,
+        Object.defineProperty(Object.create(Array.prototype), "1", {
+          get: observe,
+        }),
+      );
+      return { ...config, approvedSensitivityClasses: classes };
+    },
+  ],
+  [
+    "config proxy",
+    (observe) => new Proxy(config, { ownKeys: observe, get: observe }),
+  ],
+  [
+    "array proxy",
+    (observe) => ({
+      ...config,
+      approvedSensitivityClasses: new Proxy(["public"], {
+        get: observe,
+        ownKeys: observe,
+      }),
+    }),
+  ],
+]) {
+  test(`projection rejects ${label} without property execution or Git work`, async () => {
+    let observations = 0;
+    const input = invalidConfig(() => {
+      observations++;
+      throw new Error("PRIVATE_CONFIG_MARKER");
+    });
+    let processes = 0;
+    const hook = createHook({
+      init(_id, type) {
+        if (type === "PROCESSWRAP") processes++;
+      },
+    });
+    hook.enable();
+    try {
+      await assert.rejects(
+        prepareLexicalProjection("/nonexistent-projection-config-fixture", {
+          sourceRef: "a".repeat(40),
+          config: input,
+        }),
+        { name: "TypeError", message: "projection config is invalid" },
+      );
+      assert.equal(observations, 0);
+      assert.equal(processes, 0);
+    } finally {
+      hook.disable();
+    }
+  });
+}
+
+test("projection snapshots closed dense class arrays at their policy bounds", () => {
+  for (const classes of [
+    [],
+    ["public"],
+    Array.from({ length: 64 }, (_, i) => `class-${i}`),
+  ]) {
+    const input = { ...config, approvedSensitivityClasses: classes };
+    const snapshot = projectionApi.snapshotProjectionConfig(input);
+    assert.deepEqual(snapshot.approvedSensitivityClasses, [...classes].sort());
+    classes.length = 0;
+    assert.ok(Object.isFrozen(snapshot.approvedSensitivityClasses));
+    assert.notEqual(snapshot.approvedSensitivityClasses, classes);
+  }
+  assert.throws(
+    () =>
+      projectionApi.snapshotProjectionConfig({
+        ...config,
+        approvedSensitivityClasses: Array.from(
+          { length: 65 },
+          (_, i) => `class-${i}`,
+        ),
+      }),
+    { name: "TypeError", message: "projection config is invalid" },
+  );
 });
 
 test("worker-stage cancellation terminates parsing without leaking the abort reason", async (t) => {

@@ -130,6 +130,33 @@ test("mount proof uses per-mount read-only flags, handles escaping, and rejects 
     assert.throws(() => check(table), rejected);
 });
 
+// Protected descendant trees must remain immutable even on a different backing range.
+for (const path of ["/vault/.git/objects", "/vault/nested/metadata"]) {
+  test(`read-only descendant ${path} rejects overlapping writable backing aliases`, () => {
+    const nested = `4 2 8:2 /detached/tree ${path} ro - ext4 /dev/nested rw\n`;
+    for (const table of [mounts + nested, nested + mounts]) {
+      assert.doesNotThrow(() => check(table));
+      assert.doesNotThrow(() =>
+        check(
+          table +
+            "5 1 8:2 /detached/tree-other /alias rw - ext4 /dev/nested rw\n",
+        ),
+      );
+      assert.doesNotThrow(() =>
+        check(
+          table + "5 1 8:2 /detached/tree /alias ro - ext4 /dev/nested rw\n",
+        ),
+      );
+      for (const root of ["/detached", "/detached/tree", "/detached/tree/pack"])
+        assert.throws(
+          () =>
+            check(table + `5 1 8:2 ${root} /alias rw - ext4 /dev/nested rw\n`),
+          rejected,
+        );
+    }
+  });
+}
+
 test("nested mount selection is independent of mount-table order and retains alias rejection", () => {
   const rows = [
     ...mounts.trimEnd().split("\n"),

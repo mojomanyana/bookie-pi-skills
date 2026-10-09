@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { lstat, open, opendir, realpath, statfs } from "node:fs/promises";
 import { posix } from "node:path";
-import { beneath } from "./deployment-config.js";
+import { beneath } from "./path-boundary.js";
 
 export class DeploymentRejected extends Error {
   constructor() {
@@ -112,6 +112,7 @@ export function assertReadonlyMountProfile(
   for (const name of ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"])
     if (!/^0{1,32}$/u.test(field(name))) reject();
   const mounts = mountTable(text);
+  const writableMounts = mounts.filter((mount) => !mount.readonly);
   const containing = (path: string): Mount => {
     // Pick the deepest containing mount without allocating and sorting per lookup.
     let found: Mount | undefined;
@@ -136,19 +137,24 @@ export function assertReadonlyMountProfile(
       ancestor = posix.dirname(ancestor);
     }
     const selected = containing(path);
-    const filesystemPath = posix.join(
-      selected.root,
-      posix.relative(selected.point, path),
-    );
-    for (const mount of mounts) {
-      if (
-        !mount.readonly &&
-        (beneath(mount.point, path) ||
-          (mount.device === selected.device &&
-            (beneath(mount.root, filesystemPath) ||
-              beneath(filesystemPath, mount.root))))
-      )
-        reject();
+    // A protected tree can span multiple backing devices/ranges. Check the
+    // containing range and every descendant mount, not just the root mount.
+    for (const protectedMount of mounts) {
+      if (protectedMount !== selected && !beneath(protectedMount.point, path))
+        continue;
+      if (!protectedMount.readonly) reject();
+      const filesystemPath =
+        protectedMount === selected
+          ? posix.join(selected.root, posix.relative(selected.point, path))
+          : protectedMount.root;
+      for (const mount of writableMounts) {
+        if (
+          mount.device === protectedMount.device &&
+          (beneath(mount.root, filesystemPath) ||
+            beneath(filesystemPath, mount.root))
+        )
+          reject();
+      }
     }
   }
 }

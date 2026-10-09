@@ -261,7 +261,7 @@ test("scope uses exact scalar POSIX spelling and fails at path, segment and dept
   assert.throws(() => encode({ vaultScope: boundary }), bad);
 });
 
-test("REV-SPEC-001: class arrays are closed snapshots, and proxies cannot expand work or execute traps", () => {
+test("class arrays are closed snapshots, and proxies cannot expand work or execute traps", () => {
   for (const key of ["extra", Symbol("extra")]) {
     for (const descriptor of [
       { value: "PRIVATE" },
