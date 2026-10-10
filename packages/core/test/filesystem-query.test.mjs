@@ -793,3 +793,52 @@ test("search ordering and UTF-8 output truncation are deterministic", async (t) 
     assert.doesNotMatch(result.excerpt, /�/u);
   }
 });
+
+test("excerpt byte accounting preserves literal Unicode window boundaries", async (t) => {
+  const { root } = await temporaryVault(t);
+  const cases = [
+    { body: "aaaa😀Q中bbbb", query: "Q", bytes: 8, expected: "😀Q中" },
+    { body: "aaaa😀Q中bbbb", query: "Q", bytes: 7, expected: "aa😀Q" },
+    { body: "LLéQ中RR", query: "Q", bytes: 6, expected: "éQ中" },
+    { body: "LLéQ中RR", query: "Q", bytes: 5, expected: "LLéQ" },
+    { body: "😀Q😀", query: "Q", bytes: 4, expected: "Q" },
+    { body: "😀Q😀", query: "Q", bytes: 5, expected: "😀Q" },
+    { body: "😀Qaab", query: "Q", bytes: 3, expected: "Qaa" },
+    { body: "Qé中😀abcdef", query: "Q", bytes: 8, expected: "Qé中" },
+    { body: "abcdef😀中éQ", query: "Q", bytes: 8, expected: "中éQ" },
+    { body: "x😀中x", query: "😀中", bytes: 4, expected: "😀" },
+    { body: "x😀x", query: "😀", bytes: 3, expected: "" },
+    { body: "aQbQcccc", query: "Q", bytes: 3, expected: "aQb" },
+    { body: "😀Q", query: "Q", bytes: 5, expected: "😀Q", complete: true },
+    {
+      body: "a".repeat(1_023) + "Q",
+      query: "Q",
+      bytes: 1_024,
+      expected: "a".repeat(1_023) + "Q",
+      complete: true,
+    },
+  ];
+  for (const [index, example] of cases.entries()) {
+    await writeTask(root, "projects/fixture/tasks/excerpt-boundary.md", {
+      title: "Excerpt boundary fixture",
+      tags: ["excerpt-boundary"],
+      body: example.body,
+    });
+    const result = await searchVault(
+      root,
+      { query: example.query, filters: { tag: "excerpt-boundary" } },
+      { maxExcerptBytes: example.bytes },
+    );
+    assert.equal(result.complete, true, JSON.stringify(result.diagnostics));
+    assert.equal(result.results.length, 1);
+    const hit = result.results[0];
+    assert.equal(hit.matchedField, "body");
+    assert.equal(hit.excerpt, example.expected, `case ${index}`);
+    assert.equal(
+      hit.excerptTruncated,
+      example.complete !== true,
+      `case ${index}`,
+    );
+    assert.ok(Buffer.byteLength(hit.excerpt, "utf8") <= example.bytes);
+  }
+});

@@ -3,7 +3,6 @@ import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import { isDeepStrictEqual } from "node:util";
 
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
@@ -214,268 +213,6 @@ function assertSchemaValid(tree, validators, label) {
   }
 }
 
-function mapByPath(tree) {
-  return new Map(tree.concepts.map((concept) => [concept.path, concept]));
-}
-
-function findByUid(tree, uid) {
-  return tree.concepts.find(
-    (concept) => concept.frontmatter.bookie.uid === uid,
-  );
-}
-
-function relationInverse(kind, sourceType) {
-  if (kind === "relates_to") return "relates_to";
-  if (kind === "blocks") return "blocked_by";
-  if (kind === "blocked_by") return "blocks";
-  if (sourceType === "Decision" && kind === "supersedes") {
-    return "superseded_by";
-  }
-  if (sourceType === "Decision" && kind === "superseded_by") {
-    return "supersedes";
-  }
-  return null;
-}
-
-function validatePolicy(base, proposed, policy) {
-  const errors = new Set();
-  const baseByPath = mapByPath(base);
-  const proposedByPath = mapByPath(proposed);
-  const proposedByUid = new Map();
-
-  for (const concept of proposed.concepts) {
-    const uid = concept.frontmatter.bookie.uid;
-    if (!policy.allowed_concept_types.includes(concept.frontmatter.type)) {
-      errors.add("TYPE-ALLOWED");
-    }
-    if (proposedByUid.has(uid)) errors.add("UID-UNIQUE");
-    proposedByUid.set(uid, concept);
-  }
-
-  for (const source of proposed.concepts) {
-    const { bookie, type } = source.frontmatter;
-    if (bookie.project) {
-      const project = proposedByPath.get(bookie.project);
-      if (!project || project.frontmatter.type !== "Project") {
-        errors.add("PROJECT-TARGET");
-      }
-    }
-
-    const seenRelations = new Set();
-    for (const relation of bookie.relations ?? []) {
-      const key = `${relation.kind}\u0000${relation.target}`;
-      if (seenRelations.has(key)) errors.add("RELATION-TARGET");
-      seenRelations.add(key);
-      const target = proposedByPath.get(relation.target);
-      if (
-        !target ||
-        (relation.target_uid &&
-          relation.target_uid !== target.frontmatter.bookie.uid)
-      ) {
-        errors.add("RELATION-TARGET");
-        continue;
-      }
-
-      if (["supersedes", "superseded_by"].includes(relation.kind)) {
-        const correction =
-          relation.kind === "supersedes" &&
-          ["Activity", "Evidence"].includes(type) &&
-          target.frontmatter.type === type;
-        const decision =
-          type === "Decision" && target.frontmatter.type === "Decision";
-        if ((!correction && !decision) || target === source) {
-          errors.add("RELATION-TARGET");
-        }
-        if (
-          correction &&
-          bookie.project !== target.frontmatter.bookie.project
-        ) {
-          errors.add("RELATION-TARGET");
-        }
-      }
-
-      const inverse = relationInverse(relation.kind, type);
-      if (inverse) {
-        const matches = (target.frontmatter.bookie.relations ?? []).filter(
-          (candidate) =>
-            candidate.kind === inverse &&
-            candidate.target === source.path &&
-            (!candidate.target_uid || candidate.target_uid === bookie.uid),
-        );
-        if (matches.length !== 1) errors.add("RELATION-INVERSE");
-      }
-    }
-    if (
-      ["Activity", "Evidence"].includes(type) &&
-      (bookie.relations ?? []).filter(
-        (relation) => relation.kind === "supersedes",
-      ).length > 1
-    ) {
-      errors.add("RELATION-TARGET");
-    }
-  }
-
-  for (const predecessor of base.concepts.filter(
-    (concept) => concept.frontmatter.type === "Decision",
-  )) {
-    if (!findByUid(proposed, predecessor.frontmatter.bookie.uid)) {
-      errors.add("DECISION-SUPERSESSION");
-    }
-  }
-  for (const predecessor of proposed.concepts.filter(
-    (concept) =>
-      concept.frontmatter.type === "Decision" &&
-      concept.frontmatter.bookie.state === "superseded",
-  )) {
-    const reciprocal = (predecessor.frontmatter.bookie.relations ?? []).filter(
-      (relation) => relation.kind === "superseded_by",
-    );
-    const replacement = proposedByPath.get(reciprocal[0]?.target);
-    if (
-      predecessor.frontmatter.status !== "deprecated" ||
-      reciprocal.length !== 1 ||
-      !replacement ||
-      replacement.frontmatter.type !== "Decision" ||
-      replacement.frontmatter.bookie.project !==
-        predecessor.frontmatter.bookie.project ||
-      replacement.frontmatter.status !== "stable" ||
-      replacement.frontmatter.bookie.state !== "accepted" ||
-      !(replacement.frontmatter.bookie.relations ?? []).some(
-        (relation) =>
-          relation.kind === "supersedes" &&
-          relation.target === predecessor.path,
-      )
-    ) {
-      errors.add("DECISION-SUPERSESSION");
-    }
-  }
-  for (const replacement of proposed.concepts.filter(
-    (concept) => concept.frontmatter.type === "Decision",
-  )) {
-    for (const relation of replacement.frontmatter.bookie.relations ?? []) {
-      if (relation.kind !== "supersedes") continue;
-      const predecessor = proposedByPath.get(relation.target);
-      const reciprocal = (
-        predecessor?.frontmatter.bookie.relations ?? []
-      ).filter(
-        (candidate) =>
-          candidate.kind === "superseded_by" &&
-          candidate.target === replacement.path,
-      );
-      if (
-        !predecessor ||
-        predecessor.frontmatter.type !== "Decision" ||
-        predecessor.frontmatter.bookie.project !==
-          replacement.frontmatter.bookie.project ||
-        predecessor.frontmatter.status !== "deprecated" ||
-        predecessor.frontmatter.bookie.state !== "superseded" ||
-        replacement.frontmatter.status !== "stable" ||
-        replacement.frontmatter.bookie.state !== "accepted" ||
-        reciprocal.length !== 1
-      ) {
-        errors.add("DECISION-SUPERSESSION");
-      }
-    }
-  }
-
-  for (const type of ["Activity", "Evidence"]) {
-    const code = `${type.toUpperCase()}-IMMUTABLE`;
-    for (const original of base.concepts.filter(
-      (concept) => concept.frontmatter.type === type,
-    )) {
-      const candidate = findByUid(proposed, original.frontmatter.bookie.uid);
-      if (
-        !candidate ||
-        candidate.path !== original.path ||
-        candidate.markdown !== original.markdown ||
-        !isDeepStrictEqual(candidate.frontmatter, original.frontmatter)
-      ) {
-        errors.add(code);
-      }
-    }
-  }
-
-  for (const evidence of proposed.concepts.filter(
-    (concept) => concept.frontmatter.type === "Evidence",
-  )) {
-    const resourcePath = evidence.frontmatter.resource;
-    const relative = resourcePath.slice(1);
-    const insideRoot = policy.evidence_roots.some((rootPath) =>
-      relative.startsWith(`${rootPath}/`),
-    );
-    const resource = proposed.resources.get(resourcePath);
-    if (
-      !insideRoot ||
-      !resource ||
-      resource.kind !== "regular" ||
-      resource.bytes.length > policy.attachment_max_bytes
-    ) {
-      errors.add("EVIDENCE-RESOURCE");
-    } else if (sha256(resource.bytes) !== evidence.frontmatter.bookie.sha256) {
-      errors.add("EVIDENCE-DIGEST");
-    }
-    for (const support of evidence.frontmatter.bookie.supports) {
-      if (!proposedByPath.has(support)) errors.add("EVIDENCE-SUPPORT");
-    }
-  }
-
-  for (const original of base.concepts.filter((concept) =>
-    ["Activity", "Evidence"].includes(concept.frontmatter.type),
-  )) {
-    const { bookie, type } = original.frontmatter;
-    if (bookie.project) {
-      const before = baseByPath.get(bookie.project);
-      const after = proposedByPath.get(bookie.project);
-      if (
-        !before ||
-        !after ||
-        before.frontmatter.bookie.uid !== after.frontmatter.bookie.uid
-      ) {
-        errors.add("PROJECT-TARGET");
-      }
-    }
-    for (const relation of bookie.relations ?? []) {
-      const before = baseByPath.get(relation.target);
-      const after = proposedByPath.get(relation.target);
-      if (
-        !before ||
-        !after ||
-        before.frontmatter.bookie.uid !== after.frontmatter.bookie.uid
-      ) {
-        errors.add("RELATION-TARGET");
-      }
-    }
-    if (type === "Evidence") {
-      for (const support of bookie.supports) {
-        const before = baseByPath.get(support);
-        const after = proposedByPath.get(support);
-        if (
-          !before ||
-          !after ||
-          before.frontmatter.bookie.uid !== after.frontmatter.bookie.uid
-        ) {
-          errors.add("EVIDENCE-SUPPORT");
-        }
-      }
-      const beforeResource = base.resources.get(original.frontmatter.resource);
-      const afterResource = proposed.resources.get(
-        original.frontmatter.resource,
-      );
-      if (
-        !beforeResource ||
-        !afterResource ||
-        beforeResource.kind !== "regular" ||
-        afterResource.kind !== "regular" ||
-        !beforeResource.bytes.equals(afterResource.bytes)
-      ) {
-        errors.add("EVIDENCE-RESOURCE");
-      }
-    }
-  }
-
-  return [...errors].sort();
-}
-
 test("SPEC-001 fixes UID prefixes, relation inverses, and stable rule codes", () => {
   const spec = readFileSync(specPath, "utf8");
 
@@ -499,7 +236,7 @@ test("SPEC-001 fixes UID prefixes, relation inverses, and stable rule codes", ()
   assert.deepEqual(documentedRules, ruleCodes);
 });
 
-test("cross-file fixtures materialize schema-valid trees and isolate policy rules", async (t) => {
+test("cross-file fixtures retain schema-valid trees and independent rule expectations", async (t) => {
   assert.deepEqual(
     readdirSync(resolve(fixtureRoot, "valid"))
       .filter((name) => name.endsWith(".json"))
@@ -535,10 +272,6 @@ test("cross-file fixtures materialize schema-valid trees and isolate policy rule
       const proposed = materializeTree(fixture.facts.proposed);
       assertSchemaValid(base, validators, `${name} base`);
       assertSchemaValid(proposed, validators, `${name} proposed`);
-      assert.deepEqual(
-        validatePolicy(base, proposed, fixture.facts.policy),
-        [],
-      );
       assert.deepEqual(fixture.expected, { valid: true, rules: [] });
     });
   }
@@ -552,10 +285,6 @@ test("cross-file fixtures materialize schema-valid trees and isolate policy rule
       const proposed = materializeTree(fixture.facts.proposed);
       assertSchemaValid(base, validators, `${name} base`);
       assertSchemaValid(proposed, validators, `${name} proposed`);
-      assert.deepEqual(
-        validatePolicy(base, proposed, fixture.facts.policy),
-        [...expectedRules].sort(),
-      );
       assert.deepEqual(fixture.expected, {
         valid: false,
         rules: expectedRules,

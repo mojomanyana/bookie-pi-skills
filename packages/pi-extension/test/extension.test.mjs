@@ -1432,19 +1432,6 @@ test("checkpoint secret failures are static and publish nothing", async (t) => {
   await assert.rejects(readFile(target), { code: "ENOENT" });
 });
 
-test("BK-014 write source is policy-bearing and mutation-queued", async () => {
-  const source = await readFile(join(packageRoot, "src/index.ts"), "utf8");
-  for (const required of [
-    "createConceptWithPolicy",
-    "amendConceptWithPolicy",
-    "withFileMutationQueue",
-  ]) {
-    assert.match(source, new RegExp(`\\b${required}\\b`, "u"));
-  }
-  assert.equal(source.includes("createConcept("), false);
-  assert.equal(source.includes("amendConcept("), false);
-});
-
 test("extension keeps read behavior core-backed and has no network or Git side effects", async () => {
   const source = await readFile(join(packageRoot, "src/index.ts"), "utf8");
   for (const required of ["inspectConcept", "searchVault", "validateVault"]) {

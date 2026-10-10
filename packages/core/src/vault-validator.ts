@@ -1,15 +1,13 @@
+import { validationLimits } from "./vault-limits.js";
 import { createHash } from "node:crypto";
 import { realpath, stat } from "node:fs/promises";
 import { posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { throwIfAborted } from "./vault-cancellation.js";
+import { loadConcept } from "./concept-loader.js";
 import {
-  DEFAULT_MAX_CONCEPT_BYTES,
-  DEFAULT_MAX_YAML_DEPTH,
-  loadConcept,
-} from "./concept-loader.js";
-import {
+  addSchemaDiagnostics,
   createDiagnostic,
   DiagnosticCollector,
   mapConceptDiagnostic,
@@ -35,21 +33,23 @@ import type {
   BookiePolicySource,
   BookieRecord,
   Manifest,
-  SchemaError,
   ValidationLimits,
   VaultEntries,
 } from "./vault-model.js";
 import {
+  trustedPolicySource,
   validateCandidateIdentity,
   validateCurrentTree,
 } from "./vault-policy.js";
 
-export const DEFAULT_MAX_MANIFEST_BYTES = 65_536;
-export const DEFAULT_MAX_VAULT_ENTRIES = 100_000;
-export const DEFAULT_MAX_VAULT_CONCEPTS = 50_000;
-export const DEFAULT_MAX_TOTAL_CONCEPT_BYTES = 536_870_912;
-export const DEFAULT_MAX_TOTAL_RESOURCE_BYTES = 2_147_483_648;
-export const DEFAULT_MAX_VAULT_DIAGNOSTICS = 1_000;
+export {
+  DEFAULT_MAX_MANIFEST_BYTES,
+  DEFAULT_MAX_VAULT_ENTRIES,
+  DEFAULT_MAX_VAULT_CONCEPTS,
+  DEFAULT_MAX_TOTAL_CONCEPT_BYTES,
+  DEFAULT_MAX_TOTAL_RESOURCE_BYTES,
+  DEFAULT_MAX_VAULT_DIAGNOSTICS,
+} from "./vault-limits.js";
 
 export interface ValidateVaultOptions {
   readonly maxManifestBytes?: number;
@@ -79,154 +79,8 @@ export type {
   VaultDiagnosticCode,
 } from "./vault-diagnostics.js";
 
-function positiveLimit(
-  name: string,
-  value: number | undefined,
-  maximum: number,
-): number {
-  if (value === undefined) return maximum;
-  if (!Number.isSafeInteger(value) || value <= 0 || value > maximum) {
-    throw new TypeError(
-      `${name} must be a positive integer no greater than ${maximum}`,
-    );
-  }
-  return value;
-}
-
-function validationLimits(options: ValidateVaultOptions): ValidationLimits {
-  return {
-    maxManifestBytes: positiveLimit(
-      "maxManifestBytes",
-      options.maxManifestBytes,
-      DEFAULT_MAX_MANIFEST_BYTES,
-    ),
-    maxConceptBytes: positiveLimit(
-      "maxConceptBytes",
-      options.maxConceptBytes,
-      DEFAULT_MAX_CONCEPT_BYTES,
-    ),
-    maxYamlDepth: positiveLimit(
-      "maxYamlDepth",
-      options.maxYamlDepth,
-      DEFAULT_MAX_YAML_DEPTH,
-    ),
-    maxEntries: positiveLimit(
-      "maxEntries",
-      options.maxEntries,
-      DEFAULT_MAX_VAULT_ENTRIES,
-    ),
-    maxConcepts: positiveLimit(
-      "maxConcepts",
-      options.maxConcepts,
-      DEFAULT_MAX_VAULT_CONCEPTS,
-    ),
-    maxTotalConceptBytes: positiveLimit(
-      "maxTotalConceptBytes",
-      options.maxTotalConceptBytes,
-      DEFAULT_MAX_TOTAL_CONCEPT_BYTES,
-    ),
-    maxTotalResourceBytes: positiveLimit(
-      "maxTotalResourceBytes",
-      options.maxTotalResourceBytes,
-      DEFAULT_MAX_TOTAL_RESOURCE_BYTES,
-    ),
-    maxDiagnostics: positiveLimit(
-      "maxDiagnostics",
-      options.maxDiagnostics,
-      DEFAULT_MAX_VAULT_DIAGNOSTICS,
-    ),
-  };
-}
-
 function isObject(value: unknown): value is Readonly<Record<string, unknown>> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function trustedPolicySource(
-  path: string,
-  displayFile: string,
-  type: string,
-  frontmatter: Readonly<Record<string, unknown>>,
-  bookie: Readonly<Record<string, unknown>>,
-): BookiePolicySource {
-  const status =
-    typeof frontmatter.status === "string" ? frontmatter.status : undefined;
-  const profile =
-    typeof bookie.profile === "string" ? bookie.profile : undefined;
-  const uid = typeof bookie.uid === "string" ? bookie.uid : undefined;
-  const project =
-    typeof bookie.project === "string" ? bookie.project : undefined;
-  const state = typeof bookie.state === "string" ? bookie.state : undefined;
-  const sensitivity =
-    typeof bookie.sensitivity === "string" ? bookie.sensitivity : undefined;
-  const sha256 = typeof bookie.sha256 === "string" ? bookie.sha256 : undefined;
-  let relations: BookieData["relations"];
-  if (Array.isArray(bookie.relations)) {
-    const trusted = [];
-    let malformed = false;
-    for (const relation of bookie.relations) {
-      if (
-        !isObject(relation) ||
-        typeof relation.kind !== "string" ||
-        typeof relation.target !== "string" ||
-        (relation.target_uid !== undefined &&
-          typeof relation.target_uid !== "string")
-      ) {
-        malformed = true;
-        break;
-      }
-      trusted.push({
-        kind: relation.kind,
-        target: relation.target,
-        ...(relation.target_uid === undefined
-          ? {}
-          : { target_uid: relation.target_uid }),
-      });
-    }
-    if (!malformed) relations = trusted;
-  }
-  const supports =
-    Array.isArray(bookie.supports) &&
-    bookie.supports.every((support) => typeof support === "string")
-      ? bookie.supports
-      : undefined;
-  return {
-    path,
-    displayFile,
-    type,
-    ...(status === undefined ? {} : { status }),
-    frontmatter,
-    bookie: {
-      ...(profile === undefined ? {} : { profile }),
-      ...(uid === undefined ? {} : { uid }),
-      ...(project === undefined ? {} : { project }),
-      ...(state === undefined ? {} : { state }),
-      ...(sensitivity === undefined ? {} : { sensitivity }),
-      ...(relations === undefined ? {} : { relations }),
-      ...(supports === undefined ? {} : { supports }),
-      ...(sha256 === undefined ? {} : { sha256 }),
-    },
-  };
-}
-
-function addSchemaDiagnostics(
-  collector: DiagnosticCollector,
-  code: "MANIFEST-SCHEMA" | "CONCEPT-SCHEMA",
-  file: string,
-  errors: readonly SchemaError[] | null | undefined,
-): void {
-  if (errors === null || errors === undefined || errors.length === 0) {
-    collector.add(createDiagnostic(code, file));
-    return;
-  }
-  for (const error of errors) {
-    collector.add(
-      createDiagnostic(code, file, {
-        instancePath: error.instancePath,
-        keyword: error.keyword,
-      }),
-    );
-  }
 }
 
 function isReservedMarkdown(relativePath: string): boolean {

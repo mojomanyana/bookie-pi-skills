@@ -1,5 +1,17 @@
 export const OKF_VERSION = "0.2" as const;
 
+export { readApprovedSourceManifest } from "./approved-source-manifest.js";
+export type {
+  ApprovedSourceManifestRequest,
+  ApprovedSourceManifestResult,
+} from "./approved-source-manifest.js";
+
+export { resolveApprovedGitCommit } from "./approved-git-source.js";
+export type {
+  ApprovedGitCommitRequest,
+  ApprovedGitCommitResult,
+} from "./approved-git-source.js";
+
 export {
   CHECKPOINT_SECTIONS,
   MAX_CHECKPOINT_PREVIEW_BYTES,
@@ -33,6 +45,7 @@ export type {
   CanonicalJsonlRecordV1,
   CanonicalExportSecretPolicy,
   CanonicalJsonlSink,
+  CanonicalSourceManifest,
   InitialBookieConceptType,
 } from "./canonical-export.js";
 

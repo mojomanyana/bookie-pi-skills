@@ -176,6 +176,44 @@ async function collectExport(root, sourceRef = "HEAD", options = {}) {
   return { result, calls, bytes: Buffer.concat(chunks) };
 }
 
+test("export source manifest metadata is bound to the exact commit, not the working tree", async (t) => {
+  const { root, commit } = await temporaryGitVault(t);
+  const manifestBytes = await readFile(join(root, "bookie.yaml"));
+  await writeFile(join(root, "bookie.yaml"), "invalid working tree manifest\n");
+  const { result } = await collectExport(root, commit);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.sourceManifest, {
+    vaultUid: "VLT-00000000000000000000000009",
+    profile: "1.0",
+    hash: `sha256:${createHash("sha256").update(manifestBytes).digest("hex")}`,
+    sensitivityClasses: ["public"],
+  });
+  const invalid = await collectExport(root, "HEAD~99999");
+  assert.equal(invalid.result.ok, false);
+  assert.equal("sourceManifest" in invalid.result, false);
+});
+
+test("export checks decoded projection strings without rewriting canonical Markdown", async (t) => {
+  const { root } = await temporaryGitVault(t);
+  const path = "projects/fixture/documents/document.md";
+  await rewriteBody(root, path, `## &#103;hp_${"a".repeat(36)}\n`);
+  git(root, ["add", "-A"]);
+  git(root, ["commit", "-q", "-m", "encoded heading"]);
+  const rejected = await collectExport(root);
+  assert.equal(rejected.result.reason, "secret-policy");
+  assert.equal(rejected.calls, 0);
+  assert.deepEqual(codes(rejected.result), ["EXPORT-SECRET"]);
+  const unchecked = await collectExport(root, "HEAD", {
+    secretPolicy: "allow-unchecked",
+  });
+  assert.equal(unchecked.result.ok, true);
+  assert.equal(
+    recordsFrom(unchecked.bytes).find((record) => record.path === `/${path}`)
+      .body_markdown,
+    `## &#103;hp_${"a".repeat(36)}\n`,
+  );
+});
+
 function recordsFrom(bytes) {
   if (bytes.byteLength === 0) return [];
   assert.equal(bytes.at(-1), 0x0a);

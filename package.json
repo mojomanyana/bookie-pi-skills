@@ -17,14 +17,14 @@
     ]
   },
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
+    "build": "tsc -b --force && node packages/core/scripts/copy-schemas.mjs",
     "prepare": "npm run build --workspace @bookie/pi-extension",
     "format:check": "prettier --check \"**/*.{js,mjs,ts,json,yaml,yml}\"",
     "lint": "eslint .",
-    "test": "npm run test:repo && npm run test --workspaces --if-present",
+    "test": "npm run build && npm run test:repo && npm run test:built --workspaces --if-present",
     "test:repo": "node --test test/*.test.mjs",
     "typecheck": "tsc -b --pretty false",
-    "check": "npm run format:check && npm run lint && npm run typecheck && npm test"
+    "check": "npm run format:check && npm run lint && npm test"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "^0.85.1",

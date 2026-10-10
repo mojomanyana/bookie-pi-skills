@@ -7,6 +7,7 @@ import {
   readFile,
   readdir,
   rm,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -334,10 +335,26 @@ test("CLI source cannot reach filesystem-writing APIs", async () => {
 test("clean package artifacts install and expose the bookie binary", async (t) => {
   const parent = await mkdtemp(join(tmpdir(), "bookie-cli-pack-"));
   t.after(() => rm(parent, { recursive: true, force: true }));
-  await Promise.all([
-    rm(resolve(corePackage, "dist"), { recursive: true, force: true }),
-    rm(resolve(cliPackage, "dist"), { recursive: true, force: true }),
-  ]);
+  const source = join(parent, "source");
+  await mkdir(join(source, "packages"), { recursive: true });
+  for (const [name, packageRoot] of [
+    ["core", corePackage],
+    ["cli", cliPackage],
+  ]) {
+    await cp(packageRoot, join(source, "packages", name), {
+      recursive: true,
+      filter: (path) =>
+        !["dist", "tsconfig.tsbuildinfo"].includes(path.split(/[\\/]/u).at(-1)),
+    });
+  }
+  await cp(join(repositoryRoot, "schemas"), join(source, "schemas"), {
+    recursive: true,
+  });
+  await symlink(
+    join(repositoryRoot, "node_modules"),
+    join(source, "node_modules"),
+    "dir",
+  );
   const pack = (path) => {
     const packed = JSON.parse(
       execFileSync(
@@ -351,7 +368,7 @@ test("clean package artifacts install and expose the bookie binary", async (t) =
     );
     return Array.isArray(packed) ? packed[0] : Object.values(packed)[0];
   };
-  const core = pack(corePackage);
+  const core = pack(join(source, "packages/core"));
   assert.ok(core.files.some(({ path }) => path === "dist/index.js"));
   assert.ok(
     core.files.some(
@@ -359,7 +376,7 @@ test("clean package artifacts install and expose the bookie binary", async (t) =
         path === "dist/schemas/profile/1.0/bookie-config.schema.json",
     ),
   );
-  const cliArtifact = pack(cliPackage);
+  const cliArtifact = pack(join(source, "packages/cli"));
   assert.ok(cliArtifact.files.some(({ path }) => path === "dist/cli.js"));
 
   const installation = join(parent, "installation");

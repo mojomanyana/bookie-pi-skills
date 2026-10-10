@@ -4,12 +4,84 @@ import { throwIfAborted } from "./vault-cancellation.js";
 import { createDiagnostic, DiagnosticCollector } from "./vault-diagnostics.js";
 import type {
   BookieCandidate,
+  BookieData,
   BookiePolicySource,
   BookieRecord,
   Manifest,
   Relation,
   SchemaValidators,
 } from "./vault-model.js";
+
+function isObject(value: unknown): value is Readonly<Record<string, unknown>> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+export function trustedPolicySource(
+  path: string,
+  displayFile: string,
+  type: string,
+  frontmatter: Readonly<Record<string, unknown>>,
+  bookie: Readonly<Record<string, unknown>>,
+): BookiePolicySource {
+  const status =
+    typeof frontmatter.status === "string" ? frontmatter.status : undefined;
+  const profile =
+    typeof bookie.profile === "string" ? bookie.profile : undefined;
+  const uid = typeof bookie.uid === "string" ? bookie.uid : undefined;
+  const project =
+    typeof bookie.project === "string" ? bookie.project : undefined;
+  const state = typeof bookie.state === "string" ? bookie.state : undefined;
+  const sensitivity =
+    typeof bookie.sensitivity === "string" ? bookie.sensitivity : undefined;
+  const sha256 = typeof bookie.sha256 === "string" ? bookie.sha256 : undefined;
+  let relations: BookieData["relations"];
+  if (Array.isArray(bookie.relations)) {
+    const trusted = [];
+    let malformed = false;
+    for (const relation of bookie.relations) {
+      if (
+        !isObject(relation) ||
+        typeof relation.kind !== "string" ||
+        typeof relation.target !== "string" ||
+        (relation.target_uid !== undefined &&
+          typeof relation.target_uid !== "string")
+      ) {
+        malformed = true;
+        break;
+      }
+      trusted.push({
+        kind: relation.kind,
+        target: relation.target,
+        ...(relation.target_uid === undefined
+          ? {}
+          : { target_uid: relation.target_uid }),
+      });
+    }
+    if (!malformed) relations = trusted;
+  }
+  const supports =
+    Array.isArray(bookie.supports) &&
+    bookie.supports.every((support) => typeof support === "string")
+      ? bookie.supports
+      : undefined;
+  return {
+    path,
+    displayFile,
+    type,
+    ...(status === undefined ? {} : { status }),
+    frontmatter,
+    bookie: {
+      ...(profile === undefined ? {} : { profile }),
+      ...(uid === undefined ? {} : { uid }),
+      ...(project === undefined ? {} : { project }),
+      ...(state === undefined ? {} : { state }),
+      ...(sensitivity === undefined ? {} : { sensitivity }),
+      ...(relations === undefined ? {} : { relations }),
+      ...(supports === undefined ? {} : { supports }),
+      ...(sha256 === undefined ? {} : { sha256 }),
+    },
+  };
+}
 
 const inverseKinds = new Map<string, string>([
   ["relates_to", "relates_to"],

@@ -15,8 +15,11 @@ This page is the stable entry point for product and engineering context.
 - [Security](architecture/security.md) — assets, trust boundaries, threats, and controls.
 - [Architecture decisions](architecture/decisions/) — accepted load-bearing decisions, including the [service protocol, auth, and projection design](architecture/decisions/0010-service-protocol-auth-and-projection.md).
 
+- [Bounded rebuild admission](architecture/decisions/0011-bounded-rebuild-admission.md) — accepted ADR-0011 resolves OQ-013; source metadata/preflight, v2 recipe golden vectors and artifact staging/inventory are committed on the development branch. Reproducible immutable local-image qualification and integrated repair review are complete; trusted recipe/builder verification, controller integration, production distribution/Compose and scale verification remain pending. [PR #28](https://github.com/mojomanyana/bookie-pi-skills/pull/28) is open with CI pending at the 2026-10-10 UTC closeout; see the handoff for the delivery decision.
+
 ## Delivery
 
+- [Next-session handoff](planning/next-session.md) — current product picture, checkout state, verification and remaining BK-017 work.
 - [Roadmap](planning/roadmap.md) — release sequence and exit gates.
 - [Backlog](planning/backlog.md) — ordered issue-ready work.
 - [Definition of done](planning/definition-of-done.md) — completion criteria.
@@ -49,7 +52,7 @@ This page is the stable entry point for product and engineering context.
 - [Complete valid vault fixture](../fixtures/valid-vault/)
 - [Invalid vault fixtures](../fixtures/invalid-vaults/)
 - [Vault fixture tests](../test/vault-fixtures.test.mjs)
-- [YAML decision evidence](../test/yaml-roundtrip-decision.test.mjs)
+- [Production YAML preservation tests](../packages/core/test/concept-loader.test.mjs) and [mutation goldens](../packages/core/test/concept-mutation.test.mjs)
 - [Core concept loader](../packages/core/src/concept-loader.ts) and [tests](../packages/core/test/concept-loader.test.mjs)
 - [Core vault validator](../packages/core/src/vault-validator.ts), [Git-base policy](../packages/core/src/vault-git-base.ts), and [tests](../packages/core/test/git-base-validation.test.mjs)
 - [Core evidence capture](../packages/core/src/evidence-capture.ts) and [tests](../packages/core/test/evidence-capture.test.mjs)

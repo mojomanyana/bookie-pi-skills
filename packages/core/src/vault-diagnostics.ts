@@ -1,3 +1,4 @@
+import type { SchemaError } from "./vault-model.js";
 import type { ConceptDiagnosticCode, SourceRange } from "./concept-loader.js";
 
 export type VaultDiagnosticCode =
@@ -147,6 +148,26 @@ const remediations: Record<
   "EXPORT-OUTPUT":
     "Discard any output prefix, repair the caller-owned sink, and retry the same commit.",
 };
+
+export function addSchemaDiagnostics(
+  collector: DiagnosticCollector,
+  code: "MANIFEST-SCHEMA" | "CONCEPT-SCHEMA",
+  file: string,
+  errors: readonly SchemaError[] | null | undefined,
+): void {
+  if (errors === null || errors === undefined || errors.length === 0) {
+    collector.add(createDiagnostic(code, file));
+    return;
+  }
+  for (const error of errors) {
+    collector.add(
+      createDiagnostic(code, file, {
+        instancePath: error.instancePath,
+        keyword: error.keyword,
+      }),
+    );
+  }
+}
 
 export function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;

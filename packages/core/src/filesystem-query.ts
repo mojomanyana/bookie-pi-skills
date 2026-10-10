@@ -1,3 +1,4 @@
+import { positiveLimit } from "./bounded-limit.js";
 import { Buffer } from "node:buffer";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,7 +36,7 @@ import {
   DEFAULT_MAX_VAULT_CONCEPTS,
   DEFAULT_MAX_VAULT_DIAGNOSTICS,
   DEFAULT_MAX_VAULT_ENTRIES,
-} from "./vault-validator.js";
+} from "./vault-limits.js";
 import {
   scanVaultForQuery,
   type ScannedQueryConcept,
@@ -76,20 +77,6 @@ interface PendingHit {
   readonly titleTruncated: boolean;
   readonly excerpt: string;
   readonly excerptTruncated: boolean;
-}
-
-function positiveLimit(
-  name: string,
-  value: number | undefined,
-  maximum: number,
-): number {
-  if (value === undefined) return maximum;
-  if (!Number.isSafeInteger(value) || value <= 0 || value > maximum) {
-    throw new TypeError(
-      `${name} must be a positive integer no greater than ${maximum}`,
-    );
-  }
-  return value;
 }
 
 function validationLimits(options: FilesystemQueryOptions): ValidationLimits {
@@ -265,26 +252,28 @@ function excerptAt(
       truncated: true,
     };
   }
+  let selectedBytes = Buffer.byteLength(selected, "utf8");
   while (start > 0 || end < points.length) {
     let changed = false;
     if (start > 0) {
-      const candidate = points.slice(start - 1, end).join("");
-      if (Buffer.byteLength(candidate, "utf8") <= maximumBytes) {
+      const addedBytes = Buffer.byteLength(points[start - 1]!, "utf8");
+      if (selectedBytes + addedBytes <= maximumBytes) {
         start -= 1;
-        selected = candidate;
+        selectedBytes += addedBytes;
         changed = true;
       }
     }
     if (end < points.length) {
-      const candidate = points.slice(start, end + 1).join("");
-      if (Buffer.byteLength(candidate, "utf8") <= maximumBytes) {
+      const addedBytes = Buffer.byteLength(points[end]!, "utf8");
+      if (selectedBytes + addedBytes <= maximumBytes) {
         end += 1;
-        selected = candidate;
+        selectedBytes += addedBytes;
         changed = true;
       }
     }
     if (!changed) break;
   }
+  selected = points.slice(start, end).join("");
   return { value: selected, truncated: true };
 }
 

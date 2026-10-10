@@ -252,7 +252,10 @@ function compileVerifiers(
   return compiled;
 }
 
-function schemaValidators(): ReadonlyMap<string, ValidateFunction> {
+function schemaValidators(): {
+  readonly ajv: Ajv2020;
+  readonly validators: ReadonlyMap<string, ValidateFunction>;
+} {
   const ajv = new Ajv2020({ allErrors: true, strict: true });
   const addFormats = formatsModule.default as unknown as (
     instance: Ajv2020,
@@ -264,15 +267,15 @@ function schemaValidators(): ReadonlyMap<string, ValidateFunction> {
     "errorResponse",
     "healthResponse",
     "indexResponse",
-    "searchRequest",
     "searchResponse",
   ];
-  return new Map(
+  const validators = new Map(
     names.map((name) => [
       name,
       ajv.compile({ $ref: `${protocolSchemaId}#/$defs/${name}` }),
     ]),
   );
+  return { ajv, validators };
 }
 
 function validator(
@@ -393,17 +396,10 @@ export async function createBookieService(
   const now = options.now ?? (() => new Date());
   if (typeof now !== "function") throw new TypeError("now must be a function");
   const verifiers = compileVerifiers(options.tokens);
-  const validators = schemaValidators();
-  const requestAjv = new Ajv2020({ allErrors: true, strict: true });
-  const addRequestFormats = formatsModule.default as unknown as (
-    instance: Ajv2020,
-  ) => unknown;
-  addRequestFormats(requestAjv);
-  requestAjv.addSchema(commonSchema);
-  requestAjv.addSchema(protocolSchema);
+  const { ajv, validators } = schemaValidators();
   const app = Fastify({ logger: false, bodyLimit: 65_536 });
   app.setValidatorCompiler(({ schema }) =>
-    requestAjv.compile(schema as Record<string, unknown>),
+    ajv.compile(schema as Record<string, unknown>),
   );
 
   app.addHook("onRequest", async (request) => {
