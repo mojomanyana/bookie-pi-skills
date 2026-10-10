@@ -2,7 +2,7 @@
 
 Authenticated indexing and retrieval service backed by a disposable Redis projection. Follow [SPEC-004](../../docs/specs/004-retrieval-service.md), the [retrieval architecture](../../docs/architecture/retrieval.md), and the [security architecture](../../docs/architecture/security.md).
 
-The production service must mount canonical vaults read-only and never become a write path. A strict Linux source-deployment guard and immutable local-runtime qualification are implemented on the development branch; full startup/controller/production Compose integration remains pending.
+The production service must mount canonical vaults read-only and never become a write path. A strict Linux source-deployment guard and immutable local-runtime qualification are merged prerequisites; full startup/controller/production Compose integration remains pending.
 
 ## Current implementation
 
@@ -15,9 +15,9 @@ BK-017's merged Dockerless Fastify contract slice provides:
 - static redacted authentication, request, and dependency errors;
 - generated request IDs, `Cache-Control: no-store`, disabled automatic logging, and request-abort propagation to the store boundary.
 
-The branch adds an in-memory lexical projection slice (committed, not yet merged): exact-commit validation, commit-derived vault/manifest identity, explicit deployment sensitivity approval, deterministic build IDs, cited heading-aware UTF-8 chunks, tags/links/relations, trust/freshness metadata, and an untrusted-content label. Excluded records are omitted; malformed input, policy failures, chunk overflow, worker failure, and cancellation produce no partial projection. Core also checks decoded headings and links against exclusion/secret policy before returning any export bytes.
+The merged in-memory lexical projection slice provides: exact-commit validation, commit-derived vault/manifest identity, explicit deployment sensitivity approval, deterministic build IDs, cited heading-aware UTF-8 chunks, tags/links/relations, trust/freshness metadata, and an untrusted-content label. Excluded records are omitted; malformed input, policy failures, chunk overflow, worker failure, and cancellation produce no partial projection. Core also checks decoded headings and links against exclusion/secret policy before returning any export bytes.
 
-At the 2026-10-10 UTC closeout, the branch through `757cb19` has final integrated repair review **APPROVE**, including descendant-mount alias, strict-config and optional-dependency repairs. [PR #28](https://github.com/mojomanyana/bookie-pi-skills/pull/28) is open and CI was in progress at the coordinator's last check; no merge is recorded. Final runtime/deployment suites passed **1/0/0 skipped** and **10/0/0 skipped**; four clean builds reproduce `sha256:c41e3efd0ed3f9476122364b2664462f710b9df1579f1f4c2eff24ebf0d9066f`. Docker worked for those recorded checks; real Redis was not rerun. Trusted preflight/expected identity loading and builder recipe/canonical-output comparison remain the next seam before recipe/controller use. See [handoff](../../docs/planning/next-session.md) for delivery, remaining gates and the unresolved coordinator package-version-label metadata follow-up.
+The merged prerequisites have final integrated repair review **APPROVE**, including descendant-mount alias, strict-config and optional-dependency repairs. [PR #28](https://github.com/mojomanyana/bookie-pi-skills/pull/28) merged at `2026-10-10T00:12:09Z` as `4774ce18f47a5e979ab1d09365a2b2377af26458`; matching PR and merged-main CI succeeded. BK-025 is Done, while BK-017 remains Ready/partial and SPEC-004 In progress. Final runtime/deployment suites passed **1/0/0 skipped** and **10/0/0 skipped**; four clean builds reproduce `sha256:c41e3efd0ed3f9476122364b2664462f710b9df1579f1f4c2eff24ebf0d9066f`. Docker worked for those recorded checks; real Redis was not rerun. Trusted preflight/expected identity loading and builder recipe/canonical-output comparison remain the next seam before recipe/controller use. See [handoff](../../docs/planning/next-session.md) for delivery, remaining gates and the unresolved coordinator package-version-label metadata follow-up.
 
 ### Try the projection slice
 
@@ -51,7 +51,7 @@ This example is not approval to index a real non-public vault (OQ-007). There is
 
 ### Fenced Redis candidate storage
 
-The branch also adds `RedisCandidateStore`, a low-level, non-serving builder primitive. It supports per-vault owner startup, idempotent claims, contiguous RedisJSON batches through renewable fenced leases, cancellation acknowledgement, static failure status, and bounded terminal-candidate cleanup. Redis keys use a deployment-HMAC namespace; stale/expired workers cannot mutate a replacement attempt. Active, previous, complete, and live-reader-leased generations are protected. No method marks a build complete or activates it.
+The merged prerequisites also include `RedisCandidateStore`, a low-level, non-serving builder primitive. It supports per-vault owner startup, idempotent claims, contiguous RedisJSON batches through renewable fenced leases, cancellation acknowledgement, static failure status, and bounded terminal-candidate cleanup. Redis keys use a deployment-HMAC namespace; stale/expired workers cannot mutate a replacement attempt. Active, previous, complete, and live-reader-leased generations are protected. No method marks a build complete or activates it.
 
 Run its real Redis integration tests:
 
@@ -67,7 +67,7 @@ Redis Search execution, full startup/controller integration, complete/evaluation
 
 ### Approved-history ingestion
 
-The branch adds `prepareApprovedLexicalProjection` (committed, not yet merged). It proves tip/first-parent eligibility before exact-commit validation and policy checks, running the complete ingestion in a killable subprocess rather than parsing canonical YAML on the caller's event loop. It returns the same build identity plus the once-resolved approved tip. No Redis write, canonical write, commit, push, or activation occurs.
+The merged prerequisites include `prepareApprovedLexicalProjection`. It proves tip/first-parent eligibility before exact-commit validation and policy checks, running the complete ingestion in a killable subprocess rather than parsing canonical YAML on the caller's event loop. It returns the same build identity plus the once-resolved approved tip. No Redis write, canonical write, commit, push, or activation occurs.
 
 Try it on the checked-in demo (Node 24, Linux):
 
