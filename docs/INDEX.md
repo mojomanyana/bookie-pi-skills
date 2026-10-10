@@ -15,7 +15,7 @@ This page is the stable entry point for product and engineering context.
 - [Security](architecture/security.md) — assets, trust boundaries, threats, and controls.
 - [Architecture decisions](architecture/decisions/) — accepted load-bearing decisions, including the [service protocol, auth, and projection design](architecture/decisions/0010-service-protocol-auth-and-projection.md).
 
-- [Bounded rebuild admission](architecture/decisions/0011-bounded-rebuild-admission.md) — accepted ADR-0011 resolves OQ-013; core source metadata and isolated preflight primitives are local/unmerged, and the disconnected v2 recipe codec has golden vectors; a disconnected artifact inventory/verifier is local; reproducible staging/image qualification, builder verification, controller integration, and scale verification remain pending.
+- [Bounded rebuild admission](architecture/decisions/0011-bounded-rebuild-admission.md) — accepted ADR-0011 resolves OQ-013; source metadata/preflight, v2 recipe golden vectors and artifact staging/inventory are committed on the development branch. Reproducible immutable local-image qualification and integrated repair review are complete; trusted recipe/builder verification, controller integration, production distribution/Compose and scale verification remain pending. [PR #28](https://github.com/mojomanyana/bookie-pi-skills/pull/28) is open with CI pending at the 2026-10-10 UTC closeout; see the handoff for the delivery decision.
 
 ## Delivery
 

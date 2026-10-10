@@ -8,9 +8,9 @@ Bookie is a local-first, Git-native project ledger for people and agents. It kee
 | --- | --- | --- |
 | Canonical core | Lossless Markdown/YAML, validation, conflict-safe mutation, Evidence capture, local search/inspect and exact-commit JSONL export. | Verified through BK-011. |
 | CLI and Pi | Read/query CLI; Pi read, search, validate, approved writes and curated checkpoints. | CLI filesystem-writing commands are deferred by ADR-0008. |
-| Shared retrieval | Authenticated HTTP contract, projection, ingestion, source preflight, artifact and Redis candidate primitives. | BK-017 controller integration, verified artifacts, Redis search, activation and deployment qualification. |
+| Shared retrieval | Authenticated HTTP contract; branch adds projection, ingestion, source preflight, Redis candidate primitives and qualified immutable local runtime images. | BK-017 trusted recipe/builder verification, controller integration, Redis search, activation, production Compose and scale qualification. |
 
-The canonical profile is verified. Shared retrieval is still incomplete: controller integration and deployment qualification are still pending. See the [backlog](docs/planning/backlog.md) for acceptance and the [handoff](docs/planning/next-session.md) for development status. Shared-code and build improvements are recorded in [BK-025](docs/planning/evidence/BK-025.md).
+The canonical profile is verified. Shared retrieval is still incomplete: local runtime qualification is approved, but trusted recipe/controller integration and production deployment/scale qualification remain pending. As of the 2026-10-10 UTC closeout, [PR #28](https://github.com/mojomanyana/bookie-pi-skills/pull/28) is open and CI was in progress at the coordinator's last check; no merge or publication is recorded. See the [backlog](docs/planning/backlog.md) for acceptance and the [handoff](docs/planning/next-session.md) for development status. Shared-code and build improvements are recorded in [BK-025](docs/planning/evidence/BK-025.md).
 
 ## Design commitments
 

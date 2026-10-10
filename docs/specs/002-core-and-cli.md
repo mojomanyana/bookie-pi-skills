@@ -529,7 +529,7 @@ Exit codes:
 
 ## BK-017 metadata-only source preflight
 
-The local/unmerged `readApprovedSourceManifest` core API is specified in [SPEC-004](004-retrieval-service.md#bk-017-approved-source-manifest-slice) under accepted [ADR-0011](../architecture/decisions/0011-bounded-rebuild-admission.md). It proves approved Git history and validates only the bounded exact manifest, returning private source identity/scope metadata without corpus reads or full-vault validity. It does not change the verified release-0.1 CLI scope, canonical JSONL format, or existing mutation/export contracts. Service isolation/deployment checks, input recipe/artifact identity, and controller integration remain separate gates.
+The branch-committed, not yet merged `readApprovedSourceManifest` core API is specified in [SPEC-004](004-retrieval-service.md#bk-017-approved-source-manifest-slice) under accepted [ADR-0011](../architecture/decisions/0011-bounded-rebuild-admission.md). It proves approved Git history and validates only the bounded exact manifest, returning private source identity/scope metadata without corpus reads or full-vault validity. It does not change the verified release-0.1 CLI scope, canonical JSONL format, or existing mutation/export contracts. Isolated deployment-checked preflight and immutable local-runtime qualification are implemented on the branch; trusted recipe/builder verification and controller integration remain separate gates. See [current closeout evidence](../planning/evidence/BK-017.md#session-closeout--2026-10-10-utc) for PR/CI status and limits.
 
 ## Delivery notes
 
