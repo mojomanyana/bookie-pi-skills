@@ -6,7 +6,7 @@ import {
 } from "./concept-mutation.js";
 import type {
   ConceptMutationOptions,
-  ConceptMutationResult,
+  ConceptPolicyMutationResult,
   CreateConceptRequest,
 } from "./concept-mutation-model.js";
 import type { ReadonlyYamlMapping } from "./concept-loader.js";
@@ -375,7 +375,7 @@ export async function prepareCheckpoint(
 export function createCheckpointWithPolicy(
   publication: PreparedCheckpointPublication,
   options: ConceptMutationOptions = {},
-): Promise<ConceptMutationResult> {
+): Promise<ConceptPolicyMutationResult> {
   const state = preparedCheckpointStates.get(publication);
   if (state === undefined) {
     throw new TypeError(

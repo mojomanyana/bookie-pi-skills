@@ -439,6 +439,42 @@ test("policy create snapshots accessors, cycles, roots, and redacts failures", a
   assert.equal(transitioned.path, "<redacted>");
   assert.deepEqual(transitioned.changedPaths, ["<redacted>"]);
 
+  const unchanged = await amendConceptWithPolicy(vault, {
+    path: existingPath,
+    expectedSourceHash: exactHash(await readFile(join(vault, existingPath))),
+    edits: [{ op: "set", path: ["title"], value: "Excluded update" }],
+  });
+  const leavingExclusion = await amendConceptWithPolicy(vault, {
+    path: existingPath,
+    expectedSourceHash: exactHash(await readFile(join(vault, existingPath))),
+    edits: [{ op: "set", path: ["bookie", "sensitivity"], value: "public" }],
+  });
+  for (const [result, operation, outcome] of [
+    [excludedCreate, "create", "created"],
+    [excludedAmend, "amend", "amended"],
+    [transitioned, "amend", "amended"],
+    [unchanged, "amend", "unchanged"],
+    [leavingExclusion, "amend", "amended"],
+  ]) {
+    assert.deepEqual(result, {
+      ok: true,
+      operation,
+      outcome,
+      redacted: true,
+      path: "<redacted>",
+      changedPaths: outcome === "unchanged" ? [] : ["<redacted>"],
+      diagnostics: [],
+    });
+  }
+
+  const restoredExclusion = await amendConcept(vault, {
+    path: existingPath,
+    expectedSourceHash: exactHash(await readFile(join(vault, existingPath))),
+    edits: [
+      { op: "set", path: ["bookie", "sensitivity"], value: "restricted" },
+    ],
+  });
+  assert.equal(restoredExclusion.ok, true);
   const excludedConflict = await amendConceptWithPolicy(vault, {
     path: existingPath,
     expectedSourceHash: `sha256:${"0".repeat(64)}`,

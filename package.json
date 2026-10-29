@@ -13,12 +13,12 @@
   ],
   "pi": {
     "extensions": [
-      "./packages/pi-extension/dist/index.js"
+      "./packages/pi-extension/src/index.ts"
     ]
   },
   "scripts": {
     "build": "tsc -b --force && node packages/core/scripts/copy-schemas.mjs",
-    "prepare": "npm run build --workspace @bookie/pi-extension",
+    "prepare": "npm run build --workspace @bookie/core",
     "format:check": "prettier --check \"**/*.{js,mjs,ts,json,yaml,yml}\"",
     "lint": "eslint .",
     "test": "npm run build && npm run test:repo && npm run test:built --workspaces --if-present",
@@ -27,12 +27,16 @@
     "check": "npm run format:check && npm run lint && npm test"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "^0.85.1",
-    "@earendil-works/pi-coding-agent": "^0.85.1",
     "@types/node": "^24.0.0",
     "typescript": "^6.0.3"
   },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
   "devDependencies": {
+    "@earendil-works/pi-ai": "^0.85.1",
+    "@earendil-works/pi-coding-agent": "^0.85.1",
     "@eslint/js": "^10.0.1",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",

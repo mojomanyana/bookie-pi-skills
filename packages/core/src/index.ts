@@ -1,5 +1,8 @@
 export const OKF_VERSION = "0.2" as const;
 
+/** Shared deterministic heuristic; not source authorization or a complete secret classifier. */
+export { containsDetectedSecret } from "./vault-secret-detection.js";
+
 export { readApprovedSourceManifest } from "./approved-source-manifest.js";
 export type {
   ApprovedSourceManifestRequest,
@@ -137,6 +140,8 @@ export type {
   ConceptMutationOptions,
   ConceptMutationResult,
   ConceptMutationSuccess,
+  ConceptMutationExcludedSuccess,
+  ConceptPolicyMutationResult,
   ConceptSourceHash,
   CreateConceptRequest,
   FrontmatterEdit,

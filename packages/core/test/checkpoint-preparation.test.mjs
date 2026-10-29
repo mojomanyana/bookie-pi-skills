@@ -112,6 +112,11 @@ test("checkpoint preparation retains included fragments and omits excluded fragm
   const created = await createCheckpointWithPolicy(reprepared.publication);
   assert.equal(created.ok, true);
   const activity = await readFile(join(vault, request().path), "utf8");
+  assert.equal(created.redacted, undefined);
+  assert.equal(
+    created.sourceHash,
+    `sha256:${createHash("sha256").update(activity).digest("hex")}`,
+  );
   assert.equal(activity.includes(excludedMarker), false);
 });
 

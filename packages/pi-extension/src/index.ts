@@ -139,13 +139,41 @@ interface WriteRequestSnapshot {
   readonly sourceHash: `sha256:${string}`;
 }
 
+function checkRequestCancellation(signal: AbortSignal | undefined): void {
+  if (signal?.aborted === true) {
+    throw new DOMException("Bookie request was aborted.", "AbortError");
+  }
+}
+
+async function confirmRequest(
+  title: string,
+  message: string,
+  signal: AbortSignal | undefined,
+  ctx: ExtensionContext,
+): Promise<boolean> {
+  checkRequestCancellation(signal);
+  try {
+    return await ctx.ui.confirm(
+      title,
+      message,
+      signal === undefined ? undefined : { signal },
+    );
+  } finally {
+    // Cancellation takes precedence even when the host dialog rejects with its reason.
+    checkRequestCancellation(signal);
+  }
+}
+
 async function readWriteRequest(
   path: string,
   cwd: string,
   signal: AbortSignal | undefined,
 ): Promise<WriteRequestSnapshot> {
-  signal?.throwIfAborted();
-  if (constants.O_NOFOLLOW === undefined) {
+  checkRequestCancellation(signal);
+  if (
+    constants.O_NOFOLLOW === undefined ||
+    constants.O_NONBLOCK === undefined
+  ) {
     throw new Error("Bookie write request file is invalid.");
   }
   const absolutePath = vaultRoot(path, cwd);
@@ -153,7 +181,7 @@ async function readWriteRequest(
   try {
     handle = await open(
       absolutePath,
-      constants.O_RDONLY | constants.O_NOFOLLOW,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
     );
     const before = await handle.stat({ bigint: true });
     if (
@@ -166,7 +194,7 @@ async function readWriteRequest(
     const storage = Buffer.allocUnsafe(MAX_WRITE_REQUEST_BYTES + 1);
     let offset = 0;
     while (offset < storage.byteLength) {
-      signal?.throwIfAborted();
+      checkRequestCancellation(signal);
       const { bytesRead } = await handle.read(
         storage,
         offset,
@@ -178,9 +206,13 @@ async function readWriteRequest(
     }
     if (offset > MAX_WRITE_REQUEST_BYTES) throw new Error("large request file");
     const bytes = storage.subarray(0, offset);
-    signal?.throwIfAborted();
+    checkRequestCancellation(signal);
     const after = await handle.stat({ bigint: true });
+    checkRequestCancellation(signal);
     if (
+      !after.isFile() ||
+      after.nlink !== 1n ||
+      before.mode !== after.mode ||
       before.dev !== after.dev ||
       before.ino !== after.ino ||
       before.size !== after.size ||
@@ -196,10 +228,14 @@ async function readWriteRequest(
       sourceHash: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
     };
   } catch {
-    signal?.throwIfAborted();
+    checkRequestCancellation(signal);
     throw new Error("Bookie write request file is invalid.");
   } finally {
-    await handle?.close();
+    await handle?.close().catch(() => {
+      checkRequestCancellation(signal);
+      throw new Error("Bookie write request file is invalid.");
+    });
+    checkRequestCancellation(signal);
   }
 }
 
@@ -212,13 +248,14 @@ async function requireWriteApproval(
   signal: AbortSignal | undefined,
   ctx: ExtensionContext,
 ): Promise<void> {
+  checkRequestCancellation(signal);
   if (approval === "explicit") return;
-  const approved = await ctx.ui.confirm(
+  const approved = await confirmRequest(
     `Approve Bookie ${action}?`,
     `${inertJson({ vault, requestPath, sourceHash })}\nThis operation modifies the canonical vault without committing or pushing.`,
-    signal === undefined ? undefined : { signal },
+    signal,
+    ctx,
   );
-  signal?.throwIfAborted();
   if (!approved) throw new Error("Bookie write was not approved.");
 }
 
@@ -355,12 +392,12 @@ function createCheckpointTool(staging: CheckpointStaging) {
           );
         }
         if (params.approval === "confirm") {
-          const approved = await ctx.ui.confirm(
+          const approved = await confirmRequest(
             "Approve Bookie checkpoint?",
             confirmationMessage,
-            signal === undefined ? undefined : { signal },
+            signal,
+            ctx,
           );
-          signal?.throwIfAborted();
           if (!approved) {
             return boundedResult(
               "bookie_checkpoint",
@@ -373,7 +410,9 @@ function createCheckpointTool(staging: CheckpointStaging) {
         const result = await publishCheckpoint(pending, signal);
         return boundedResult(
           "bookie_checkpoint",
-          { status: result.outcome, sourceHash: result.sourceHash },
+          result.redacted === true
+            ? { status: result.outcome, redacted: true }
+            : { status: result.outcome, sourceHash: result.sourceHash },
           "filesystem",
           true,
         );
@@ -608,12 +647,12 @@ export default function registerBookie(pi: ExtensionAPI): void {
     const processing: CheckpointState = { status: "processing", pending };
     checkpointState = processing;
     try {
-      const approved = await ctx.ui.confirm(
+      const approved = await confirmRequest(
         "Create staged Bookie checkpoint?",
         checkpointConfirmationMessage(pending),
-        { signal: event.signal },
+        event.signal,
+        ctx,
       );
-      event.signal?.throwIfAborted();
       if (!approved) {
         ctx.ui.notify(
           "Bookie checkpoint declined; compaction will continue.",

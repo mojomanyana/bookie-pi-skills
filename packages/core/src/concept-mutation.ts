@@ -40,6 +40,7 @@ import type {
   ConceptMutationFailure,
   ConceptMutationOptions,
   ConceptMutationResult,
+  ConceptPolicyMutationResult,
   CreateConceptRequest,
   MutationLimits,
 } from "./concept-mutation-model.js";
@@ -70,6 +71,8 @@ export type {
   ConceptMutationOptions,
   ConceptMutationResult,
   ConceptMutationSuccess,
+  ConceptMutationExcludedSuccess,
+  ConceptPolicyMutationResult,
   ConceptSourceHash,
   CreateConceptRequest,
   FrontmatterEdit,
@@ -155,15 +158,19 @@ function candidateDetectsSecret(
 function redactPolicyFailure(
   result: ConceptMutationResult,
   excludedCandidate = false,
-): ConceptMutationResult {
+): ConceptPolicyMutationResult {
   if (result.ok) {
     if (!excludedCandidate) return result;
     return Object.freeze({
-      ...result,
+      ok: true,
+      operation: result.operation,
+      outcome: result.outcome,
+      redacted: true,
       path: "<redacted>",
       changedPaths: Object.freeze(
-        result.changedPaths.length === 0 ? [] : ["<redacted>"],
+        result.changedPaths.length === 0 ? [] : ["<redacted>" as const],
       ),
+      diagnostics: Object.freeze([]) as readonly [],
     });
   }
   if (
@@ -766,13 +773,26 @@ async function performAmend(
   );
 }
 
+function createConceptInternal(
+  root: string | URL,
+  request: CreateConceptRequest,
+  options: ConceptMutationOptions,
+  enforceWritePolicy: false,
+): Promise<ConceptMutationResult>;
+function createConceptInternal(
+  root: string | URL,
+  request: CreateConceptRequest,
+  options: ConceptMutationOptions,
+  enforceWritePolicy: true,
+  preconditions?: CreatePolicyPreconditions,
+): Promise<ConceptPolicyMutationResult>;
 async function createConceptInternal(
   root: string | URL,
   request: CreateConceptRequest,
   options: ConceptMutationOptions,
   enforceWritePolicy: boolean,
   preconditions?: CreatePolicyPreconditions,
-): Promise<ConceptMutationResult> {
+): Promise<ConceptPolicyMutationResult> {
   const limits = mutationLimits(options);
   throwIfAborted(options.signal);
   const rootValue = policyRoot(root);
@@ -840,7 +860,7 @@ export async function createConceptWithPolicy(
   root: string | URL,
   request: CreateConceptRequest,
   options: ConceptMutationOptions = {},
-): Promise<ConceptMutationResult> {
+): Promise<ConceptPolicyMutationResult> {
   return createConceptInternal(root, request, options, true);
 }
 
@@ -849,16 +869,28 @@ export async function createConceptWithPolicyPreconditions(
   request: CreateConceptRequest,
   preconditions: CreatePolicyPreconditions,
   options: ConceptMutationOptions = {},
-): Promise<ConceptMutationResult> {
+): Promise<ConceptPolicyMutationResult> {
   return createConceptInternal(root, request, options, true, preconditions);
 }
 
+function amendConceptInternal(
+  root: string | URL,
+  request: AmendConceptRequest,
+  options: ConceptMutationOptions,
+  enforceWritePolicy: false,
+): Promise<ConceptMutationResult>;
+function amendConceptInternal(
+  root: string | URL,
+  request: AmendConceptRequest,
+  options: ConceptMutationOptions,
+  enforceWritePolicy: true,
+): Promise<ConceptPolicyMutationResult>;
 async function amendConceptInternal(
   root: string | URL,
   request: AmendConceptRequest,
   options: ConceptMutationOptions,
   enforceWritePolicy: boolean,
-): Promise<ConceptMutationResult> {
+): Promise<ConceptPolicyMutationResult> {
   const limits = mutationLimits(options);
   throwIfAborted(options.signal);
   const rootValue = policyRoot(root);
@@ -898,7 +930,7 @@ async function amendConceptInternal(
         enforceWritePolicy,
         (excluded) => {
           candidateClassified = true;
-          excludedCandidate = excluded;
+          excludedCandidate ||= excluded;
         },
       ),
   );
@@ -919,6 +951,6 @@ export async function amendConceptWithPolicy(
   root: string | URL,
   request: AmendConceptRequest,
   options: ConceptMutationOptions = {},
-): Promise<ConceptMutationResult> {
+): Promise<ConceptPolicyMutationResult> {
   return amendConceptInternal(root, request, options, true);
 }

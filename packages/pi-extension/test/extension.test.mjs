@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { constants } from "node:fs";
+import fsPromises from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import {
   cp,
   mkdir,
@@ -332,6 +335,169 @@ test("read failures throw and outputs disclose Pi-limit truncation", async (t) =
   assert.equal(result.details.mode, "filesystem");
 });
 
+test("real host loader shares create, amend and checkpoint queues through both package entries", async (t) => {
+  // A separate physical host of the supported Pi line, not Bookie's import or a fake queue.
+  const parent = await mkdtemp(join(tmpdir(), "bookie-pi-host-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const hostRoot = join(parent, "host");
+  await cp(
+    join(repositoryRoot, "node_modules/@earendil-works/pi-coding-agent"),
+    hostRoot,
+    {
+      recursive: true,
+      filter: (path) => path.split(/[\\/]/u).at(-1) !== "node_modules",
+    },
+  );
+  await symlink(
+    join(repositoryRoot, "node_modules"),
+    join(hostRoot, "node_modules"),
+    "dir",
+  );
+  const host = await import(join(hostRoot, "dist/index.js"));
+  const { discoverAndLoadExtensions } = await import(
+    join(hostRoot, "dist/core/extensions/loader.js")
+  );
+  for (const entry of [repositoryRoot, packageRoot]) {
+    for (const action of ["create", "amend", "checkpoint"]) {
+      await t.test(
+        `${entry === repositoryRoot ? "root-Git" : "local-subpackage"}: ${action}`,
+        async (t) => {
+          const vault = await temporaryVault(t);
+          const loaded = await discoverAndLoadExtensions(
+            [entry],
+            vault,
+            join(parent, "agent"),
+          );
+          assert.deepEqual(loaded.errors, []);
+          const tools = [...loaded.extensions[0].tools.values()].map(
+            ({ definition }) => definition,
+          );
+          const request =
+            action === "checkpoint"
+              ? checkpointRequest()
+              : action === "create"
+                ? {
+                    path: "people/queued.md",
+                    frontmatter: {
+                      type: "Person",
+                      title: "Queued",
+                      status: "draft",
+                      generated: {
+                        by: "human:test",
+                        at: "2026-09-14T13:00:00Z",
+                      },
+                      bookie: {
+                        profile: "1.0",
+                        uid: "PER-00000000000000000000000180",
+                        created_at: "2026-09-14T13:00:00Z",
+                        sensitivity: "public",
+                      },
+                    },
+                    bodyText: "# Queued\n",
+                  }
+                : {
+                    path: "projects/fixture/tasks/task.md",
+                    expectedSourceHash: `sha256:${(await import("node:crypto"))
+                      .createHash("sha256")
+                      .update(
+                        await readFile(
+                          join(vault, "projects/fixture/tasks/task.md"),
+                        ),
+                      )
+                      .digest("hex")}`,
+                    edits: [],
+                    bodyText: "# Bookie amendment\n",
+                  };
+          const target = join(vault, request.path);
+          const original =
+            action === "amend" ? await readFile(target, "utf8") : undefined;
+          const requestPath = join(resolve(vault, ".."), "queued.json");
+          await writeFile(requestPath, JSON.stringify(request));
+          const entered = Promise.withResolvers();
+          const release = Promise.withResolvers();
+          const started = Promise.withResolvers();
+          const blocker = host.withFileMutationQueue(target, async () => {
+            entered.resolve();
+            await release.promise;
+            if (action === "amend")
+              await writeFile(target, `${original}\nHost update\n`);
+          });
+          await entered.promise;
+          let settled = false;
+          const pending = toolNamed(
+            tools,
+            action === "checkpoint" ? "bookie_checkpoint" : "bookie_write",
+          )
+            .execute(
+              "host-queued",
+              {
+                vault,
+                requestPath,
+                approval: "confirm",
+                ...(action === "checkpoint" ? { timing: "now" } : { action }),
+              },
+              undefined,
+              undefined,
+              context(vault, {
+                hasUI: true,
+                mode: "tui",
+                ui: {
+                  confirm: async () => {
+                    started.resolve();
+                    return true;
+                  },
+                },
+              }),
+            )
+            .then(
+              (value) => ({ value }),
+              (error) => ({ error }),
+            )
+            .finally(() => {
+              settled = true;
+            });
+          try {
+            assert.equal(
+              await Promise.race([
+                started.promise.then(() => true),
+                pending.then(() => false),
+              ]),
+              true,
+              "approval must start before the operation settles",
+            );
+            await new Promise((resolve) => setTimeout(resolve, 150));
+            assert.equal(
+              settled,
+              false,
+              "Bookie settled while the actual host queue was held",
+            );
+            if (original === undefined)
+              await assert.rejects(readFile(target), { code: "ENOENT" });
+            else assert.equal(await readFile(target, "utf8"), original);
+          } finally {
+            release.resolve();
+            await blocker;
+          }
+          const result = await pending;
+          if (action === "amend") {
+            assert.match(result.error?.message ?? "", /MUTATION-CONFLICT/u);
+            assert.equal(
+              await readFile(target, "utf8"),
+              `${original}\nHost update\n`,
+            );
+          } else {
+            assert.equal(result.error, undefined);
+            assert.match(
+              await readFile(target, "utf8"),
+              action === "checkpoint" ? /Included outcome/u : /# Queued/u,
+            );
+          }
+        },
+      );
+    }
+  }
+});
+
 test("local and Git package manifests expose the built extension", async (t) => {
   const home = await mkdtemp(join(tmpdir(), "bookie-pi-home-"));
   t.after(() => rm(home, { recursive: true, force: true }));
@@ -350,16 +516,16 @@ test("local and Git package manifests expose the built extension", async (t) => 
   const packageManifest = JSON.parse(
     await readFile(join(packageRoot, "package.json"), "utf8"),
   );
-  assert.deepEqual(packageManifest.pi.extensions, ["./dist/index.js"]);
+  assert.deepEqual(packageManifest.pi.extensions, ["./src/index.ts"]);
   const rootManifest = JSON.parse(
     await readFile(join(repositoryRoot, "package.json"), "utf8"),
   );
   assert.deepEqual(rootManifest.pi.extensions, [
-    "./packages/pi-extension/dist/index.js",
+    "./packages/pi-extension/src/index.ts",
   ]);
   assert.equal(
     rootManifest.scripts.prepare,
-    "npm run build --workspace @bookie/pi-extension",
+    "npm run build --workspace @bookie/core",
   );
 
   const checkout = join(home, "git-checkout");
@@ -369,19 +535,20 @@ test("local and Git package manifests expose the built extension", async (t) => 
       const name = source.split(/[\\/]/u).at(-1);
       return (
         name !== ".git" &&
+        name !== ".principal" &&
         name !== "node_modules" &&
         name !== "dist" &&
         !name.endsWith(".tsbuildinfo")
       );
     },
   });
-  execFileSync("npm", ["install", "--omit=dev"], {
+  execFileSync("npm", ["install", "--omit=dev", "--legacy-peer-deps"], {
     cwd: checkout,
     env,
     stdio: "pipe",
     timeout: 180_000,
   });
-  const builtExtension = join(checkout, "packages/pi-extension/dist/index.js");
+  const builtExtension = join(checkout, "packages/pi-extension/src/index.ts");
   await readFile(builtExtension);
   await readFile(join(checkout, "packages/core/dist/index.js"));
   await readFile(
@@ -390,12 +557,29 @@ test("local and Git package manifests expose the built extension", async (t) => 
       "packages/core/dist/schemas/profile/1.0/bookie-config.schema.json",
     ),
   );
-  const installed = await import(`${builtExtension}?smoke=${Date.now()}`);
-  const installedTools = [];
-  installed.default({
-    registerTool: (tool) => installedTools.push(tool),
-    on: () => {},
-  });
+  const { discoverAndLoadExtensions } = await import(
+    join(
+      repositoryRoot,
+      "node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js",
+    )
+  );
+  const loaded = await discoverAndLoadExtensions(
+    [checkout],
+    home,
+    join(home, "agent"),
+  );
+  assert.deepEqual(loaded.errors, []);
+  const installedTools = [...loaded.extensions[0].tools.values()].map(
+    ({ definition }) => definition,
+  );
+  // Also exercise a clean relocated local subpackage with production core dependencies only.
+  const local = await discoverAndLoadExtensions(
+    [join(checkout, "packages/pi-extension")],
+    home,
+    join(home, "agent"),
+  );
+  assert.deepEqual(local.errors, []);
+  assert.equal(local.extensions[0].tools.size, 5);
   assert.deepEqual(
     installedTools.map(({ name }) => name),
     [
@@ -691,6 +875,474 @@ test("write rejects malformed and secret request files without publication", asy
   await assert.rejects(readFile(join(vault, "people/rejected.md")), {
     code: "ENOENT",
   });
+});
+
+test("request FIFOs and substitutions fail promptly and release checkpoint reservations", async (t) => {
+  for (const surface of ["write", "now", "before-compaction"]) {
+    for (const substitute of [false, true]) {
+      for (const abort of [false, true]) {
+        await t.test(
+          `${surface}: ${substitute ? "regular-to-FIFO" : "FIFO"}, abort=${abort}`,
+          async (t) => {
+            const vault = await temporaryVault(t);
+            const requestPath = join(resolve(vault, ".."), "unsafe.json");
+            const request = checkpointRequest();
+            if (substitute)
+              await writeFile(requestPath, JSON.stringify(request));
+            else execFileSync("mkfifo", [requestPath]);
+            const extension = registeredExtension();
+            const tool = toolNamed(
+              extension.tools,
+              surface === "write" ? "bookie_write" : "bookie_checkpoint",
+            );
+            const opening = Promise.withResolvers();
+            const controller = new AbortController();
+            const originalOpen = fsPromises.open;
+            t.mock.method(fsPromises, "open", async (path, ...args) => {
+              if (path === requestPath) {
+                if (substitute) {
+                  await rm(requestPath);
+                  execFileSync("mkfifo", [requestPath]);
+                }
+                opening.resolve();
+              }
+              return originalOpen(path, ...args);
+            });
+            syncBuiltinESMExports();
+            const params =
+              surface === "write"
+                ? { vault, requestPath, action: "create", approval: "explicit" }
+                : {
+                    vault,
+                    requestPath,
+                    timing: surface,
+                    ...(surface === "now" ? { approval: "explicit" } : {}),
+                  };
+            const pending = tool
+              .execute(
+                "fifo",
+                params,
+                controller.signal,
+                undefined,
+                context(vault),
+              )
+              .then(
+                (value) => ({ value }),
+                (error) => ({ error }),
+              );
+            let timer;
+            try {
+              await opening.promise;
+              if (abort) controller.abort(new Error("PRIVATE-ABORT-REASON"));
+              const result = await Promise.race([
+                pending,
+                new Promise((resolve) => {
+                  timer = setTimeout(() => resolve({ timedOut: true }), 500);
+                }),
+              ]);
+              assert.equal(
+                result.timedOut,
+                undefined,
+                "request open must settle without a FIFO writer",
+              );
+              assert.equal(result.value, undefined);
+              assert.equal(result.error.name, abort ? "AbortError" : "Error");
+              if (!abort)
+                assert.equal(
+                  result.error.message,
+                  "Bookie write request file is invalid.",
+                );
+              assert.equal(result.error.message.includes("PRIVATE"), false);
+              await assert.rejects(readFile(join(vault, request.path)), {
+                code: "ENOENT",
+              });
+            } finally {
+              clearTimeout(timer);
+              // Unblock the old blocking-open implementation on regression, without hiding the failure.
+              const rescue = await originalOpen(
+                requestPath,
+                constants.O_RDWR | constants.O_NONBLOCK,
+              );
+              await rescue.close();
+              await pending;
+              t.mock.restoreAll();
+              syncBuiltinESMExports();
+            }
+            const valid = join(resolve(vault, ".."), "valid-checkpoint.json");
+            await writeFile(valid, JSON.stringify(request));
+            const result = await toolNamed(
+              extension.tools,
+              "bookie_checkpoint",
+            ).execute(
+              "after-fifo",
+              {
+                vault,
+                requestPath: valid,
+                timing: "now",
+                approval: "explicit",
+              },
+              undefined,
+              undefined,
+              context(vault),
+            );
+            assert.equal(
+              JSON.parse(textResult(result)).result.status,
+              "created",
+            );
+            assert.match(
+              await readFile(join(vault, request.path), "utf8"),
+              /Included outcome/u,
+            );
+          },
+        );
+      }
+    }
+  }
+});
+
+test("request final-stat, close and approval cancellation keep static aborts", async (t) => {
+  for (const point of ["stat", "close", "approval-return", "approval-reject"]) {
+    for (const action of ["write", "checkpoint-now", "checkpoint-staged"]) {
+      if (point.startsWith("approval") && action === "checkpoint-staged")
+        continue;
+      await t.test(`${point}: ${action}`, async (t) => {
+        const vault = await temporaryVault(t);
+        const request =
+          action === "write"
+            ? {
+                path: "people/cancelled.md",
+                frontmatter: {
+                  type: "Person",
+                  title: "Cancelled",
+                  status: "draft",
+                  generated: { by: "human:test", at: "2026-09-14T13:00:00Z" },
+                  bookie: {
+                    profile: "1.0",
+                    uid: "PER-00000000000000000000000190",
+                    created_at: "2026-09-14T13:00:00Z",
+                    sensitivity: "public",
+                  },
+                },
+                bodyText: "# No publication\n",
+              }
+            : checkpointRequest();
+        const requestPath = join(resolve(vault, ".."), "finalize-request.json");
+        await writeFile(requestPath, JSON.stringify(request));
+        const controller = new AbortController();
+        const extension = registeredExtension();
+        let approvals = 0;
+        const originalOpen = fsPromises.open;
+        const mock = t.mock.method(
+          fsPromises,
+          "open",
+          async (path, ...args) => {
+            const handle = await originalOpen(path, ...args);
+            if (path === requestPath) {
+              if (point === "stat") {
+                let calls = 0;
+                const stat = handle.stat.bind(handle);
+                handle.stat = async (...args) => {
+                  const result = await stat(...args);
+                  if (++calls === 2)
+                    controller.abort(new Error("PRIVATE-ABORT-REASON"));
+                  return result;
+                };
+              } else if (point === "close") {
+                const close = handle.close.bind(handle);
+                handle.close = async () => {
+                  await close();
+                  controller.abort(new Error("PRIVATE-ABORT-REASON"));
+                };
+              }
+            }
+            return handle;
+          },
+        );
+        syncBuiltinESMExports();
+        try {
+          const tool = toolNamed(
+            extension.tools,
+            action === "write" ? "bookie_write" : "bookie_checkpoint",
+          );
+          await assert.rejects(
+            tool.execute(
+              "finalize-cancel",
+              {
+                vault,
+                requestPath,
+                ...(action === "checkpoint-staged"
+                  ? {}
+                  : { approval: "confirm" }),
+                ...(action === "write"
+                  ? { action: "create" }
+                  : {
+                      timing:
+                        action === "checkpoint-now"
+                          ? "now"
+                          : "before-compaction",
+                    }),
+              },
+              controller.signal,
+              undefined,
+              context(vault, {
+                hasUI: true,
+                mode: "tui",
+                ui: {
+                  confirm: async () => {
+                    approvals++;
+                    if (point.startsWith("approval")) {
+                      controller.abort(new Error("PRIVATE-ABORT-REASON"));
+                      if (point === "approval-reject")
+                        throw controller.signal.reason;
+                    }
+                    return true;
+                  },
+                },
+              }),
+            ),
+            { name: "AbortError", message: "Bookie request was aborted." },
+          );
+          assert.equal(
+            approvals,
+            point.startsWith("approval") ? 1 : 0,
+            "aborted finalization must never reach approval",
+          );
+          await assert.rejects(readFile(join(vault, request.path)), {
+            code: "ENOENT",
+          });
+        } finally {
+          mock.mock.restore();
+          syncBuiltinESMExports();
+        }
+        const validPath = join(
+          resolve(vault, ".."),
+          "checkpoint-after-cancellation.json",
+        );
+        await writeFile(validPath, JSON.stringify(checkpointRequest()));
+        const result = await toolNamed(
+          extension.tools,
+          "bookie_checkpoint",
+        ).execute(
+          "slot-after-cancel",
+          {
+            vault,
+            requestPath: validPath,
+            timing: "before-compaction",
+          },
+          undefined,
+          undefined,
+          context(vault),
+        );
+        assert.equal(JSON.parse(textResult(result)).result.status, "staged");
+        await extension.handlers.get("session_shutdown")[0]({}, context(vault));
+      });
+    }
+  }
+});
+
+test("request reader enforces descriptor and fatal UTF-8 controls for checkpoints", async (t) => {
+  const vault = await temporaryVault(t);
+  const parent = resolve(vault, "..");
+  const request = checkpointRequest();
+  const valid = JSON.stringify(request);
+  const extension = registeredExtension();
+  const checkpoint = toolNamed(extension.tools, "bookie_checkpoint");
+  for (const [name, bytes, acceptedReader] of [
+    [
+      "exact",
+      `${valid}${" ".repeat(2_000_000 - Buffer.byteLength(valid))}`,
+      true,
+    ],
+    [
+      "over",
+      `${valid}${" ".repeat(2_000_001 - Buffer.byteLength(valid))}`,
+      false,
+    ],
+    ["utf8", Buffer.from([0x7b, 0x22, 0xff, 0x22, 0x7d]), false],
+    ["json", "{invalid", false],
+  ]) {
+    const requestPath = join(parent, `${name}.json`);
+    await writeFile(requestPath, bytes);
+    if (acceptedReader) {
+      const result = await checkpoint.execute(
+        name,
+        { vault, requestPath, timing: "before-compaction" },
+        undefined,
+        undefined,
+        context(vault),
+      );
+      assert.equal(JSON.parse(textResult(result)).result.status, "staged");
+      await extension.handlers.get("session_shutdown")[0]({}, context(vault));
+    } else {
+      await assert.rejects(
+        checkpoint.execute(
+          name,
+          { vault, requestPath, timing: "now", approval: "explicit" },
+          undefined,
+          undefined,
+          context(vault),
+        ),
+        { message: "Bookie write request file is invalid." },
+      );
+    }
+    await assert.rejects(readFile(join(vault, request.path)), {
+      code: "ENOENT",
+    });
+  }
+  const ordinary = join(parent, "ordinary.json");
+  await writeFile(ordinary, valid);
+  const linked = join(parent, "linked.json");
+  await fsPromises.link(ordinary, linked);
+  const alias = join(parent, "alias.json");
+  await symlink(ordinary, alias);
+  for (const requestPath of [ordinary, linked, alias, parent]) {
+    await assert.rejects(
+      checkpoint.execute(
+        "unsafe-descriptor",
+        { vault, requestPath, timing: "now", approval: "explicit" },
+        undefined,
+        undefined,
+        context(vault),
+      ),
+      { message: "Bookie write request file is invalid." },
+    );
+  }
+  await rm(linked);
+  const originalOpen = fsPromises.open;
+  t.mock.method(fsPromises, "open", async (path, ...args) => {
+    const handle = await originalOpen(path, ...args);
+    if (path === ordinary) {
+      const read = handle.read.bind(handle);
+      let changed = false;
+      handle.read = async (...args) => {
+        const result = await read(...args);
+        if (!changed) {
+          changed = true;
+          await writeFile(ordinary, `${valid} `);
+        }
+        return result;
+      };
+    }
+    return handle;
+  });
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(
+      checkpoint.execute(
+        "changed-reader",
+        { vault, requestPath: ordinary, timing: "now", approval: "explicit" },
+        undefined,
+        undefined,
+        context(vault),
+      ),
+      { message: "Bookie write request file is invalid." },
+    );
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  }
+  await writeFile(ordinary, valid);
+  const result = await checkpoint.execute(
+    "ordinary",
+    { vault, requestPath: ordinary, timing: "now", approval: "explicit" },
+    undefined,
+    undefined,
+    context(vault),
+  );
+  assert.equal(JSON.parse(textResult(result)).result.status, "created");
+});
+
+test("excluded write results serialize no source fingerprints or identities", async (t) => {
+  const vault = await temporaryVault(t);
+  const manifestPath = join(vault, "bookie.yaml");
+  await writeFile(
+    manifestPath,
+    (await readFile(manifestPath, "utf8"))
+      .replace("      - public\n", "      - public\n      - restricted\n")
+      .replace(
+        "    excluded_classes: []",
+        "    excluded_classes:\n      - restricted",
+      ),
+  );
+  const path = "people/private.md";
+  const requestPath = join(resolve(vault, ".."), "private.json");
+  const write = toolNamed(registeredTools(), "bookie_write");
+  const frontmatter = {
+    type: "Person",
+    title: "PRIVATE-TITLE",
+    status: "draft",
+    generated: { by: "human:test", at: "2026-09-14T13:00:00Z" },
+    bookie: {
+      profile: "1.0",
+      uid: "PER-00000000000000000000000181",
+      created_at: "2026-09-14T13:00:00Z",
+      sensitivity: "restricted",
+    },
+  };
+  for (const step of ["create", "amend", "unchanged", "leave", "enter"]) {
+    const request =
+      step === "create"
+        ? { path, frontmatter, bodyText: "PRIVATE-BODY\n" }
+        : {
+            path,
+            expectedSourceHash: `sha256:${(await import("node:crypto"))
+              .createHash("sha256")
+              .update(await readFile(join(vault, path)))
+              .digest("hex")}`,
+            edits:
+              step === "amend"
+                ? [{ op: "set", path: ["title"], value: "PRIVATE-UPDATE" }]
+                : step === "unchanged"
+                  ? [{ op: "set", path: ["title"], value: "PRIVATE-UPDATE" }]
+                  : [
+                      {
+                        op: "set",
+                        path: ["bookie", "sensitivity"],
+                        value: step === "leave" ? "public" : "restricted",
+                      },
+                    ],
+          };
+    await writeFile(requestPath, JSON.stringify(request));
+    const result = await write.execute(
+      step,
+      {
+        vault,
+        action: step === "create" ? "create" : "amend",
+        requestPath,
+        approval: "explicit",
+      },
+      undefined,
+      undefined,
+      context(vault),
+    );
+    const payload = JSON.parse(textResult(result)).result;
+    assert.deepEqual(payload, {
+      ok: true,
+      operation: step === "create" ? "create" : "amend",
+      outcome:
+        step === "create"
+          ? "created"
+          : step === "unchanged"
+            ? "unchanged"
+            : "amended",
+      redacted: true,
+      path: "<redacted>",
+      changedPaths: step === "unchanged" ? [] : ["<redacted>"],
+      diagnostics: [],
+    });
+    const serialized = JSON.stringify(result);
+    for (const forbidden of [
+      "sourceHash",
+      "previousSourceHash",
+      "sha256:",
+      "PRIVATE-",
+      path,
+      frontmatter.bookie.uid,
+      "byteLength",
+      "sourceByteLength",
+    ])
+      assert.equal(serialized.includes(forbidden), false, forbidden);
+  }
 });
 
 test("checkpoint preview and Activity omit excluded context before approval", async (t) => {
