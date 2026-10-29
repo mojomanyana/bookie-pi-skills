@@ -304,7 +304,14 @@ function authenticate(
   verifiers: ReadonlyMap<string, CompiledVerifier>,
   now: () => Date,
 ): ServiceIdentity {
-  const header = request.headers.authorization;
+  return authenticateHeader(request.headers.authorization, verifiers, now);
+}
+
+function authenticateHeader(
+  header: string | undefined,
+  verifiers: ReadonlyMap<string, CompiledVerifier>,
+  now: () => Date,
+): ServiceIdentity {
   const parts = tokenParts(typeof header === "string" ? header : undefined);
   const verifier = verifiers.get(parts.id);
   const suppliedDigest = createHash("sha256").update(parts.secret).digest();
@@ -332,6 +339,38 @@ function authorize(
   if (!identity.grants.get(vault)?.has(scope)) {
     throw new ServiceHttpError(403, "AUTH_FORBIDDEN", false);
   }
+}
+
+/** Shared private auth boundary for non-HTTP source work; no Git/store lookup. */
+export function createServiceAuthorizer(
+  tokens: readonly TokenVerifier[],
+): (
+  header: string | undefined,
+  vault: string,
+  scope: ServiceScope,
+) =>
+  | Readonly<{ ok: true }>
+  | Readonly<{ ok: false; reason: "auth-invalid" | "auth-forbidden" }> {
+  const verifiers = compileVerifiers(tokens);
+  return (header, vault, scope) => {
+    try {
+      authorize(
+        authenticateHeader(header, verifiers, () => new Date()),
+        vault,
+        scope,
+      );
+      return { ok: true };
+    } catch (error) {
+      if (error instanceof ServiceHttpError) {
+        return {
+          ok: false,
+          reason:
+            error.code === "AUTH_FORBIDDEN" ? "auth-forbidden" : "auth-invalid",
+        };
+      }
+      throw error;
+    }
+  };
 }
 
 function indexesMatchAuthorization(

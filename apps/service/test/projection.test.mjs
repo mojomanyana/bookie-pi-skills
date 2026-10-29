@@ -666,6 +666,59 @@ test("ESM eval callers can prepare projections and exit without retained workers
   });
 });
 
+test("canonical sink bytes and actual ordered streams, not worker assertions, determine complete output", async (t) => {
+  const source = await vault(t);
+  for (const mutation of [
+    "p.canonicalOutput.hash = 'sha256:' + '1'.repeat(64)",
+    "p.canonicalOutput.bytes++",
+    "p.canonicalOutput.records--",
+    "p.concepts.reverse()",
+    "p.chunks[0].text = 'PRIVATE_FORGED_OUTPUT'",
+    "p.conceptStreamHash = 'sha256:' + '2'.repeat(64)",
+    "p.chunkStreamHash = 'sha256:' + '3'.repeat(64)",
+    // Internally consistent empty evidence must not erase a nonempty export.
+    "p.concepts=[]; p.chunks=[]; p.canonicalOutput={hash:empty,bytes:0,records:0}; p.conceptStreamHash=empty; p.chunkStreamHash=empty",
+    "result.projection = undefined",
+    "result.ok = 'PRIVATE_FORGED_RESULT'",
+    "result.ok=false; result.reason='PRIVATE_FORGED_RESULT'; delete result.projection",
+    "result = null",
+  ]) {
+    const script = `
+      import { createHash } from 'node:crypto';
+      import { Worker } from 'node:worker_threads';
+      const once=Worker.prototype.once;
+      Worker.prototype.once=function(event,listener) {
+        return once.call(this,event,event==='message' ? result=>{
+          if(result.ok) {
+            const p=result.projection;
+            const empty='sha256:'+createHash('sha256').digest('hex');
+            ${mutation};
+          }
+          listener(result);
+        } : listener);
+      };
+      const {prepareLexicalProjection}=await import(${JSON.stringify(new URL("../dist/projection.js", import.meta.url).href)});
+      console.log(JSON.stringify(await prepareLexicalProjection(${JSON.stringify(source.root)}, {
+        sourceRef:${JSON.stringify(source.commit)}, config:${JSON.stringify(config)}
+      })));
+    `;
+    const child = spawnSync(
+      process.execPath,
+      ["--input-type=module", "-e", script],
+      {
+        encoding: "utf8",
+        timeout: 10000,
+      },
+    );
+    assert.equal(child.status, 0, child.stderr);
+    assert.deepEqual(
+      JSON.parse(child.stdout),
+      { ok: false, reason: "projection-error" },
+      mutation,
+    );
+  }
+});
+
 test("worker dispatch failures return a static error and do not leak dependency text", async (t) => {
   const source = await vault(t);
   const script = `

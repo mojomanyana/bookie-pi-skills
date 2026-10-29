@@ -9,6 +9,7 @@ import {
 import {
   encodeBuildInputRecipe,
   type EncodedBuildRecipe,
+  type BuildRecipeInputs,
 } from "./build-recipe.js";
 import {
   CANONICAL_EXPORT_VERSION,
@@ -16,6 +17,10 @@ import {
   SECRET_DETECTION_VERSION,
 } from "./build-input-versions.js";
 import { hashRuntimeArtifact } from "./runtime-artifact.js";
+import {
+  qualifiedRuntimeHash,
+  type QualifiedBuildRuntime,
+} from "./runtime-qualification.js";
 
 function invalid(): never {
   throw new TypeError("Build recipe assembly is invalid.");
@@ -39,6 +44,42 @@ export async function assembleMeasuredInputRecipe(
 ): Promise<EncodedBuildRecipe> {
   try {
     if (arguments.length !== 3) invalid();
+    const inputs = snapshotRecipeInputs(deployment, source);
+    return encodeBuildInputRecipe({
+      ...inputs,
+      runtimeArtifactHash: await hashRuntimeArtifact(runtimeRoot),
+    });
+  } catch {
+    invalid();
+  }
+}
+
+/** Private trusted orchestration uses a live process-local runtime qualification,
+ * never the caller-selected stage supported by the disconnected measurement API.
+ * Source provenance/authorization is owned by trusted-builder, not this codec.
+ */
+export function assembleQualifiedInputRecipe(
+  deployment: SourceDeployment,
+  source: SourcePreflightResult,
+  runtime: QualifiedBuildRuntime,
+): EncodedBuildRecipe {
+  try {
+    if (arguments.length !== 3) invalid();
+    const runtimeArtifactHash = qualifiedRuntimeHash(runtime);
+    return encodeBuildInputRecipe({
+      ...snapshotRecipeInputs(deployment, source),
+      runtimeArtifactHash,
+    });
+  } catch {
+    invalid();
+  }
+}
+
+function snapshotRecipeInputs(
+  deployment: SourceDeployment,
+  source: SourcePreflightResult,
+): Omit<BuildRecipeInputs, "runtimeArtifactHash"> {
+  try {
     const config = compileSourceDeployments([deployment])[0]!;
     const [ok, sourceCommit, approvedTip, objectFormat, vaultScope, manifest] =
       ownDataFields(source, [
@@ -99,9 +140,7 @@ export async function assembleMeasuredInputRecipe(
       )
     )
       invalid();
-    // Only a measured value is passed to the codec; no supplied digest/version slot.
-    const runtimeArtifactHash = await hashRuntimeArtifact(runtimeRoot);
-    return encodeBuildInputRecipe({
+    return {
       vaultUid: config.projection.vaultUid,
       objectFormat: sourceCommit.length === 40 ? "sha1" : "sha256",
       sourceCommit,
@@ -120,9 +159,8 @@ export async function assembleMeasuredInputRecipe(
         ...PROJECTION_VERSIONS,
       },
       maxChunkBytes: config.projection.maxChunkBytes,
-      runtimeArtifactHash,
       embeddingGeneration: null,
-    });
+    };
   } catch {
     invalid();
   }

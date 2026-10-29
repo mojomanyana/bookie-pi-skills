@@ -3,7 +3,10 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import test from "node:test";
-import { prepareLexicalProjection } from "../dist/projection.js";
+import {
+  prepareLexicalProjection,
+  verifyCompleteProjection,
+} from "../dist/projection.js";
 import { verifyPreparedProjection } from "../dist/projection-evidence.js";
 
 const hash = (text) =>
@@ -29,6 +32,12 @@ test("complete prepared projection evidence can be remeasured without changing i
   const prepared = await prepare();
   assert.equal(prepared.ok, true, JSON.stringify(prepared));
   assert.equal(verifyPreparedProjection(prepared.projection), true);
+  assert.equal(verifyCompleteProjection(prepared.projection), true);
+  assert.equal(
+    verifyCompleteProjection(structuredClone(prepared.projection)),
+    false,
+    "a structural receipt, even byte-for-byte equal, has no private sink witness",
+  );
   assert.match(prepared.projection.buildId, /^bld_[a-f0-9]{64}$/);
   const empty = hash("");
   const emptyIncluded = {
@@ -42,6 +51,7 @@ test("complete prepared projection evidence can be remeasured without changing i
   // This is a shape/integrity check, not source authorization; zero is valid only
   // when the complete canonical export actually yielded an empty included corpus.
   assert.equal(verifyPreparedProjection(emptyIncluded), true);
+  assert.equal(verifyCompleteProjection(emptyIncluded), false);
   assert.equal(
     verifyPreparedProjection({
       ...emptyIncluded,

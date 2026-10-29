@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import { Worker } from "node:worker_threads";
 import { types } from "node:util";
 import { ownDataFields } from "./closed-data.js";
+import { verifyPreparedProjection } from "./projection-evidence.js";
 
 import {
   exportCanonicalJsonl,
@@ -91,6 +93,19 @@ export type PrepareProjectionResult =
         | "output-error"
         | "projection-error";
     }>;
+
+// Witnesses never cross IPC or accept caller-supplied receipts. Only this export
+// sink can associate exact included JSONL bytes with a successful worker result.
+const canonicalWitnesses = new WeakMap<
+  LexicalProjection,
+  LexicalProjection["canonicalOutput"]
+>();
+
+/** Complete private evidence, available only for this process's validated export. */
+export function verifyCompleteProjection(value: LexicalProjection): boolean {
+  const witness = canonicalWitnesses.get(value);
+  return witness !== undefined && verifyPreparedProjection(value, witness);
+}
 
 function object(value: unknown): value is Readonly<Record<string, unknown>> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -206,7 +221,25 @@ async function projectInWorker(
       6 * 60 * 60 * 1000,
     );
     signal?.addEventListener("abort", onAbort, { once: true });
-    worker.once("message", (result: PrepareProjectionResult) => finish(result));
+    worker.once("message", (value: unknown) => {
+      if (object(value) && Object.keys(value).length === 2) {
+        if (value.ok === true && object(value.projection)) {
+          finish(value as unknown as PrepareProjectionResult);
+          return;
+        }
+        if (
+          value.ok === false &&
+          typeof value.reason === "string" &&
+          ["secret-policy", "incomplete", "projection-error"].includes(
+            value.reason,
+          )
+        ) {
+          finish(value as unknown as PrepareProjectionResult);
+          return;
+        }
+      }
+      finish({ ok: false, reason: "projection-error" });
+    });
     worker.once("error", () =>
       finish({ ok: false, reason: "projection-error" }),
     );
@@ -254,11 +287,19 @@ export async function prepareLexicalProjection(
     return { ok: false, reason: "invalid-source" };
   }
   const records: CanonicalJsonlRecordV1[] = [];
+  const hash = createHash("sha256");
+  let bytes = 0;
   const exported = await exportCanonicalJsonl(
     root,
     {
       sourceRef,
       write(line) {
+        if (bytes + line.byteLength > 536_870_912 || records.length === 50_000)
+          throw new Error("Canonical output exceeds bounds.");
+        // Hash the exact UTF-8 bytes including their LF, before parsing. A receipt
+        // from core or the worker is not a substitute for observing this sink.
+        hash.update(line);
+        bytes += line.byteLength;
         records.push(
           JSON.parse(
             new TextDecoder("utf-8", { fatal: true }).decode(line),
@@ -270,6 +311,20 @@ export async function prepareLexicalProjection(
   );
   checkAbort(signal);
   if (!exported.ok) return { ok: false, reason: exported.reason };
+  const canonical = Object.freeze({
+    hash: `sha256:${hash.digest("hex")}`,
+    bytes,
+    records: records.length,
+  });
+  if (
+    exported.complete !== true ||
+    exported.secretPolicy !== "reject-detected" ||
+    exported.sourceCommit !== sourceRef ||
+    exported.outputHash !== canonical.hash ||
+    exported.byteLength !== canonical.bytes ||
+    exported.recordCount !== canonical.records
+  )
+    return { ok: false, reason: "projection-error" };
   if (exported.sourceManifest.vaultUid !== config.vaultUid)
     return { ok: false, reason: "invalid-vault" };
   if (
@@ -287,5 +342,15 @@ export async function prepareLexicalProjection(
   ) {
     return { ok: false, reason: "sensitivity-policy" };
   }
-  return await projectInWorker(records, exported, config, signal);
+  const projected = await projectInWorker(records, exported, config, signal);
+  checkAbort(signal);
+  if (!projected.ok) return projected;
+  if (
+    !verifyPreparedProjection(projected.projection, canonical) ||
+    projected.projection.sourceCommit !== sourceRef ||
+    projected.projection.manifestHash !== exported.sourceManifest.hash
+  )
+    return { ok: false, reason: "projection-error" };
+  canonicalWitnesses.set(projected.projection, canonical);
+  return projected;
 }

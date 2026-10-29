@@ -158,6 +158,23 @@ test("assembly measures artifact bytes and binds claimed preflight metadata, pol
   );
 });
 
+test("measured assembly snapshots source and policy before artifact I/O", async (t) => {
+  const { root } = await artifact(t);
+  const mutableDeployment = structuredClone(deployment);
+  const mutableReceipt = structuredClone(receipt);
+  const pending = assembleMeasuredInputRecipe(
+    mutableDeployment,
+    mutableReceipt,
+    root,
+  );
+  mutableDeployment.projection.maxChunkBytes = 32;
+  mutableReceipt.manifest.hash = `sha256:${"d".repeat(64)}`;
+  assert.deepEqual(
+    await pending,
+    await assembleMeasuredInputRecipe(deployment, receipt, root),
+  );
+});
+
 test("assembly rejects mismatched sources, undeclared approvals and incomplete artifacts without an identity", async (t) => {
   const { root, file } = await artifact(t);
   for (const source of [
