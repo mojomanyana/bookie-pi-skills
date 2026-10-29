@@ -1,6 +1,14 @@
 # Next-session handoff — 2026-10-29 UTC
 
-## S5 implementation and local qualification checkpoint — 2026-10-29 UTC
+## Latest delivery checkpoint — S5 merged and verified
+
+[PR #32](https://github.com/mojomanyana/bookie-pi-skills/pull/32) merged at `2026-10-29T17:19:44Z` as **`9f50a205596db263acff01f01b108b743cf03d49`**. PR head `8f243121acdd9881410fa6b89a285457a16f7dda` passed [PR CI 40919854374](https://github.com/mojomanyana/bookie-pi-skills/actions/runs/40919854374); exact merged-main [CI 40920268072](https://github.com/mojomanyana/bookie-pi-skills/actions/runs/40920268072) passed clean `npm ci` and full `npm run check`, **944/0/0**, at `2026-10-29T17:22:18Z`. Independent final integrated review is **APPROVE** with native settlement/cleanup confirmed. [S5 delivery evidence](evidence/BK-017.md#s5-delivery-completed--2026-10-29-utc) retains exact source identities and the private report. All 23 reviewed contents matched the actual merged tree.
+
+S5 is delivered, not all of BK-017: **BK-017 stays Ready/partial, SPEC-004 In progress**. Fresh runtime **1/0/0** and deployment **10/0/0** qualified four reproducible local images of artifact `sha256:0b55ad86368f2f9c7c58ead1fd0978d39c5f5e3b0eb0d5c2be00af486b11b4c7`; no production/scale qualification or registry pin is implied. Docker is available; the old WSL blockage is historical. No controller/Redis/HTTP/provider wiring was added.
+
+Next accepted work is **S6: absent-output candidate claims, explicit live-fenced begin-building, immutable output attachment and both-phase cancellation/cleanup**, with real Redis tests before controller use. S7/S8, blocked/deferred backlog items and all existing source/data-owner/license/provider gates remain. The sibling trusted-builder WIP is untouched. This factual closeout does not predict its own commit/merge or create S6 code; inspect live Git/CI before starting the next branch.
+
+## S5 implementation and local qualification checkpoint — 2026-10-29 UTC (historical)
 
 Docker is restored (Linux/amd64 engine 29.8.0). This continuation starts from merged [PR #31](https://github.com/mojomanyana/bookie-pi-skills/pull/31), main `4cc04e9808d2b6d7e876d499678be2f2bcb22f0b`, with successful [merged-main CI 40877992904](https://github.com/mojomanyana/bookie-pi-skills/actions/runs/40877992904). Branch `bk-017-trusted-builder-qualified` has no upstream at this implementation snapshot. The separate `/home/neman/Code/bookie-bk017-trusted-builder` WIP is untouched. This handoff does not predict its own commit/merge; inspect live Git and delivery receipts when resuming.
 
