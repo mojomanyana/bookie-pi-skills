@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { parentPort } from "node:worker_threads";
 
+import { containsDetectedSecret } from "@bookie/core";
 import type {
   CanonicalJsonlExportSuccess,
   CanonicalJsonlRecordV1,
@@ -200,12 +201,14 @@ function project({
   for (const record of records) {
     const root = fromMarkdown(record.body_markdown);
     const concept = metadata(record, root);
+    if (containsDetectedSecret(concept))
+      return { ok: false, reason: "secret-policy" };
     concepts.push(concept);
     for (const section of sections(record.body_markdown, root)) {
       for (const text of splitUtf8(section.text, config.maxChunkBytes)) {
         if (chunks.length === config.maxChunks)
           return { ok: false, reason: "incomplete" };
-        chunks.push({
+        const chunk: ChunkProjection = {
           ...concept,
           ordinal: chunks.length,
           heading: section.heading,
@@ -213,7 +216,10 @@ function project({
           text,
           chunkerVersion: versions.chunkerVersion,
           embeddingGeneration: null,
-        });
+        };
+        if (containsDetectedSecret(chunk))
+          return { ok: false, reason: "secret-policy" };
+        chunks.push(chunk);
       }
     }
   }

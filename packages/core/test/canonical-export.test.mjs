@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
+  chmod,
   cp,
   mkdir,
   mkdtemp,
@@ -16,6 +17,9 @@ import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
+import { deflateSync } from "node:zlib";
+
+import { GitBatchReader, GitFailure } from "../dist/vault-git-base.js";
 
 import { Ajv2020 } from "ajv/dist/2020.js";
 import * as formatsModule from "ajv-formats";
@@ -147,13 +151,13 @@ async function classifyAll(root, sensitivity = "public") {
   }
 }
 
-async function temporaryGitVault(t) {
+async function temporaryGitVault(t, objectFormat = "sha1") {
   const parent = await mkdtemp(join(tmpdir(), "bookie-export-"));
   const root = join(parent, "vault");
   await cp(validVault, root, { recursive: true });
   t.after(() => rm(parent, { recursive: true, force: true }));
   await classifyAll(root);
-  git(root, ["init", "-q"]);
+  git(root, ["init", "-q", `--object-format=${objectFormat}`]);
   git(root, ["add", "-A"]);
   git(root, ["commit", "-q", "--no-gpg-sign", "-m", "export source"]);
   return { parent, root, commit: git(root, ["rev-parse", "HEAD"]) };
@@ -175,6 +179,89 @@ async function collectExport(root, sourceRef = "HEAD", options = {}) {
   );
   return { result, calls, bytes: Buffer.concat(chunks) };
 }
+
+async function replaceLooseBlob(root, oid, bytes) {
+  const path = join(root, ".git/objects", oid.slice(0, 2), oid.slice(2));
+  await chmod(path, 0o600);
+  await writeFile(
+    path,
+    deflateSync(Buffer.concat([Buffer.from(`blob ${bytes.length}\0`), bytes])),
+  );
+}
+
+test("buffered and streaming blob readers verify SHA-1 and SHA-256 object identity", async (t) => {
+  for (const format of ["sha1", "sha256"]) {
+    await t.test(format, async (t) => {
+      const { root, commit } = await temporaryGitVault(t, format);
+      const path = "references/files/source.bin";
+      const oid = git(root, ["rev-parse", `${commit}:${path}`]);
+      const bytes = await readFile(join(root, path));
+      const reader = new GitBatchReader(root);
+      try {
+        assert.deepEqual(
+          Buffer.from(await reader.bytes(oid, bytes.length, bytes.length)),
+          bytes,
+        );
+        assert.equal(
+          await reader.hash(oid, bytes.length, bytes.length),
+          createHash("sha256").update(bytes).digest("hex"),
+        );
+      } finally {
+        await reader.abort();
+      }
+      const altered = Buffer.from(bytes);
+      altered[0] ^= 1;
+      await replaceLooseBlob(root, oid, altered);
+      for (const method of ["bytes", "hash"]) {
+        await t.test(method, async () => {
+          const corrupt = new GitBatchReader(root);
+          try {
+            await assert.rejects(
+              () => corrupt[method](oid, bytes.length, bytes.length),
+              GitFailure,
+              method,
+            );
+          } finally {
+            await corrupt.abort();
+          }
+        });
+      }
+    });
+  }
+});
+
+test("export rejects corrupted concept, manifest and resource blobs before invoking the sink", async (t) => {
+  for (const format of ["sha1", "sha256"]) {
+    for (const path of [
+      "bookie.yaml",
+      "projects/fixture/documents/document.md",
+      "references/files/source.bin",
+    ]) {
+      await t.test(`${format} ${path}`, async (t) => {
+        const { root, commit } = await temporaryGitVault(t, format);
+        assert.equal((await collectExport(root, commit)).result.ok, true);
+        const oid = git(root, ["rev-parse", `${commit}:${path}`]);
+        const bytes = await readFile(join(root, path));
+        const altered = path.endsWith(".bin")
+          ? Buffer.from(bytes)
+          : Buffer.from(bytes.toString("utf8").replace(/fixture/iu, "fixturX"));
+        if (path.endsWith(".bin")) altered[0] ^= 1;
+        assert.equal(altered.length, bytes.length);
+        assert.notDeepEqual(altered, bytes);
+        await replaceLooseBlob(root, oid, altered);
+        const rejected = await collectExport(root, commit);
+        assert.equal(rejected.result.ok, false);
+        assert.equal(rejected.result.reason, "invalid-source");
+        assert.ok(codes(rejected.result).includes("EXPORT-SOURCE"));
+        assert.equal(rejected.calls, 0);
+        assert.equal(rejected.bytes.length, 0);
+        assert.equal(rejected.result.possiblyWrittenRecords, 0);
+        assert.equal(rejected.result.possiblyWrittenBytes, 0);
+        assert.equal("sourceManifest" in rejected.result, false);
+      });
+    }
+  }
+});
 
 test("export source manifest metadata is bound to the exact commit, not the working tree", async (t) => {
   const { root, commit } = await temporaryGitVault(t);

@@ -49,7 +49,7 @@ test("assembly measures artifact bytes and binds claimed preflight metadata, pol
     "1",
     "bookie-1_yaml-2.9.0_mdast-2.0.3",
     "heading-utf8-1",
-    "markdown-trim-1",
+    "markdown-trim-policy-2",
   ]);
   assert.equal(
     result.policyHash,

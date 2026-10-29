@@ -4,6 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { runIngestionProcess } from "../dist/ingestion-isolation.js";
 import {
   prepareApprovedLexicalProjection,
   preflightDeploymentSource,
@@ -22,6 +23,44 @@ const preflight = (root, request) =>
     },
     { sourceRef: request.sourceRef, timeoutMs: request.timeoutMs },
   );
+
+test(
+  "a remaining group with no visible members cannot establish teardown",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const root = await mkdtemp(join(tmpdir(), "bookie-opaque-group-"));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const fixture = join(root, "reply.mjs");
+    await writeFile(
+      fixture,
+      "process.once('message', () => process.send({ ok: true }));",
+    );
+    const cp = createRequire(import.meta.url)("node:child_process");
+    const fork = cp.fork;
+    const redirected = t.mock.method(cp, "fork", (_path, args, options) =>
+      fork(fixture, args, options),
+    );
+    const kill = process.kill;
+    // Preserve real SIGKILL/child close; only group-existence queries remain opaque.
+    const opaque = t.mock.method(process, "kill", (pid, signal) =>
+      signal === 0 ? true : Reflect.apply(kill, process, [pid, signal]),
+    );
+    syncBuiltinESMExports();
+    try {
+      assert.deepEqual(
+        await runIngestionProcess(
+          {},
+          { timeoutMs: 2000, decode: () => ({ ok: true }) },
+        ),
+        { ok: false, reason: "ingestion-error" },
+      );
+    } finally {
+      opaque.mock.restore();
+      redirected.mock.restore();
+      syncBuiltinESMExports();
+    }
+  },
+);
 
 test(
   "unconfirmed teardown returns bounded failure and a late close cannot change it",

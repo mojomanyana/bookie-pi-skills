@@ -312,6 +312,7 @@ export class GitBatchReader {
 
   async #request(oid: string): Promise<number> {
     throwIfAborted(this.#signal);
+    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(oid)) throw new GitFailure();
     if (!this.#child.stdin.write(`${oid}\n`)) {
       await once(this.#child.stdin, "drain");
     }
@@ -330,12 +331,17 @@ export class GitBatchReader {
   ): Promise<Uint8Array> {
     const size = await this.#request(oid);
     if (size !== expectedSize || size > maximumBytes) throw new GitFailure();
-    const chunks: Buffer[] = [];
-    await this.#reader.consume(size, (chunk) =>
-      chunks.push(Buffer.from(chunk)),
+    const objectHash = createHash(oid.length === 40 ? "sha1" : "sha256").update(
+      `blob ${size}\0`,
     );
+    const chunks: Buffer[] = [];
+    await this.#reader.consume(size, (chunk) => {
+      objectHash.update(chunk);
+      chunks.push(Buffer.from(chunk));
+    });
     if ((await this.#reader.byte()) !== 0x0a) throw new GitFailure();
     throwIfAborted(this.#signal);
+    if (objectHash.digest("hex") !== oid) throw new GitFailure();
     return Buffer.concat(chunks, size);
   }
 
@@ -347,9 +353,16 @@ export class GitBatchReader {
     const size = await this.#request(oid);
     if (size !== expectedSize || size > maximumBytes) throw new GitFailure();
     const hash = createHash("sha256");
-    await this.#reader.consume(size, (chunk) => hash.update(chunk));
+    const objectHash = createHash(oid.length === 40 ? "sha1" : "sha256").update(
+      `blob ${size}\0`,
+    );
+    await this.#reader.consume(size, (chunk) => {
+      hash.update(chunk);
+      objectHash.update(chunk);
+    });
     if ((await this.#reader.byte()) !== 0x0a) throw new GitFailure();
     throwIfAborted(this.#signal);
+    if (objectHash.digest("hex") !== oid) throw new GitFailure();
     return hash.digest("hex");
   }
 
