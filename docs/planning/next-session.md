@@ -1,6 +1,16 @@
-# Next-session handoff — 2026-10-28 UTC
+# Next-session handoff — 2026-10-29 UTC
 
-## Current accepted safety increment — implemented, not merged
+## Latest delivery checkpoint — PR open, CI passed
+
+At `2026-10-29T11:00:18Z`, [PR #30](https://github.com/mojomanyana/bookie-pi-skills/pull/30) is **OPEN**, targeting `main`, mergeable with a clean check state. The user selected commit/push/open-PR delivery. Four focused commits (`e13b0bb`, `6ecfbe1`, `a7c265d`, `8442d1f`) captured all 44 reviewed files without changing their bytes; the worktree was clean and the branch synchronized with `origin/bk-017-provenance-policy-hardening`, four commits ahead of `origin/main`.
+
+Reviewed source head **`8442d1fa6fce6cc2cc7a2a36897e02b8e889b367`** passed [CI run 40861363965](https://github.com/mojomanyana/bookie-pi-skills/actions/runs/40861363965), job [123405129041](https://github.com/mojomanyana/bookie-pi-skills/actions/runs/40861363965/job/123405129041), completed successfully at `2026-10-29T10:58:00Z`; both `npm ci` and `npm run check` passed. The independent final integrated review is APPROVE and the matching local post-review check passed **938 / 0 failed / 0 skipped**. Native reports remain private. This subsequent handoff-only update does not predict its own commit or CI run; inspect the live PR for its latest head/checks.
+
+**No merge, main update, release or publication has occurred.** BK-026–029 remain Ready until actual merge and matching CI evidence is recorded; BK-017 remains partial. Next: review/merge PR #30, record the actual integration commit and CI before marking safety items Done, then perform fresh runtime/deployment qualification before the trusted-builder stage. Existing provider, non-public-data, license, attachment, deferred-write/export and production/scale gates remain unchanged.
+
+The October 28 sections below preserve the implementation history. Their uncommitted-file inventory and unselected-destination statements describe that earlier snapshot, not the current delivery checkpoint. Always inspect the live checkout before switching branches or starting work.
+
+## Implementation snapshot — 2026-10-28 UTC (historical)
 
 The [principal assessment](principal-assessment.md) supersedes historical next-work priority below. On `bk-017-provenance-policy-hardening`, HEAD/base `e016f214e380014dd94643d34d8421508bdc606e` (no upstream; local main 0 behind / 0 ahead), the prior bounded BK-017 blob-integrity/final-field-policy/owned-process repair is independently **APPROVE** at `.principal/reports/principal-repository-assessment-QbNmJc/c39901621882c9d7/review.md`, candidate `dirty:a6acb26171e656c415b0e4701f95c2187fe441c1816defefa8e6db9cefdb1ddb`. That approval is bounded, not service completion. The sole product writer then implemented **BK-026 → BK-027 → BK-028 → BK-029** sequentially, preserving all 21 inherited dirty paths and the inherited tests/approval. No service-runtime or sibling-worktree edits, delegation, commit/push/merge, publication or provider calls were made in this increment.
 
@@ -12,7 +22,7 @@ The first assembled integration review requested three concrete edge repairs: bo
 
 Inspect `git status --short --untracked-files=all` and preserve all current uncommitted files; do not execute a main switch/pull over this work. The delivery records and clean-main resume commands below describe the earlier 2026-10-10 snapshot, not the current checkout.
 
-## Current uncommitted paths
+## Pre-commit path inventory — 2026-10-28 UTC (historical)
 
 All 21 starting dirty paths were retained; service/runtime and prior integrity tests have no additional edits from this increment. BK-017/BK-025 evidence and SPEC-004 remain inherited. The complete current uncommitted inventory (including new files) is:
 
