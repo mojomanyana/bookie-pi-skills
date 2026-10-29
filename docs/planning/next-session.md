@@ -1,6 +1,23 @@
 # Next-session handoff — 2026-10-29 UTC
 
-## Latest delivery checkpoint — PR open, CI passed
+## Latest delivery checkpoint — merged; S5 qualification blocked
+
+[PR #30](https://github.com/mojomanyana/bookie-pi-skills/pull/30) **MERGED** at `2026-10-29T12:17:53Z` as **`eb2a34f31977165b866927ce0ac0d04bc5f34376`**. PR head `d60a2bec3e3599464307b8cfa1b3e82e1f8145e6` passed [PR CI 40862380770](https://github.com/mojomanyana/bookie-pi-skills/actions/runs/40862380770). [Merged-main CI 40872106782](https://github.com/mojomanyana/bookie-pi-skills/actions/runs/40872106782), job [123441504170](https://github.com/mojomanyana/bookie-pi-skills/actions/runs/40872106782/job/123441504170), passed on that exact integration SHA at `2026-10-29T12:20:06Z`: clean `npm ci` and `npm run check`, **938 passed / 0 failed / 0 skipped**. Independent final integrated review is APPROVE; native settlement/cleanup and source identities are recorded in [BK-026 delivery evidence](evidence/BK-026.md#post-merge-delivery-reconciliation--2026-10-29-utc). Reports remain private.
+
+**BK-026–029 are Done. BK-017 remains Ready/partial; SPEC-003/004 remain In progress.** At the start of this reconciliation, main was fast-forwarded to the integration commit and branch `bk-017-verified-builder` started there (upstream none). This update contains only delivery reconciliation, not S5 implementation; it does not predict its own future commit/merge. Inspect live Git for the current checkout and upstream. The separate `/home/neman/Code/bookie-bk017-trusted-builder` worktree remains untouched.
+
+The user authorized merge and continuation. Fresh qualification is blocked: `docker info --format '{{.ServerVersion}} {{.Architecture}}'` exits **1**, reporting Docker unavailable in this WSL distro. Docker Desktop WSL integration must be enabled, or an approved Docker environment supplied. No runtime/deployment suite was run, no new image was built, and historical image/artifact digests do not qualify the changed bytes. No controller, Redis, provider or production/scale feature was enabled.
+
+Next, after `docker info` succeeds, use Node 24 and run:
+
+```bash
+npm run test:runtime --workspace @bookie/service
+npm run test:deployment --workspace @bookie/service
+```
+
+Both must pass before S5 relies on runtime identity. Then implement the accepted plan's trusted authorized preflight/deployment-owned expected identity loading and independent builder recipe/canonical-output comparison, with test-first regressions and integrated review. No guessed identity, forged receipt, skipped qualification or controller shortcut. Provider/data-owner/license/attachment/deferred-write/export gates are unchanged. Check live Git state before resuming; the historical inventories below are not current worktree state.
+
+## Pre-merge delivery checkpoint — 2026-10-29 UTC (historical)
 
 At `2026-10-29T11:00:18Z`, [PR #30](https://github.com/mojomanyana/bookie-pi-skills/pull/30) is **OPEN**, targeting `main`, mergeable with a clean check state. The user selected commit/push/open-PR delivery. Four focused commits (`e13b0bb`, `6ecfbe1`, `a7c265d`, `8442d1f`) captured all 44 reviewed files without changing their bytes; the worktree was clean and the branch synchronized with `origin/bk-017-provenance-policy-hardening`, four commits ahead of `origin/main`.
 

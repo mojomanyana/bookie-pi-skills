@@ -2,7 +2,7 @@
 
 ## Status
 
-Verified — behavior through the reduced read/query-only BK-012 scope is merged and verified; filesystem-writing CLI commands remain deferred under ADR-0008. BK-027/BK-029 safety corrections below are implemented pending independent review/delivery; their local verification is not merge/CI evidence ([BK-027](../planning/evidence/BK-027.md), [BK-029](../planning/evidence/BK-029.md)).
+Verified — behavior through the reduced read/query-only BK-012 scope is merged and verified; filesystem-writing CLI commands remain deferred under ADR-0008. BK-027/BK-029 safety corrections below merged in [PR #30](https://github.com/mojomanyana/bookie-pi-skills/pull/30) with successful matching PR and [merged-main CI](https://github.com/mojomanyana/bookie-pi-skills/actions/runs/40872106782); both backlog items are Done ([BK-027](../planning/evidence/BK-027.md), [BK-029](../planning/evidence/BK-029.md)).
 
 Owner: unassigned  
 Target release: 0.1  

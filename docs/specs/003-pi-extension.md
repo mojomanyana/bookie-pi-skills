@@ -2,7 +2,7 @@
 
 ## Status
 
-In progress — packaged read, filesystem-search, validation, approved create/amend and structured checkpoint/pre-compaction workflows through BK-015 are merged. Subsequent BK-026/027/028 queue/result/request safety corrections are locally verified and implemented pending independent review/delivery; historical verification did not establish these boundaries. Service retrieval, export and human/configuration commands remain later work.
+In progress — packaged read, filesystem-search, validation, approved create/amend and structured checkpoint/pre-compaction workflows through BK-015 are merged. Subsequent BK-026/027/028 queue/result/request safety corrections merged in [PR #30](https://github.com/mojomanyana/bookie-pi-skills/pull/30) with successful matching PR and [merged-main CI](https://github.com/mojomanyana/bookie-pi-skills/actions/runs/40872106782); all three are Done. Earlier verification did not establish these repaired boundaries. Service retrieval, export and human/configuration commands remain later work.
 
 Owner: unassigned  
 Target release: 0.1  
@@ -56,7 +56,7 @@ Write and immediate/staged checkpoint requests open with `O_RDONLY | O_NOFOLLOW 
 
 ## Host runtime packaging
 
-Both root-Git and local-subpackage manifests select the TypeScript `src/index.ts` entry so Pi's real loader maps host imports before executing them. Compiled extension ESM is retained for development/types, not selected as a Pi entry: native ESM can bypass mapping through physical development dependencies. Pi packages are `*` peers, never production dependencies; the supported development API stays 0.85.1. Git prepare builds the host-independent core and schemas without installing a private Pi runtime. Real-loader tests use a separate physical host, hold its target queue after synchronized approval, verify no publication, release and verify create/checkpoint completion or stale-amend conflict. BK-026 is implemented pending independent review/delivery, not a specification completion claim.
+Both root-Git and local-subpackage manifests select the TypeScript `src/index.ts` entry so Pi's real loader maps host imports before executing them. Compiled extension ESM is retained for development/types, not selected as a Pi entry: native ESM can bypass mapping through physical development dependencies. Pi packages are `*` peers, never production dependencies; the supported development API stays 0.85.1. Git prepare builds the host-independent core and schemas without installing a private Pi runtime. Real-loader tests use a separate physical host, hold its target queue after synchronized approval, verify no publication, release and verify create/checkpoint completion or stale-amend conflict. BK-026 is Done with PR #30 merge/CI evidence, not a specification completion claim; the measured host API remains Pi 0.85.1.
 
 ## Acceptance criteria
 
