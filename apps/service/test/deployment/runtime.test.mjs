@@ -1,8 +1,17 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import {
+  chmod,
+  cp,
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { trustedBuilderDriver } from "../helpers/trusted-builder-driver.mjs";
+import { basename, join } from "node:path";
 import test from "node:test";
 import {
   buildRuntime,
@@ -62,16 +71,15 @@ async function git(root, args) {
     ...args,
   ]);
 }
-async function source(parent, nested = false, secretCorpus = false) {
+async function source(
+  parent,
+  nested = false,
+  secretCorpus = false,
+  objectFormat = "sha1",
+) {
   const root = join(
     parent,
-    nested
-      ? "nested-source"
-      : secretCorpus === "invalid"
-        ? "invalid-source"
-        : secretCorpus
-          ? "secret-source"
-          : "source",
+    `${nested ? "nested-" : "root-"}${secretCorpus || "valid"}-${objectFormat}-source`,
   );
   const vault = nested ? join(root, "nested") : root;
   await cp(join(repository, "examples/vault"), vault, { recursive: true });
@@ -86,14 +94,26 @@ async function source(parent, nested = false, secretCorpus = false) {
       .replace("sensitivity: public", "sensitivity: restricted")
       .replace(/# Overview[\s\S]*/u, `# Excluded\n${excludedMarker}\n`),
   );
-  if (secretCorpus)
+  if (secretCorpus === "empty") {
+    for (const name of await readdir(vault, { recursive: true })) {
+      if (!name.endsWith(".md")) continue;
+      const path = join(vault, name);
+      await writeFile(
+        path,
+        (await readFile(path, "utf8")).replace(
+          /sensitivity: (?:public|internal)/gu,
+          "sensitivity: restricted",
+        ),
+      );
+    }
+  } else if (secretCorpus)
     await writeFile(
       join(vault, "projects/demo/documents/overview.md"),
       secretCorpus === "invalid"
         ? document.replace("title: Demo vault overview\n", "")
         : document + `\n${secret}\n`,
     );
-  await git(root, ["init", "-q"]);
+  await git(root, ["init", "-q", `--object-format=${objectFormat}`]);
   await git(root, ["add", "-A"]);
   await git(root, ["commit", "-qm", "synthetic qualification"]);
   const commit = (await git(root, ["rev-parse", "HEAD"])).trim();
@@ -268,6 +288,38 @@ test(
       ),
       { ok: true, rejected: "source-not-approved" },
     );
+    // S5 uses a deployment-owned expected identity outside the inventoried tree.
+    // The only positive proof is this actual clean immutable image, never a mock.
+    const identityFile = join(parent, "deployment-expected-runtime");
+    await writeFile(identityFile, `${image.artifactHash}\n`, { mode: 0o644 });
+    const identityMount = `type=bind,src=${identityFile},dst=/run/bookie-expected-runtime,readonly`;
+    const qualifiedOptions = (fixture) => ({
+      source: fixture.root,
+      mounts: [identityMount],
+    });
+    const trustedResults = [];
+    for (const record of images) {
+      trustedResults.push(
+        JSON.parse(
+          await runRuntime(
+            record.imageId,
+            trustedBuilderDriver(fixture),
+            qualifiedOptions(fixture),
+          ),
+        ),
+      );
+    }
+    assert.deepEqual(trustedResults[0], trustedResults[1]);
+    assert.equal(
+      JSON.parse(
+        await runRuntime(
+          image.imageId,
+          trustedBuilderDriver(fixture, { adversarial: true }),
+          qualifiedOptions(fixture),
+        ),
+      ).ok,
+      true,
+    );
     const nested = await source(parent, true);
     assert.equal(
       JSON.parse(
@@ -279,6 +331,147 @@ test(
       ).ok,
       true,
     );
+    for (const f of [
+      nested,
+      await source(parent, false, false, "sha256"),
+      await source(parent, true, false, "sha256"),
+      await source(parent, false, "empty"),
+    ]) {
+      const checked = JSON.parse(
+        await runRuntime(
+          image.imageId,
+          trustedBuilderDriver(f),
+          qualifiedOptions(f),
+        ),
+      );
+      assert.equal(checked.ok, true);
+      if (f.root.includes("empty"))
+        assert.deepEqual([checked.concepts, checked.chunks], [0, 0]);
+    }
+    // A real equivalent clone at a different mount location retains recipe/output.
+    const clone = join(parent, "relocated-clone");
+    await mkdir(clone);
+    await docker([
+      "run",
+      "--rm",
+      "--network",
+      "none",
+      "--mount",
+      `type=bind,src=${clone},dst=/clone`,
+      "--entrypoint",
+      "/bin/sh",
+      "node:24.19.0-bookworm@sha256:4196d66a565c6f195728d9952f161f4adfe2ad753052a08b7ec7f1c5a6bda42b",
+      "-c",
+      "chown 65534:65534 /clone",
+    ]);
+    // Clone as the source owner, without an ownership exception or shared objects.
+    await docker([
+      "run",
+      "--rm",
+      "--network",
+      "none",
+      "--user",
+      "65534:65534",
+      "--read-only",
+      "--cap-drop",
+      "ALL",
+      "--security-opt",
+      "no-new-privileges",
+      "--mount",
+      `type=bind,src=${fixture.root},dst=/vault/${basename(fixture.root)},readonly`,
+      "--mount",
+      `type=bind,src=${clone},dst=/vault/${basename(clone)}`,
+      "--entrypoint",
+      "/usr/bin/git",
+      "node:24.19.0-bookworm@sha256:4196d66a565c6f195728d9952f161f4adfe2ad753052a08b7ec7f1c5a6bda42b",
+      "clone",
+      "--no-hardlinks",
+      `/vault/${basename(fixture.root)}`,
+      `/vault/${basename(clone)}`,
+    ]);
+    await git(clone, ["update-ref", config.approvedRef, fixture.commit]);
+    await docker([
+      "run",
+      "--rm",
+      "--network",
+      "none",
+      "--mount",
+      `type=bind,src=${clone},dst=/clone`,
+      "--entrypoint",
+      "/bin/sh",
+      "node:24.19.0-bookworm@sha256:4196d66a565c6f195728d9952f161f4adfe2ad753052a08b7ec7f1c5a6bda42b",
+      "-c",
+      "chown -R 65534:65534 /clone; chmod -R a+rX /clone",
+    ]);
+    const relocated = {
+      ...fixture,
+      root: clone,
+      config: {
+        ...fixture.config,
+        root: "/relocated",
+        repositoryRoot: "/relocated",
+      },
+    };
+    assert.deepEqual(
+      JSON.parse(
+        await runRuntime(image.imageId, trustedBuilderDriver(relocated), {
+          mounts: [
+            identityMount,
+            `type=bind,src=${clone},dst=/relocated,readonly`,
+          ],
+        }),
+      ),
+      trustedResults[0],
+    );
+    // Host-side approved-ref drift after genuine preflight is not durable approval.
+    const signals = join(parent, "builder-signals");
+    await mkdir(signals);
+    await chmod(signals, 0o777);
+    const drift = runRuntime(
+      image.imageId,
+      trustedBuilderDriver(fixture, { drift: true }),
+      {
+        source: fixture.root,
+        mounts: [identityMount, `type=bind,src=${signals},dst=/signals`],
+      },
+    ).then((text) => JSON.parse(text));
+    const observedDrift = drift.catch((error) => {
+      throw error;
+    });
+    // Attach a rejection handler while waiting for the synchronized source read.
+    void observedDrift.catch(() => undefined);
+    try {
+      let ready = false;
+      for (let i = 0; i < 1000; i++) {
+        try {
+          await readFile(join(signals, "preflight-done"));
+          ready = true;
+          break;
+        } catch (error) {
+          if (error.code !== "ENOENT") throw error;
+          await new Promise((r) => setTimeout(r, 10));
+        }
+      }
+      assert.equal(
+        ready,
+        true,
+        "trusted guarded preflight must finish before source drift",
+      );
+      await git(fixture.root, ["update-ref", "-d", config.approvedRef]);
+      await writeFile(join(signals, "continue"), "");
+      assert.deepEqual(await observedDrift, {
+        ok: true,
+        rejected: "source-not-approved",
+      });
+    } finally {
+      await writeFile(join(signals, "continue"), "");
+      await observedDrift;
+      await git(fixture.root, [
+        "update-ref",
+        config.approvedRef,
+        fixture.commit,
+      ]);
+    }
     const invalid = await source(parent, false, true);
     assert.deepEqual(
       JSON.parse(
@@ -286,6 +479,16 @@ test(
           image.imageId,
           integrationDriver(invalid, image.artifactHash, "secret-policy"),
           { source: invalid.root },
+        ),
+      ),
+      { ok: true, rejected: "secret-policy" },
+    );
+    assert.deepEqual(
+      JSON.parse(
+        await runRuntime(
+          image.imageId,
+          trustedBuilderDriver(invalid, { failure: "secret-policy" }),
+          qualifiedOptions(invalid),
         ),
       ),
       { ok: true, rejected: "secret-policy" },
@@ -300,6 +503,31 @@ test(
         ),
       ),
       { ok: true, rejected: "invalid-vault" },
+    );
+    assert.deepEqual(
+      JSON.parse(
+        await runRuntime(
+          image.imageId,
+          trustedBuilderDriver(malformed, { failure: "invalid-vault" }),
+          qualifiedOptions(malformed),
+        ),
+      ),
+      { ok: true, rejected: "invalid-vault" },
+    );
+    const loadDriver = `import assert from 'node:assert/strict'; import {loadBuildRuntime} from '/opt/bookie/apps/service/dist/runtime-qualification.js'; await assert.rejects(loadBuildRuntime('/opt/bookie/runtime-profile.json'),${JSON.stringify(bad)}); await assert.rejects(loadBuildRuntime('/run/bookie-expected-runtime'),${JSON.stringify(bad)}); console.log('{"ok":true}');`;
+    const wrongIdentity = join(parent, "wrong-expected-runtime");
+    await writeFile(wrongIdentity, `sha256:${"0".repeat(64)}\n`, {
+      mode: 0o644,
+    });
+    assert.equal(
+      JSON.parse(
+        await runRuntime(image.imageId, loadDriver, {
+          mounts: [
+            `type=bind,src=${wrongIdentity},dst=/run/bookie-expected-runtime,readonly`,
+          ],
+        }),
+      ).ok,
+      true,
     );
     const rejectDriver = `import assert from 'node:assert/strict'; import {qualifyRuntime} from '/opt/bookie/apps/service/dist/runtime-qualification.js'; await assert.rejects(qualifyRuntime(${JSON.stringify(image.artifactHash)}),${JSON.stringify(bad)}); console.log('{"ok":true}');`;
     for (const options of [
@@ -474,6 +702,7 @@ test(
       version: 1,
       images,
       output: results[0],
+      trustedOutput: trustedResults[0],
       driverHash: hash(
         await readFile(
           new URL("../../scripts/qualify-runtime.mjs", import.meta.url),

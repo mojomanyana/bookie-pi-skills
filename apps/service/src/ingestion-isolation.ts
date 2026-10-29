@@ -63,7 +63,7 @@ async function groupIsRunning(
   throw new Error("Teardown unconfirmed.");
 }
 
-/** Internal transport for the two trusted child modes. Callers validate/snapshot inputs. */
+/** Internal transport for trusted ingestion/preflight/builder modes. Callers snapshot inputs. */
 export async function runIngestionProcess<Result>(
   input: Readonly<Record<string, unknown>>,
   options: Readonly<{

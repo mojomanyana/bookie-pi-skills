@@ -101,16 +101,25 @@ test("identity, capability, privilege and baked/observed runtime mismatch fail s
     );
 });
 
-test("HTTP, ingestion and storage cannot consume disconnected measured recipe assembly", async () => {
+test("only trusted orchestration and its isolated builder consume qualified recipe assembly; HTTP/Redis stay disconnected", async () => {
   const root = new URL("../src/", import.meta.url);
+  const consumers = new Set(["trusted-builder.ts", "ingestion-process.ts"]);
   for (const path of await readdir(root)) {
     if (!path.endsWith(".ts") || path === "build-input-assembly.ts") continue;
     const source = await readFile(new URL(path, root), "utf8");
-    assert.equal(
-      /build-input-assembly|assembleMeasuredInputRecipe/u.test(source),
-      false,
-      path,
-    );
+    assert.equal(/assembleMeasuredInputRecipe/u.test(source), false, path);
+    if (!consumers.has(path))
+      assert.equal(
+        /build-input-assembly|assembleQualifiedInputRecipe/u.test(source),
+        false,
+        path,
+      );
+    if (path === "server.ts" || path.startsWith("redis-"))
+      assert.equal(
+        /trusted-builder|qualifyBuildRuntime|loadBuildRuntime/u.test(source),
+        false,
+        path,
+      );
   }
 });
 

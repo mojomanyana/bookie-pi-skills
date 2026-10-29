@@ -35,11 +35,15 @@ function streamHash(
 
 /**
  * Internal isolated-builder integrity check after complete projection. This does
- * not approve a Git source, rehash canonical JSONL bytes, authorize a recipe,
- * attest runtime provenance or verify Redis content. A false result is failure,
- * never a valid empty corpus. Invoke only on the trusted worker's result.
+ * not approve a Git source, authorize a recipe, attest runtime provenance or
+ * verify Redis content. When supplied, canonical must be measured independently
+ * over the actual validated export sink bytes, never reconstructed projections.
+ * A false result is failure, never a valid empty corpus.
  */
-export function verifyPreparedProjection(value: LexicalProjection): boolean {
+export function verifyPreparedProjection(
+  value: LexicalProjection,
+  canonical?: Readonly<{ hash: string; bytes: number; records: number }>,
+): boolean {
   try {
     if (
       value === null ||
@@ -75,6 +79,10 @@ export function verifyPreparedProjection(value: LexicalProjection): boolean {
     )
       return false;
     return (
+      (canonical === undefined ||
+        (value.canonicalOutput.hash === canonical.hash &&
+          value.canonicalOutput.bytes === canonical.bytes &&
+          value.canonicalOutput.records === canonical.records)) &&
       streamHash(value.concepts, value.sourceCommit, false) ===
         value.conceptStreamHash &&
       streamHash(value.chunks, value.sourceCommit, true) ===

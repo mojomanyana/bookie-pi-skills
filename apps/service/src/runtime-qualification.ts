@@ -13,12 +13,87 @@ import { dirname, join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { ownDataFields } from "./closed-data.js";
+import { beneath } from "./path-boundary.js";
 import { assertReadonlyMountProfile } from "./readonly-checkout.js";
 import { verifyRuntimeArtifact } from "./runtime-artifact.js";
 
 const baseImage =
   "node:24.19.0-bookworm@sha256:4196d66a565c6f195728d9952f161f4adfe2ad753052a08b7ec7f1c5a6bda42b";
 const run = promisify(execFile);
+const runtimeRoot = fileURLToPath(
+  new URL("../../../", import.meta.url),
+).replace(/\/$/u, "");
+declare const qualifiedRuntime: unique symbol;
+/** Process-local proof, not a serializable structural receipt. */
+export interface QualifiedBuildRuntime {
+  readonly [qualifiedRuntime]: true;
+}
+const qualified = new WeakMap<QualifiedBuildRuntime, `sha256:${string}`>();
+
+export function qualifiedRuntimeHash(
+  runtime: QualifiedBuildRuntime,
+): `sha256:${string}` {
+  const hash = qualified.get(runtime);
+  if (hash === undefined) invalid();
+  return hash;
+}
+
+/** Builder-only requalification of the actually loaded immutable installation. */
+export async function qualifyBuildRuntime(
+  expected: string,
+): Promise<QualifiedBuildRuntime> {
+  if (arguments.length !== 1) invalid();
+  const hash = await qualifyRuntime(expected);
+  const proof = Object.freeze({}) as QualifiedBuildRuntime;
+  qualified.set(proof, hash);
+  return proof;
+}
+
+/** Deployment startup only. Identity is a single hash token (optional LF) in an
+ * ordinary protected file outside the inventoried installation, never a request
+ * hash, caller-selected runtime root, mount receipt or boolean approval.
+ */
+export async function loadBuildRuntime(
+  identityFile: string,
+): Promise<QualifiedBuildRuntime> {
+  try {
+    if (
+      arguments.length !== 1 ||
+      typeof identityFile !== "string" ||
+      !identityFile.startsWith("/") ||
+      posix.normalize(identityFile) !== identityFile ||
+      Buffer.byteLength(identityFile) > 4096 ||
+      beneath(identityFile, runtimeRoot) ||
+      process.platform !== "linux" ||
+      process.geteuid === undefined
+    )
+      invalid();
+    await directories(dirname(identityFile));
+    for (const path of ["/proc/self/mountinfo", "/proc/self/status"])
+      if ((await statfs(path)).type !== 0x9fa0) invalid();
+    const mounts = await readBounded("/proc/self/mountinfo", 1048576, true);
+    assertReadonlyMountProfile(
+      mounts.toString("utf8"),
+      (await readBounded("/proc/self/status", 65536, true)).toString("utf8"),
+      process.geteuid(),
+      [identityFile],
+    );
+    const bytes = await readBounded(identityFile, 72);
+    const expected = bytes.toString("utf8");
+    if (!/^sha256:[a-f0-9]{64}\n?(?![\s\S])/u.test(expected)) invalid();
+    const proof = await qualifyBuildRuntime(expected.replace(/\n$/u, ""));
+    if (
+      !(await readBounded("/proc/self/mountinfo", 1048576, true)).equals(
+        mounts,
+      ) ||
+      !(await readBounded(identityFile, 72)).equals(bytes)
+    )
+      invalid();
+    return proof;
+  } catch {
+    invalid();
+  }
+}
 function invalid(): never {
   throw new TypeError("Runtime qualification failed.");
 }
@@ -76,7 +151,10 @@ async function readBounded(
   maximum: number,
   kernel = false,
 ): Promise<Buffer> {
-  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const handle = await open(
+    path,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
   try {
     const before = await handle.stat({ bigint: true });
     if (
@@ -103,6 +181,9 @@ async function readBounded(
       before.ino !== after.ino ||
       (!kernel &&
         (before.size !== after.size ||
+          BigInt(total) !== before.size ||
+          before.nlink !== after.nlink ||
+          before.mode !== after.mode ||
           before.mtimeNs !== after.mtimeNs ||
           before.ctimeNs !== after.ctimeNs))
     )
@@ -179,10 +260,7 @@ export async function qualifyRuntime(
       process.geteuid === undefined
     )
       invalid();
-    const root = fileURLToPath(new URL("../../../", import.meta.url)).replace(
-      /\/$/u,
-      "",
-    );
+    const root = runtimeRoot;
     const gitPath = "/usr/bin/git";
     const paths = [root, process.execPath, gitPath];
     for (const path of ["/proc/self/mountinfo", "/proc/self/status"])
