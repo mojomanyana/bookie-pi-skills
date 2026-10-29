@@ -14,7 +14,7 @@ Content failures are returned as stable `ConceptDiagnostic` values with remediat
 
 `await validateVault(root, options?)` resolves one explicit vault, consumes exactly one direct YAML manifest document, requires OKF 0.2 root bundle metadata, validates the packaged canonical schemas, checks CommonMark local links and current-tree profile relations, and streams exact Evidence bytes through SHA-256. With `baseRef`, it resolves one local commit from the containing non-bare Git worktree and additionally enforces tracking, Activity/Evidence exact-byte immutability, Decision retention, immutable-record target identity, and Evidence resource retention. Success exposes the resolved `baseCommit`; infrastructure or bounded-base failures emit static `GIT-BASE` and make validation incomplete.
 
-Git-base reads require local Git 2.29+ and use bounded NUL-delimited plumbing plus exact object blobs without worktree filters. They disable configured hooks, lazy remote object fetching, alternate inherited indexes/object stores, shell interpolation, and Git replacement objects. The working tree remains the proposed tree; stage-zero ordinary index entries establish tracking but staged blob contents are not substituted. Validation never fetches, commits, pushes, or executes repository hooks.
+Git-base reads require local Git 2.29+ and use bounded NUL-delimited plumbing plus exact object blobs without worktree filters. Buffered and streamed blob reads verify the Git object header/bytes against the requested SHA-1/SHA-256 ID; a content SHA-256 alone is not commit provenance. They disable configured hooks, lazy remote object fetching, alternate inherited indexes/object stores, shell interpolation, and Git replacement objects. The working tree remains the proposed tree; stage-zero ordinary index entries establish tracking but staged blob contents are not substituted. Validation never fetches, commits, pushes, or executes repository hooks.
 
 Results expose `valid`, `complete`, `diagnosticsTruncated`, the real root, and deterministic static diagnostics. Content failures do not throw. Invalid options throw `TypeError`; cancellation consistently rejects with `AbortError`. Entry, concept, aggregate-byte, YAML-depth, CommonMark container-depth, resource, and diagnostic bounds fail closed; suspicious CommonMark container input runs in a cancellable worker with a five-second deadline. Exported caller options may only lower their corresponding defaults.
 
@@ -48,6 +48,8 @@ Both operations reject host-absolute, traversal, encoded, reserved, manifest-exc
 
 Core serializes its mutations per real vault root. Pi callers must also pass `runExclusive: (path, mutation) => withFileMutationQueue(path, mutation)` so the complete read/validate/stage/replace window shares Pi's target-file queue. Core does not import Pi, invoke Git, use the network, generate UIDs/timestamps, or claim multi-file relation validity; run `validateVault()` after a related mutation set.
 
+Policy-bearing `createConceptWithPolicy()` / `amendConceptWithPolicy()` return `ConceptPolicyMutationResult`. Narrow `result.ok` then `result.redacted === true`: that explicit excluded-success variant has only operation/outcome, redacted paths and empty diagnostics, never current/previous hashes, identity or byte lengths (including unchanged results and sensitivity transitions). Ordinary success still requires an exact `sourceHash`; low-level policy-neutral mutation contracts are unchanged. A rollback disables affected writes rather than restoring leakage. See [BK-027 evidence](../../docs/planning/evidence/BK-027.md).
+
 ## Evidence capture
 
 `captureEvidence(root, request, options?)` accepts an explicit local source, absent descriptor and resource paths, a complete Evidence frontmatter candidate without `resource` or `bookie.sha256`, and exact body text. It streams the source into a same-directory temporary beneath a configured evidence root, enforces manifest and optional lower byte limits, hashes and reopens the staged bytes, inserts the verified resource path/digest, schema- and UID-validates the descriptor, then stages both files under the full mutation coordinator window.
@@ -61,6 +63,10 @@ Absent targets publish with atomic no-replace semantics. The resource file and d
 Search omits every record assigned a manifest-excluded sensitivity class from hits, matched counts, and truncation decisions. Missing and undeclared classes remain labelled local-only data and gain no provider/index/export eligibility. Generic OKF remains valid content but is outside this first Bookie-profile query API.
 
 `inspectConcept(root, { path } | { uid }, options?)` resolves one exact schema-valid Bookie record without fallback or fuzzy matching. It returns a bounded exact UTF-8 source prefix, full/returned byte counts, the complete-source hash, and explicit truncation. Exact inspection may return excluded content with `handling: "excluded"`; callers must not log, index, checkpoint, or export it. Ambiguous UIDs, malformed selectors, invalid concepts, missing targets, bounds, and raced snapshots return no source text. Query APIs never invoke Git, Redis, Pi, a network service, commit, push, or process exit.
+
+## Shared secret heuristic
+
+`containsDetectedSecret(value: unknown): boolean` exposes the existing deterministic local signatures for already-decoded data. Service projection uses the same policy on final transformed fields, without duplicating signatures or enabling unchecked indexing. This heuristic is not source authorization, a complete secret classifier or a safe inspector for hostile executable objects; callers retain validation, sensitivity and isolation duties.
 
 ## Canonical JSONL export
 

@@ -384,6 +384,46 @@ test("policy and vault mismatches fail before returning a projection", async (t)
   );
 });
 
+test("final chunk boundaries cannot bypass secret policy while neighboring splits remain valid", async (t) => {
+  for (const [body, rejected] of [
+    ["a".repeat(64) + "ghp_" + "b".repeat(36), true],
+    ["a".repeat(63) + "ghp_" + "b".repeat(36), false],
+    ["a".repeat(65) + "ghp_" + "b".repeat(36), false],
+    ["Unicode λ🎯 notes. ".repeat(10), false],
+    ["password: <redacted>", false],
+  ]) {
+    const source = await vault(t, (root) =>
+      rewrite(root, documentPath, () => {}, body),
+    );
+    const canonical = await exportCanonicalJsonl(source.root, {
+      sourceRef: source.commit,
+      write() {},
+    });
+    assert.equal(
+      canonical.ok,
+      true,
+      "source passes canonical policy before chunk transformation",
+    );
+    const result = await prepare(source);
+    assert.equal(result.ok, !rejected);
+    if (rejected)
+      assert.deepEqual(result, { ok: false, reason: "secret-policy" });
+    else {
+      const chunks = result.projection.chunks.filter(
+        (chunk) => chunk.path === `/${documentPath}`,
+      );
+      assert.ok(chunks.length > 0);
+      assert.equal(chunks.map((chunk) => chunk.text).join(""), body.trim());
+      assert.ok(
+        chunks.every(
+          (chunk) =>
+            Buffer.byteLength(chunk.text) <= 64 && !chunk.text.includes("�"),
+        ),
+      );
+    }
+  }
+});
+
 test("detected secrets and invalid canonical records fail with static results", async (t) => {
   const source = await vault(t, (root) =>
     rewrite(root, documentPath, () => {}, `Secret ${"ghp_"}${"a".repeat(36)}`),

@@ -10,6 +10,9 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
+import { OperationError, runReadOperation } from "../dist/operation-process.js";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -315,20 +318,52 @@ test("supported commands do not mutate Git/filesystem state or open network clie
 });
 
 test("CLI source cannot reach filesystem-writing APIs", async () => {
-  const source = await readFile(resolve(cliPackage, "src/cli.ts"), "utf8");
-  for (const forbidden of [
-    "createConcept",
-    "amendConcept",
-    "captureEvidence",
-    "initializeVault",
-    "exportCanonicalJsonl",
-    "node:fs",
-    "node:http",
-    "node:https",
-    "node:net",
-    "child_process",
-  ]) {
-    assert.equal(source.includes(forbidden), false, forbidden);
+  for (const entry of await readdir(join(cliPackage, "src"), {
+    recursive: true,
+  })) {
+    if (!entry.endsWith(".ts")) continue;
+    const source = await readFile(join(cliPackage, "src", entry), "utf8");
+    for (const forbidden of [
+      "createConcept",
+      "amendConcept",
+      "captureEvidence",
+      "initializeVault",
+      "exportCanonicalJsonl",
+      "writeFile",
+      "appendFile",
+      "node:http",
+      "node:https",
+      "node:net",
+      "fetch(",
+      "git commit",
+      "git push",
+      "exec(",
+      "spawn(",
+    ]) {
+      assert.equal(source.includes(forbidden), false, `${entry}: ${forbidden}`);
+    }
+    assert.doesNotMatch(
+      source,
+      /\b(?:rename|unlink|mkdir|rm|spawn|exec)\s*\(/u,
+      entry,
+    );
+    if (entry !== "operation-process.ts") {
+      assert.equal(source.includes("node:fs"), false, entry);
+      assert.equal(source.includes("child_process"), false, entry);
+    } else {
+      assert.match(
+        source,
+        /import \{ opendir, readFile \} from "node:fs\/promises"/u,
+      );
+      assert.match(
+        source,
+        /fork\(new URL\("\.\/operation-worker\.js", import\.meta\.url\)/u,
+      );
+      assert.match(
+        source,
+        /execFile\(\s*"taskkill",\s*\["\/PID", String\(child.pid\), "\/T", "\/F"\]/u,
+      );
+    }
   }
 });
 
@@ -399,6 +434,412 @@ test("clean package artifacts install and expose the bookie binary", async (t) =
   });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "Vault is valid.\n");
+});
+
+function isRunning(pid) {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    return !["Z", "X"].includes(
+      stat.slice(stat.lastIndexOf(")") + 2).split(" ")[0],
+    );
+  } catch (error) {
+    if (["ENOENT", "ESRCH"].includes(error.code)) return false;
+    throw error;
+  }
+}
+
+async function parserFixture(t) {
+  const fixture = await temporaryVault(t);
+  const path = join(fixture.vault, "projects/fixture/tasks/task.md");
+  await writeFile(
+    path,
+    `${await readFile(path, "utf8")}\nBOOKIE-PARSER-CONTROL\n`,
+  );
+  // The marker must be parsed YAML, not merely a body passed around by core.
+  await writeFile(
+    path,
+    (await readFile(path, "utf8")).replace(
+      "Fixture task",
+      "BOOKIE-PARSER-CONTROL",
+    ),
+  );
+  const marker = join(fixture.parent, "parser-started.json");
+  return {
+    ...fixture,
+    marker,
+    env: {
+      PATH: process.env.PATH,
+      NODE_OPTIONS: `--import=${join(cliPackage, "test/fixtures/parser-control.mjs")}`,
+      BOOKIE_TEST_CORE: corePackage,
+      BOOKIE_TEST_MARKER: marker,
+    },
+  };
+}
+
+const commandArgs = (command, vault) =>
+  command === "validate"
+    ? ["validate", "--vault", vault, "--format", "json"]
+    : command === "search"
+      ? ["search", "--vault", vault, "Fixture", "--format", "json"]
+      : [
+          "inspect",
+          "--vault",
+          vault,
+          "--path",
+          "/projects/fixture/tasks/task.md",
+          "--format",
+          "json",
+        ];
+
+test("synchronous parser stalls terminate under deadline, SIGINT and SIGTERM with owned Git teardown", async (t) => {
+  for (const command of ["validate", "search", "inspect"]) {
+    for (const stop of ["deadline", "SIGINT", "SIGTERM"]) {
+      await t.test(`${command}: ${stop}`, async (t) => {
+        const { vault, marker, env } = await parserFixture(t);
+        const child = spawn(
+          process.execPath,
+          [
+            cli,
+            ...commandArgs(command, vault),
+            ...(stop === "deadline" ? ["--timeout-ms", "3000"] : []),
+          ],
+          { detached: true, stdio: ["ignore", "pipe", "pipe"], env },
+        );
+        let stdout = "";
+        let stderr = "";
+        let owned;
+        let liveAtExit;
+        child.stdout.setEncoding("utf8").on("data", (chunk) => {
+          stdout += chunk;
+        });
+        child.stderr.setEncoding("utf8").on("data", (chunk) => {
+          stderr += chunk;
+        });
+        const closed = new Promise((resolve) => {
+          child.once("exit", () => {
+            if (owned) liveAtExit = Object.values(owned).map(isRunning);
+          });
+          child.once("close", (code) => resolve(code));
+        });
+        let watchdog;
+        try {
+          const until = Date.now() + 5000;
+          while (
+            owned === undefined &&
+            child.exitCode === null &&
+            Date.now() < until
+          ) {
+            try {
+              owned = JSON.parse(await readFile(marker, "utf8"));
+            } catch (error) {
+              if (error.code !== "ENOENT") throw error;
+            }
+            if (!owned) await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+          assert.ok(owned, `parser never started: ${stderr}`);
+          assert.ok(
+            Object.values(owned).every(isRunning),
+            "current parser and both descendants acknowledged startup",
+          );
+          if (stop !== "deadline") child.kill(stop);
+          const result = await Promise.race([
+            closed,
+            new Promise((resolve) => {
+              watchdog = setTimeout(() => resolve("hung"), 5000);
+            }),
+          ]);
+          assert.equal(
+            result,
+            1,
+            "CLI signal/deadline owner must remain responsive",
+          );
+          assert.equal(stdout, "");
+          assert.equal(
+            stderr,
+            stop === "deadline"
+              ? "CLI-OPERATION: Operation could not complete safely.\n"
+              : "CLI-CANCELLED: Operation cancelled.\n",
+          );
+          assert.deepEqual(
+            liveAtExit,
+            [false, false, false],
+            "no parser/descendant/Git running at CLI settlement",
+          );
+        } finally {
+          clearTimeout(watchdog);
+          for (const group of new Set(
+            [owned?.parser, child.pid].filter(Boolean),
+          )) {
+            try {
+              process.kill(-group, "SIGKILL");
+            } catch (error) {
+              assert.equal(error.code, "ESRCH");
+            }
+          }
+          await closed;
+        }
+      });
+    }
+  }
+});
+
+async function stopTestGroups(groups) {
+  for (const group of new Set(groups.filter(Boolean))) {
+    try {
+      process.kill(-group, "SIGKILL");
+    } catch (error) {
+      if (error.code !== "ESRCH") throw error;
+    }
+  }
+}
+
+test(
+  "terminal teardown uncertainty exits without claiming descendants stopped",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    for (const fault of ["kill-denied", "no-close"]) {
+      await t.test(fault, async (t) => {
+        const { vault, marker, env } = await parserFixture(t);
+        const child = spawn(
+          process.execPath,
+          [cli, ...commandArgs("validate", vault), "--timeout-ms", "7000"],
+          {
+            detached: true,
+            stdio: ["ignore", "pipe", "pipe"],
+            env: { ...env, BOOKIE_TEST_FAULT: fault },
+          },
+        );
+        let stdout = "";
+        let stderr = "";
+        let owned;
+        let liveAtExit;
+        child.stdout.setEncoding("utf8").on("data", (chunk) => {
+          stdout += chunk;
+        });
+        child.stderr.setEncoding("utf8").on("data", (chunk) => {
+          stderr += chunk;
+        });
+        const closed = new Promise((resolve) => {
+          child.once("exit", () => {
+            if (owned) liveAtExit = Object.values(owned).map(isRunning);
+          });
+          child.once("close", (code) => resolve(code));
+        });
+        let watchdog;
+        try {
+          const until = Date.now() + 5000;
+          while (!owned && child.exitCode === null && Date.now() < until) {
+            try {
+              owned = JSON.parse(await readFile(marker, "utf8"));
+            } catch (error) {
+              if (error.code !== "ENOENT") throw error;
+            }
+            if (!owned) await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+          assert.ok(owned, "current blocked parser must start");
+          assert.ok(Object.values(owned).every(isRunning));
+          child.kill("SIGINT");
+          const result = await Promise.race([
+            closed,
+            new Promise((resolve) => {
+              watchdog = setTimeout(() => resolve("hung"), 2500);
+            }),
+          ]);
+          assert.equal(
+            result,
+            1,
+            "terminal failure must release parent IPC/process references",
+          );
+          assert.equal(stdout, "");
+          assert.equal(
+            stderr,
+            "CLI-OPERATION: Operation could not complete safely.\n",
+          );
+          assert.deepEqual(
+            liveAtExit,
+            fault === "kill-denied"
+              ? [true, true, true]
+              : [false, false, false],
+          );
+        } finally {
+          clearTimeout(watchdog);
+          try {
+            await stopTestGroups([owned?.parser, child.pid]);
+          } finally {
+            await closed;
+          }
+          if (owned) {
+            for (
+              let n = 0;
+              n < 100 && Object.values(owned).some(isRunning);
+              n++
+            )
+              await new Promise((resolve) => setTimeout(resolve, 10));
+            assert.ok(
+              Object.values(owned).every((pid) => !isRunning(pid)),
+              "test-owned survivors must be stopped",
+            );
+          }
+        }
+      });
+    }
+  },
+);
+
+test("malformed worker replies fail before any command output", async (t) => {
+  const { vault } = await temporaryVault(t);
+  const commands = ["validate", "search", "inspect"];
+  const controls = {};
+  for (const command of commands) {
+    const result = run(commandArgs(command, vault));
+    assert.equal(result.status, 0, result.stderr);
+    controls[command] = jsonOutput(result);
+    delete controls[command].command;
+  }
+  for (const [index, command] of commands.entries()) {
+    const other = commands[(index + 1) % commands.length];
+    const envelope = (result) => ({ kind: "result", command, result });
+    const env = {
+      PATH: process.env.PATH,
+      NODE_OPTIONS: `--import=${join(cliPackage, "test/fixtures/parser-control.mjs")}`,
+      BOOKIE_TEST_CORE: corePackage,
+      BOOKIE_TEST_FAULT: "protocol",
+    };
+    for (const [label, reply] of [
+      ["null", null],
+      ["envelope", {}],
+      ["empty", envelope({})],
+      ["array", envelope([])],
+      ["wrong-command-result", envelope(controls[other])],
+      ["wrong-command-tag", { ...envelope(controls[command]), command: other }],
+      ["diagnostic", envelope({ ...controls[command], diagnostics: [null] })],
+    ]) {
+      await t.test(`${command}: ${label}`, () => {
+        const result = run(commandArgs(command, vault), {
+          env: { ...env, BOOKIE_TEST_REPLY: JSON.stringify(reply) },
+          timeout: 5000,
+        });
+        assert.equal(result.status, 1);
+        assert.equal(result.stdout, "");
+        assert.equal(
+          result.stderr,
+          "CLI-OPERATION: Operation could not complete safely.\n",
+        );
+      });
+    }
+    const valid = run(commandArgs(command, vault), {
+      env: {
+        ...env,
+        BOOKIE_TEST_REPLY: JSON.stringify(envelope(controls[command])),
+      },
+      timeout: 5000,
+    });
+    assert.equal(valid.status, 0, valid.stderr);
+    assert.deepEqual(jsonOutput(valid), { command, ...controls[command] });
+  }
+});
+
+test(
+  "late close cannot revise terminal teardown failure",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const { vault } = await temporaryVault(t);
+    const cpModule = createRequire(import.meta.url)("node:child_process");
+    const original = cpModule.fork;
+    let lateClose;
+    let childPid;
+    const mock = t.mock.method(cpModule, "fork", (...args) => {
+      const child = Reflect.apply(original, cpModule, args);
+      childPid = child.pid;
+      const emit = child.emit;
+      child.emit = function (event, ...values) {
+        if (event === "close") {
+          lateClose = () => Reflect.apply(emit, this, [event, ...values]);
+          return true;
+        }
+        return Reflect.apply(emit, this, [event, ...values]);
+      };
+      return child;
+    });
+    syncBuiltinESMExports();
+    try {
+      const pending = runReadOperation(
+        { command: "validate", vault },
+        { timeoutMs: 2000, signal: new AbortController().signal },
+      );
+      await assert.rejects(pending, OperationError);
+      assert.equal(typeof lateClose, "function");
+      assert.equal(isRunning(childPid), false);
+      lateClose();
+      await assert.rejects(pending, OperationError);
+    } finally {
+      mock.mock.restore();
+      syncBuiltinESMExports();
+    }
+  },
+);
+
+test("timeout grammar and endpoint values are checked before worker work", async (t) => {
+  const { vault, env } = await parserFixture(t);
+  for (const command of ["validate", "search", "inspect"]) {
+    for (const suffix of [
+      ["--timeout-ms"],
+      ...["0", "21600001", "-1", "1.5", "1e3", "+2", "x"].map((value) => [
+        "--timeout-ms",
+        value,
+      ]),
+      ["--timeout-ms", "1", "--timeout-ms", "2"],
+    ]) {
+      const result = run([...commandArgs(command, vault), ...suffix], { env });
+      assert.equal(result.status, 2, `${command}: ${suffix}`);
+      assert.equal(result.stdout, "");
+      assert.equal(
+        result.stderr,
+        "CLI-INVOCATION: Invalid command invocation.\n",
+      );
+    }
+    const timeout = run([...commandArgs(command, vault), "--timeout-ms", "1"]);
+    assert.equal(timeout.status, 1);
+    assert.equal(timeout.stdout, "");
+    assert.equal(
+      timeout.stderr,
+      "CLI-OPERATION: Operation could not complete safely.\n",
+    );
+    const normal = run([
+      ...commandArgs(command, fixture),
+      "--timeout-ms",
+      "21600000",
+    ]);
+    assert.equal(normal.status, 0, normal.stderr);
+  }
+});
+
+test("worker start failure and parser crash never emit partial or false success", async (t) => {
+  const { vault, marker, env } = await parserFixture(t);
+  for (const command of ["validate", "search", "inspect"]) {
+    for (const fault of ["start", "crash"]) {
+      await rm(marker, { force: true });
+      await rm(`${marker}.descendant`, { force: true });
+      const result = run(commandArgs(command, vault), {
+        env: { ...env, BOOKIE_TEST_FAULT: fault },
+        timeout: 5000,
+      });
+      assert.equal(result.status, 1, `${command}: ${fault}: ${result.stderr}`);
+      assert.equal(result.stdout, "");
+      assert.equal(
+        result.stderr,
+        "CLI-OPERATION: Operation could not complete safely.\n",
+      );
+      if (fault === "crash") {
+        const owned = JSON.parse(await readFile(marker, "utf8"));
+        assert.deepEqual(Object.values(owned).map(isRunning), [
+          false,
+          false,
+          false,
+        ]);
+      } else await assert.rejects(readFile(marker), { code: "ENOENT" });
+    }
+  }
 });
 
 test("SIGINT cancellation is static and writes no output", async (t) => {

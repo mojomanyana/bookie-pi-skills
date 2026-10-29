@@ -105,6 +105,14 @@ The authorization matrix, token lifecycle, exact-commit approval, Redis key/inde
 - [ADR-0010](../architecture/decisions/0010-service-protocol-auth-and-projection.md)
 - [ADR-0011](../architecture/decisions/0011-bounded-rebuild-admission.md)
 
+## BK-017 provenance, final-field policy and teardown repair
+
+The 2026-10-28 safety repair verifies every buffered/streamed Git blob against its requested SHA-1/SHA-256 object ID using the exact Git object header and bytes. Readable same-size corruption fails before export sink publication or projection output; Evidence content SHA-256 remains a separate streamed digest. Final transformed concept/chunk fields are checked with core's shared mandatory detector before returning successful projection receipts; a detector-negative source is not proof that each split field is safe. The preprocessing label is `markdown-trim-policy-2`; schema/wire/codec versions are unchanged.
+
+Isolated ingestion/preflight confirms owned group quiescence, not merely leader close, inside the existing one-second teardown allowance. On the supported Linux profile, bounded procfs checks distinguish non-running zombies from live group members; enumeration/read/permission/budget uncertainty returns static `ingestion-error`, not cancellation/cleanup success. Other POSIX hosts can establish disappearance through group lookup but cannot infer that remaining group members are only zombies. Existing deployment guards, deadlines, static redaction and no-partial-output contracts remain. Current regression/mutation/review evidence is recorded in [BK-017](../planning/evidence/BK-017.md#principal-safety-repair--2026-10-28-utc).
+
+These source changes require fresh runtime-image/deployment qualification before using a new artifact identity. Prior image/digest evidence remains historical. No controller, Redis lifecycle, recipe consumption or new HTTP route is enabled; BK-017 remains Ready/partial and this specification In progress.
+
 ## BK-017 projection slice
 
 **Implementation snapshot — migration pending:** this local non-serving API still uses the earlier output-derived ID. ADR-0011 supersedes that identity requirement for controller integration; the snapshot below documents existing behavior, not permission to wire the legacy recipe into the accepted controller.

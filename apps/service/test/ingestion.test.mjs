@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { createHook } from "node:async_hooks";
+import { readFileSync } from "node:fs";
+import { deflateSync } from "node:zlib";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { spawnSync } from "node:child_process";
 import {
+  chmod,
   cp,
   mkdtemp,
   readFile,
@@ -151,6 +154,48 @@ test("approved ingestion isolates the whole Git/export/projection path and prese
   });
 });
 
+test("approved ingestion rejects final-chunk secrets and corrupted approved blobs without partial output", async (t) => {
+  const source = await vault(t);
+  const path = "projects/fixture/documents/document.md";
+  const file = join(source.root, path);
+  const original = await readFile(file, "utf8");
+  const closing = original.indexOf("\n---\n", 4) + 5;
+  assert.ok(closing > 4);
+  await writeFile(
+    file,
+    original.slice(0, closing) + "a".repeat(64) + "ghp_" + "b".repeat(36),
+  );
+  source.commit = commit(source.root);
+  assert.deepEqual(
+    await ingest(source, { config: { ...config, maxChunkBytes: 64 } }),
+    { ok: false, reason: "secret-policy" },
+  );
+  await writeFile(file, original);
+  source.commit = commit(source.root);
+  assert.equal((await ingest(source)).ok, true);
+  const oid = git(source.root, ["rev-parse", `${source.commit}:${path}`]);
+  const altered = Buffer.from(
+    original.replace("Fixture document", "Fixture documenX"),
+  );
+  const objectPath = join(
+    source.root,
+    ".git/objects",
+    oid.slice(0, 2),
+    oid.slice(2),
+  );
+  await chmod(objectPath, 0o600);
+  await writeFile(
+    objectPath,
+    deflateSync(
+      Buffer.concat([Buffer.from(`blob ${altered.length}\0`), altered]),
+    ),
+  );
+  assert.deepEqual(await ingest(source), {
+    ok: false,
+    reason: "invalid-source",
+  });
+});
+
 test("approval precedes validation; invalid vault/policy/secret/size failures yield no partial projection", async (t) => {
   const source = await vault(t);
   const manifest = join(source.root, "bookie.yaml");
@@ -245,6 +290,16 @@ test("ingestion snapshots caller-owned config and rejects unsafe limits without 
   });
 });
 
+function processIsRunningNow(pid, readProc = readFileSync) {
+  try {
+    const stat = readProc(`/proc/${pid}/stat`, "utf8");
+    return !stat.slice(stat.lastIndexOf(")") + 2).startsWith("Z ");
+  } catch (error) {
+    if (error.code === "ENOENT" || error.code === "ESRCH") return false;
+    throw error;
+  }
+}
+
 async function processIsRunning(pid, readProc = readFile) {
   try {
     const stat = await readProc(`/proc/${pid}/stat`, "utf8");
@@ -283,85 +338,122 @@ test("process cleanup checks distinguish disappearance from permission failures"
   );
 });
 
+// Owned groups only; also stop descendants when a mutation fails the assertion.
+async function stopOwnedWorkload(pids) {
+  try {
+    process.kill(-pids[0], "SIGKILL");
+  } catch (error) {
+    if (error.code !== "ESRCH") throw error;
+  }
+  for (const pid of pids) {
+    for (let n = 0; n < 100 && (await processIsRunning(pid)); n++)
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(
+      await processIsRunning(pid),
+      false,
+      "owned workload cleanup failed",
+    );
+  }
+}
+
 test(
   "cancellation and deadline kill blocked ingestion and its descendants before returning",
   { skip: process.platform !== "linux" },
   async (t) => {
     const source = await vault(t);
-    for (const [mode, operation] of [
-      ["cancel", ingest],
-      ["deadline", ingest],
-      ["cancel", preflight],
-      ["deadline", preflight],
+    for (const [phase, mode, operation] of [
+      ["ingestion", "cancel", ingest],
+      ["ingestion", "deadline", ingest],
+      ["preflight", "cancel", preflight],
+      ["preflight", "deadline", preflight],
     ]) {
-      const marker = join(source.root, `${mode}-pids.json`);
-      const fixture = join(source.root, "blocked.mjs");
-      await writeFile(
-        fixture,
-        `
+      await t.test(`${phase}/${mode}`, async (t) => {
+        const marker = join(source.root, `${phase}-${mode}-pids.json`);
+        const fixture = join(source.root, "blocked.mjs");
+        await writeFile(
+          fixture,
+          `
     import { spawn } from 'node:child_process';
     import { writeFileSync } from 'node:fs';
     process.once('message', () => {
-      const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
-      writeFileSync(process.argv[2], JSON.stringify([process.pid, child.pid]));
-      while (true) {}
+      const child = spawn(process.execPath, ['-e', 'process.send("ready"); setInterval(() => {}, 1000)'], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+      child.once('message', () => {
+        writeFileSync(process.argv[2], JSON.stringify([process.pid, child.pid]));
+        while (true) {}
+      });
     });
   `,
-      );
-      const cpModule = createRequire(import.meta.url)("node:child_process");
-      const original = cpModule.fork;
-      const mock = t.mock.method(
-        cpModule,
-        "fork",
-        (_modulePath, _args, options) => original(fixture, [marker], options),
-      );
-      syncBuiltinESMExports();
-      const controller = new AbortController();
-      const pending = operation(source, {
-        signal: controller.signal,
-        timeoutMs: mode === "deadline" ? 2000 : 7000,
-      });
-      // Attach the rejection handler before abort to avoid an unhandled rejection.
-      const rejected =
-        mode === "cancel"
-          ? assert.rejects(() => pending, {
-              name: "AbortError",
-              message: "Ingestion cancelled.",
-            })
-          : pending.then((result) =>
-              assert.deepEqual(result, {
-                ok: false,
-                reason: "deadline-exceeded",
-              }),
-            );
-      let pids;
-      try {
-        for (let n = 0; n < 200 && pids === undefined; n++) {
-          try {
-            pids = JSON.parse(await readFile(marker, "utf8"));
-          } catch {
-            await new Promise((resolve) => setTimeout(resolve, 10));
-          }
-        }
-        assert.ok(pids, "isolated process must begin its blocked workload");
-        if (mode === "cancel") controller.abort("PRIVATE_ABORT_MARKER");
-        await rejected;
-        for (const pid of pids) {
-          // A dead grandchild may briefly await init reaping; a zombie is not running.
-          let running = true;
-          for (let n = 0; n < 100 && running; n++) {
-            running = await processIsRunning(pid);
-            if (running)
-              await new Promise((resolve) => setTimeout(resolve, 10));
-          }
-          assert.equal(running, false);
-        }
-      } finally {
-        controller.abort();
-        await rejected;
-        mock.mock.restore();
+        );
+        const cpModule = createRequire(import.meta.url)("node:child_process");
+        const original = cpModule.fork;
+        const mock = t.mock.method(
+          cpModule,
+          "fork",
+          (_modulePath, _args, options) => original(fixture, [marker], options),
+        );
         syncBuiltinESMExports();
-      }
+        const controller = new AbortController();
+        let pids;
+        const observeSettlement = () => {
+          assert.ok(pids, "current workload must start before settlement");
+          for (const pid of pids)
+            assert.equal(
+              processIsRunningNow(pid),
+              false,
+              `${phase}/${mode} pid ${pid} still runs at settlement`,
+            );
+        };
+        const pending = operation(source, {
+          signal: controller.signal,
+          timeoutMs: mode === "deadline" ? 2000 : 7000,
+        }).then(
+          (result) => {
+            observeSettlement();
+            return result;
+          },
+          (error) => {
+            observeSettlement();
+            throw error;
+          },
+        );
+        // Attach the rejection handler before abort to avoid an unhandled rejection.
+        const rejected =
+          mode === "cancel"
+            ? assert.rejects(() => pending, {
+                name: "AbortError",
+                message: "Ingestion cancelled.",
+              })
+            : pending.then((result) =>
+                assert.deepEqual(result, {
+                  ok: false,
+                  reason: "deadline-exceeded",
+                }),
+              );
+        try {
+          for (let n = 0; n < 200 && pids === undefined; n++) {
+            try {
+              pids = JSON.parse(await readFile(marker, "utf8"));
+            } catch {
+              await new Promise((resolve) => setTimeout(resolve, 10));
+            }
+          }
+          assert.ok(pids, "isolated process must begin its blocked workload");
+          if (mode === "cancel") controller.abort("PRIVATE_ABORT_MARKER");
+          await rejected;
+        } finally {
+          controller.abort();
+          try {
+            await rejected;
+          } finally {
+            try {
+              if (pids !== undefined) await stopOwnedWorkload(pids);
+            } finally {
+              mock.mock.restore();
+              syncBuiltinESMExports();
+            }
+          }
+        }
+      });
     }
   },
 );

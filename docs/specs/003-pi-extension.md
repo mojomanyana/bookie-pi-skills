@@ -2,7 +2,7 @@
 
 ## Status
 
-In progress — packaged read, filesystem-search, validation, approved queued create/amend, and structured checkpoint/pre-compaction workflows through BK-015 are merged and verified; service retrieval and export tools remain later backlog work
+In progress — packaged read, filesystem-search, validation, approved create/amend and structured checkpoint/pre-compaction workflows through BK-015 are merged. Subsequent BK-026/027/028 queue/result/request safety corrections are locally verified and implemented pending independent review/delivery; historical verification did not establish these boundaries. Service retrieval, export and human/configuration commands remain later work.
 
 Owner: unassigned  
 Target release: 0.1  
@@ -44,9 +44,19 @@ Provide a distributable Pi package that exposes safe Bookie read, search, write,
 - `bookie_validate`: validate selected files or vault, optionally against a base ref.
 - `bookie_export`: produce a dry-run or local artifact; external destination execution belongs to SPEC-005.
 
+`bookie_write` serializes the explicit hash-free `redacted: true` policy-success variant for excluded create/amend/unchanged and sensitivity transitions. It emits neither current/previous source hashes nor identity/size fields. Included successes and low-level core hashes remain unchanged. Rollback disables affected writes rather than returning the old leaky shape; see [SPEC-002's result union](002-core-and-cli.md#pre-write-secret-policy).
+
 Non-interactive calls that require approval must fail with a clear instruction unless the user explicitly supplied an approval flag in the originating tool parameters.
 
 Per ADR-0009, checkpoint preparation accepts no raw transcript and generates no path, UID, project, actor, timestamp, or sensitivity. The required fragment sections are outcome, changed artifacts, decisions, evidence, validation, unresolved work, and next action; source session is optional. Core validates sensitivity labels against the manifest, rejects missing/undeclared classes and detected secrets, omits complete excluded fragments before preview, and renders a bounded body behind an opaque prepared-publication value detached from publicly returned data. Confirmation identifies only the canonical target and a digest of filtered input; it does not retain or display raw vault or external request-file paths. `createCheckpointWithPolicy()` rechecks the prepared vault/target/parent identities and complete manifest hash inside the queued mutation and reloads that manifest again after temporary staging before creating the Activity. A staged checkpoint is session-local and is discarded at shutdown. Only one draft slot may be preparing, pending, confirming, or publishing; reservation occurs before request-file I/O, and further sequential or concurrent staging attempts fail statically until the slot is released. A confirmation that would exceed Pi's byte or line limit is rejected rather than truncated.
+
+## Request-file boundary
+
+Write and immediate/staged checkpoint requests open with `O_RDONLY | O_NOFOLLOW | O_NONBLOCK` before descriptor validation; missing platform flags fail closed. Only singly linked regular descriptors of at most 2,000,000 bytes are read. The reader probes one extra byte, checks descriptor mode/link/device/inode/size/mtime/ctime and complete byte count, then fatally decodes UTF-8 and parses JSON. FIFOs (including substitution immediately before open), symlinks, hardlinks, directories, unstable/oversized/malformed input fail statically without publication. Request cancellation is a static `AbortError`, never a caller-supplied reason; checks follow final descriptor stat and successful close and precede approval, so cancellation during asynchronous finalization cannot escape as a usable snapshot or enter confirmation. The same static cancellation boundary wraps write/checkpoint dialogs whether the host resolves or rejects on abort; an arbitrary abort reason never replaces the static cancellation error. A failed checkpoint attempt releases its reservation before settlement so a subsequent valid checkpoint can proceed; no lifecycle writer or transcript capture is added. See [BK-028 evidence](../planning/evidence/BK-028.md).
+
+## Host runtime packaging
+
+Both root-Git and local-subpackage manifests select the TypeScript `src/index.ts` entry so Pi's real loader maps host imports before executing them. Compiled extension ESM is retained for development/types, not selected as a Pi entry: native ESM can bypass mapping through physical development dependencies. Pi packages are `*` peers, never production dependencies; the supported development API stays 0.85.1. Git prepare builds the host-independent core and schemas without installing a private Pi runtime. Real-loader tests use a separate physical host, hold its target queue after synchronized approval, verify no publication, release and verify create/checkpoint completion or stale-amend conflict. BK-026 is implemented pending independent review/delivery, not a specification completion claim.
 
 ## Acceptance criteria
 

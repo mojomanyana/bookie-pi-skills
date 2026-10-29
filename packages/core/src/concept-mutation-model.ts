@@ -86,6 +86,7 @@ export interface MutationDiagnostic {
 
 export interface ConceptMutationSuccess {
   readonly ok: true;
+  readonly redacted?: false;
   readonly operation: "create" | "amend";
   readonly outcome: "created" | "amended" | "unchanged";
   readonly path: string;
@@ -105,6 +106,19 @@ export interface ConceptMutationFailure {
 
 export type ConceptMutationResult =
   ConceptMutationSuccess | ConceptMutationFailure;
+
+export interface ConceptMutationExcludedSuccess {
+  readonly ok: true;
+  readonly operation: "create" | "amend";
+  readonly outcome: "created" | "amended" | "unchanged";
+  readonly redacted: true;
+  readonly path: "<redacted>";
+  readonly changedPaths: readonly "<redacted>"[];
+  readonly diagnostics: readonly [];
+}
+
+export type ConceptPolicyMutationResult =
+  ConceptMutationResult | ConceptMutationExcludedSuccess;
 
 export type MutationOperation = "create" | "amend";
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { inspectConcept, searchVault, validateVault } from "@bookie/core";
+import { OperationError, runReadOperation } from "./operation-process.js";
 import type { VaultDiagnostic } from "@bookie/core";
 
 const invocationMessage = "CLI-INVOCATION: Invalid command invocation.\n";
@@ -58,6 +58,15 @@ function parseOrderedOptions(
   return values;
 }
 
+function timeoutMs(options: ReadonlyMap<string, string>): number {
+  const value = options.get("timeout-ms") ?? "300000";
+  if (!/^[0-9]+$/u.test(value)) throw new InvocationError();
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 21_600_000)
+    throw new InvocationError();
+  return parsed;
+}
+
 function json(command: string, result: object): void {
   process.stdout.write(`${JSON.stringify({ command, ...result })}\n`);
 }
@@ -75,14 +84,22 @@ async function validateCommand(
   signal: AbortSignal,
 ): Promise<number> {
   const vault = requirePair(args, 0, "vault");
-  const options = parseOrderedOptions(args, 2, ["base", "format"]);
+  const options = parseOrderedOptions(args, 2, [
+    "base",
+    "format",
+    "timeout-ms",
+  ]);
   const format = options.get("format") ?? "text";
   if (format !== "text" && format !== "json") throw new InvocationError();
   const baseRef = options.get("base");
-  const result = await validateVault(vault, {
-    signal,
-    ...(baseRef === undefined ? {} : { baseRef }),
-  });
+  const result = await runReadOperation(
+    {
+      command: "validate",
+      vault,
+      ...(baseRef === undefined ? {} : { baseRef }),
+    },
+    { signal, timeoutMs: timeoutMs(options) },
+  );
   if (format === "json") json("validate", result);
   else if (result.valid) process.stdout.write("Vault is valid.\n");
   if (!result.valid) diagnostics(result.diagnostics);
@@ -124,7 +141,10 @@ async function searchCommand(
     "tag",
     "format",
   ] as const;
-  const options = parseOrderedOptions(args, separator ? 4 : 3, filterNames);
+  const options = parseOrderedOptions(args, separator ? 4 : 3, [
+    ...filterNames,
+    "timeout-ms",
+  ]);
   const format = options.get("format") ?? "text";
   if (format !== "text" && format !== "json") throw new InvocationError();
   const filters: Record<string, string> = {};
@@ -132,13 +152,16 @@ async function searchCommand(
     const value = options.get(name);
     if (value !== undefined) filters[name] = value;
   }
-  const result = await searchVault(
-    vault,
+  const result = await runReadOperation(
     {
-      query,
-      ...(Object.keys(filters).length === 0 ? {} : { filters }),
+      command: "search",
+      vault,
+      request: {
+        query,
+        ...(Object.keys(filters).length === 0 ? {} : { filters }),
+      },
     },
-    { signal },
+    { signal, timeoutMs: timeoutMs(options) },
   );
   if (format === "json") json("search", result);
   else {
@@ -180,13 +203,19 @@ async function inspectCommand(
   ) {
     throw new InvocationError();
   }
-  const options = parseOrderedOptions(args, 4, ["format"]);
+  const options = parseOrderedOptions(args, 4, ["format", "timeout-ms"]);
   const format = options.get("format") ?? "yaml";
   if (format !== "yaml" && format !== "json") throw new InvocationError();
-  const result = await inspectConcept(
-    vault,
-    selectorName === "--uid" ? { uid: selectorValue } : { path: selectorValue },
-    { signal },
+  const result = await runReadOperation(
+    {
+      command: "inspect",
+      vault,
+      selector:
+        selectorName === "--uid"
+          ? { uid: selectorValue }
+          : { path: selectorValue },
+    },
+    { signal, timeoutMs: timeoutMs(options) },
   );
   if (format === "json") json("inspect", result);
   else if (result.ok) process.stdout.write(result.sourceText);
@@ -216,7 +245,10 @@ for (const event of ["SIGINT", "SIGTERM"] as const) {
 try {
   process.exitCode = await run(process.argv.slice(2), controller.signal);
 } catch (error) {
-  if (controller.signal.aborted) {
+  if (error instanceof OperationError) {
+    process.stderr.write(operationMessage);
+    process.exitCode = 1;
+  } else if (controller.signal.aborted) {
     process.stderr.write(cancelledMessage);
     process.exitCode = 1;
   } else if (error instanceof InvocationError || error instanceof TypeError) {

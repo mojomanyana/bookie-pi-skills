@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { delimiter as pathDelimiter, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
+import { deflateSync } from "node:zlib";
 
 import { loadConcept, serializeConcept, validateVault } from "../dist/index.js";
 
@@ -161,6 +162,45 @@ async function rewriteConcept(path, mutate) {
     `---\n${JSON.stringify(frontmatter)}\n---${source.slice(closing + 4)}`,
   );
 }
+
+test("Git-base validation rejects corrupted base blob bytes, not just missing objects", async (t) => {
+  for (const path of [
+    "bookie.yaml",
+    "projects/fixture/documents/document.md",
+    "references/files/source.bin",
+  ]) {
+    await t.test(path, async (t) => {
+      const root = await copyGitVault(t);
+      const baseRef = git(root, ["rev-parse", "HEAD"]);
+      assert.equal((await validateVault(root, { baseRef })).valid, true);
+      const oid = git(root, ["rev-parse", `${baseRef}:${path}`]);
+      const bytes = await readFile(join(root, path));
+      const altered = path.endsWith(".bin")
+        ? Buffer.from(bytes)
+        : Buffer.from(bytes.toString("utf8").replace(/fixture/iu, "fixturX"));
+      if (path.endsWith(".bin")) altered[0] ^= 1;
+      assert.equal(altered.length, bytes.length);
+      assert.notDeepEqual(altered, bytes);
+      const objectPath = join(
+        root,
+        ".git/objects",
+        oid.slice(0, 2),
+        oid.slice(2),
+      );
+      await chmod(objectPath, 0o600);
+      await writeFile(
+        objectPath,
+        deflateSync(
+          Buffer.concat([Buffer.from(`blob ${altered.length}\0`), altered]),
+        ),
+      );
+      const rejected = await validateVault(root, { baseRef });
+      assert.equal(rejected.valid, false);
+      assert.equal(rejected.complete, false);
+      assert.ok(diagnosticCodes(rejected).includes("GIT-BASE"));
+    });
+  }
+});
 
 test("Git-base validation consumes all deferred policy fixtures", async (t) => {
   const deferred = new Set([
