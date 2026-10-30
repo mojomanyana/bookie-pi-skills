@@ -1,6 +1,14 @@
 # Next-session handoff — 2026-10-30 UTC
 
-## S7 implementation and local verification checkpoint — 2026-10-30 UTC
+## Latest delivery checkpoint — S7 merged and verified
+
+[PR #36](https://github.com/mojomanyana/bookie-pi-skills/pull/36) merged at `2026-10-30T21:20:27Z` as **`ca2c0e9fe71e10d17a16cd5ce745129adcc51c07`**. PR head `9186a1213ee4ea8791869750b77eeedc0d37a666` passed [PR CI 41129937743](https://github.com/mojomanyana/bookie-pi-skills/actions/runs/41129937743); exact merged-main [CI 41130311607](https://github.com/mojomanyana/bookie-pi-skills/actions/runs/41130311607) passed clean `npm ci` and full `npm run check`, **1000/0/0**, at `2026-10-30T21:22:57Z`. Final independent integrated review is **APPROVE**, all six findings addressed, native work/cleanup settled before Git. [S7 delivery evidence](evidence/BK-017.md#s7-delivery-completed--2026-10-30-utc) retains exact identities and the private report. All 22 reviewed contents matched the actual merged tree.
+
+Repaired S7 real Redis **29/0/0**, runtime **1/0/0** and deployment **10/0/0** qualify the four recorded local images of **`sha256:dfe0162d30a2d2d9e24f438340bf8c76058d93d023bd4d446482d9f9833bbe96`**. These are compositional/local Linux/amd64 checks, not full production-chain, registry or scale certification. Optional rebuild/status/cancel exists; **attachment remains building with capacity/lease held**. No stored-stream completion or serving path exists.
+
+**BK-017 stays Ready/partial; SPEC-004 In progress.** Next accepted unit is **S8 actual stored-output verification, lexical Search/context, evaluation/completion and atomic activation/rollback**, with production startup/supervision/persistence/connection/Compose/distribution and REQ-031/032 resources/scale/latency gates. Preserve all data-owner/license/provider approvals, trust/portability caveats, blocked/deferred dependents and package-label/advisory follow-ups. Sibling WIP is untouched. This factual closeout predicts neither its own future commit/merge nor S8 code; inspect live Git/CI before the next branch.
+
+## S7 implementation and local verification checkpoint — 2026-10-30 UTC (historical)
 
 Current work starts from delivered S6 `195e6468584738de084e86fcde085e102d869042` on `bk-017-owned-rebuild-controller`, uncommitted at this snapshot. Native S7 Build final is retained and settled. The next gate is independent **integrated** review of the assembled increment, then actual merge/matching CI before S8. This handoff does not predict its own future commit/merge; inspect live Git and receipts. Sibling trusted-builder WIP is untouched.
 
