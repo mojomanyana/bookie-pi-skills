@@ -1,6 +1,14 @@
 # Next-session handoff — 2026-10-30 UTC
 
-## S6 implementation and local verification checkpoint — 2026-10-30 UTC
+## Latest delivery checkpoint — S6 merged and verified
+
+[PR #34](https://github.com/mojomanyana/bookie-pi-skills/pull/34) merged at `2026-10-30T02:33:27Z` as **`70604935bd10a915f55599d4dbc2806f7feaf67d`**. PR head `7cc721c3fce2d23ab777c23d12b31a48a5398a31` passed [PR CI 40992125043](https://github.com/mojomanyana/bookie-pi-skills/actions/runs/40992125043); exact merged-main [CI 40992381258](https://github.com/mojomanyana/bookie-pi-skills/actions/runs/40992381258) passed clean `npm ci` and full `npm run check`, **950/0/0**, at `2026-10-30T02:35:08Z`. Final independent integrated review is **APPROVE**, all accepted findings addressed, with native settlement/cleanup confirmed. [S6 delivery evidence](evidence/BK-017.md#s6-delivery-completed--2026-10-30-utc) retains exact identities and the private report. All 15 reviewed contents matched the actual merged tree.
+
+S6 is delivered, not all of BK-017: **BK-017 stays Ready/partial; SPEC-004 In progress**. Repaired real Redis **25/0/0**, runtime **1/0/0** and deployment **10/0/0** qualify the recorded local `sha256:b95e259445577bee089c0220ee061fbc4e234c08c5c8a456aeaa8eda65468826` artifact. This is not a registry/production or scale qualification. No controller, HTTP rebuild, stored-stream completion verification, serving or provider path was added.
+
+Next accepted work is **S7 controller-owned capacity, configuration-publication interlock, single launch, disconnect/unknown-outcome/restart reconciliation**, under the accepted admission/deadline/cancellation contract. S8 serving/deployment/scale and all source/data-owner/license/provider/blocked/deferred gates remain. Sibling trusted-builder WIP is untouched. This factual closeout does not predict its own future commit/merge or create S7 code; inspect live Git/CI before the next branch.
+
+## S6 implementation and local verification checkpoint — 2026-10-30 UTC (historical)
 
 Current increment starts at `5c579883848964756ed782e1e3d86f8499e2d558` (merged PR #33), on `bk-017-fenced-output-attachment`, no upstream at this snapshot. S5 is delivered with integrated approval/merge/CI recorded below. Native S6 Build final is retained and settled. This handoff does not predict its own commit/merge; inspect live Git and current review/delivery receipts before continuing. The sibling `/home/neman/Code/bookie-bk017-trusted-builder` WIP remains untouched.
 
