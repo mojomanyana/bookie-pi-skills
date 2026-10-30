@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { ownDataFields } from "./closed-data.js";
 
-/** Private, disconnected v2 candidate-manifest output evidence (format 1). */
+/** Private v2 candidate-manifest output evidence (format 1), never source authority. */
 export interface OutputDescriptorInputs {
   readonly recipeHash: string;
   readonly canonical: Readonly<{

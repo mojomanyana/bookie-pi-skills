@@ -101,7 +101,7 @@ test("identity, capability, privilege and baked/observed runtime mismatch fail s
     );
 });
 
-test("only trusted orchestration and its isolated builder consume qualified recipe assembly; HTTP/Redis stay disconnected", async () => {
+test("only trusted orchestration assembles qualified recipes; HTTP/Redis cannot start or qualify builders", async () => {
   const root = new URL("../src/", import.meta.url);
   const consumers = new Set(["trusted-builder.ts", "ingestion-process.ts"]);
   for (const path of await readdir(root)) {
@@ -114,12 +114,23 @@ test("only trusted orchestration and its isolated builder consume qualified reci
         false,
         path,
       );
-    if (path === "server.ts" || path.startsWith("redis-"))
+    if (path === "server.ts" || path.startsWith("redis-")) {
+      // S6 consumes S5's data type, not its runtime or authorization boundary.
+      const executable =
+        path === "redis-candidate-store.ts"
+          ? source.replace(
+              /^import type \{ TrustedBuildRecipe \} from "\.\/trusted-builder\.js";$/mu,
+              "",
+            )
+          : source;
       assert.equal(
-        /trusted-builder|qualifyBuildRuntime|loadBuildRuntime/u.test(source),
+        /trusted-builder|qualifyBuildRuntime|loadBuildRuntime/u.test(
+          executable,
+        ),
         false,
         path,
       );
+    }
   }
 });
 

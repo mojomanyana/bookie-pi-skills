@@ -3,6 +3,8 @@ import { randomBytes } from "node:crypto";
 import test from "node:test";
 
 import { RedisCandidateStore } from "../dist/redis-candidate-store.js";
+import { encodeBuildInputRecipe } from "../dist/build-recipe.js";
+import { encodeOutputDescriptor } from "../dist/output-descriptor.js";
 
 const vaultUid = "VLT-00000000000000000000000009";
 const namespaceKey = randomBytes(32);
@@ -27,6 +29,165 @@ const record = {
 };
 const code = (expected) => (error) =>
   error.code === expected && error.message === expected;
+
+const recipe = Object.freeze({
+  ...encodeBuildInputRecipe({
+    vaultUid,
+    objectFormat: "sha1",
+    sourceCommit: spec.sourceCommit,
+    vaultScope: "private/scope",
+    profile: "1.0",
+    manifestHash: hash,
+    policy: {
+      secretPolicy: "reject-detected",
+      secretPolicyVersion: "1",
+      approvedSensitivityClasses: ["public"],
+      provider: null,
+    },
+    versions: {
+      canonicalExportVersion: "1",
+      projectionSchemaVersion: "1",
+      parserVersion: "1",
+      chunkerVersion: "1",
+      preprocessingVersion: "1",
+    },
+    maxChunkBytes: 8192,
+    runtimeArtifactHash: hash,
+    embeddingGeneration: null,
+  }),
+  sourceCommit: spec.sourceCommit,
+  configurationEpoch: Number.MAX_SAFE_INTEGER,
+});
+const inputLease = Object.freeze({
+  ...lease,
+  buildId: recipe.buildId,
+  configurationEpoch: recipe.configurationEpoch,
+});
+const output = encodeOutputDescriptor({
+  recipeHash: recipe.recipeHash,
+  canonical: { hash, bytes: 100, records: 1 },
+  concepts: { count: 1, hash },
+  chunks: {
+    count: 0,
+    hash: "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  },
+});
+
+test("v2 claim retains the controller-selected attempt identity before dispatch", async () => {
+  let observed;
+  const store = new RedisCandidateStore({
+    vaultUid,
+    namespaceKey,
+    execute: async (args) => {
+      observed = JSON.parse(args.at(-1));
+      return JSON.stringify({
+        ok: true,
+        created: true,
+        lease: {
+          ...inputLease,
+          configurationEpoch: String(recipe.configurationEpoch),
+        },
+      });
+    },
+  });
+  assert.equal((await store.claimInput(recipe, jobId)).lease.jobId, jobId);
+  assert.equal(observed.jobId, jobId);
+});
+
+test("v2 input/descriptor snapshots redact source identity and retain the maximum epoch exactly", async () => {
+  const requests = [];
+  const store = new RedisCandidateStore({
+    vaultUid,
+    namespaceKey,
+    execute: async (args) => {
+      const r = JSON.parse(args.at(-1));
+      requests.push(r);
+      return JSON.stringify(
+        r.op === "start"
+          ? { ok: true, epoch: 1 }
+          : r.op === "claimInput"
+            ? {
+                ok: true,
+                created: true,
+                lease: {
+                  ...inputLease,
+                  configurationEpoch: String(recipe.configurationEpoch),
+                },
+              }
+            : { ok: true },
+      );
+    },
+  });
+  await store.startProcess();
+  await store.setConfigurationEpoch(recipe.configurationEpoch);
+  const mutable = { ...recipe };
+  const pending = store.claimInput(mutable, jobId);
+  mutable.sourceCommit = "b".repeat(40);
+  assert.deepEqual((await pending).lease, inputLease);
+  await store.beginBuilding(inputLease);
+  const descriptor = { ...output };
+  const attachment = store.attachOutput(inputLease, descriptor);
+  descriptor.serialized = "null";
+  await attachment;
+  const command = JSON.stringify(requests);
+  for (const excluded of [vaultUid, "private/scope", recipe.serialized])
+    assert.equal(command.includes(excluded), false);
+  assert.equal(requests[1].configurationEpoch, "9007199254740991");
+  assert.equal(requests[2].spec.configurationEpoch, "9007199254740991");
+  assert.equal(requests.at(-1).outputDescriptor, output.serialized);
+});
+
+test("v2 rejects hostile, extra, forged and malformed inputs before dispatch", async () => {
+  let calls = 0;
+  const store = new RedisCandidateStore({
+    vaultUid,
+    namespaceKey,
+    execute: async () => {
+      calls++;
+    },
+  });
+  const invalid = /Candidate input is invalid/u;
+  for (const epoch of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, "1", null])
+    await assert.rejects(() => store.setConfigurationEpoch(epoch), invalid);
+  let touched = false;
+  const hostile = new Proxy(recipe, {
+    ownKeys() {
+      touched = true;
+      throw new Error("PRIVATE_MARKER");
+    },
+  });
+  const accessor = { ...recipe };
+  Object.defineProperty(accessor, "serialized", {
+    get() {
+      touched = true;
+      throw new Error("PRIVATE_MARKER");
+    },
+  });
+  for (const value of [
+    hostile,
+    accessor,
+    { ...recipe, extra: true },
+    { ...recipe, serialized: "null" },
+    { ...recipe, sourceCommit: "b".repeat(40) },
+    { ...recipe, recipeHash: hash },
+    { ...recipe, buildId },
+    { ...recipe, configurationEpoch: 0 },
+  ])
+    await assert.rejects(() => store.claimInput(value, jobId), invalid);
+  for (const value of [
+    null,
+    { ...output, hash },
+    { ...output, extra: true },
+    { ...output, serialized: "null" },
+  ])
+    await assert.rejects(() => store.attachOutput(inputLease, value), invalid);
+  await assert.rejects(
+    () => store.beginBuilding({ ...inputLease, configurationEpoch: 0 }),
+    invalid,
+  );
+  assert.equal(touched, false);
+  assert.equal(calls, 0);
+});
 
 test("candidate input validation and namespace derivation precede Redis", async () => {
   let calls = 0;
@@ -167,6 +328,75 @@ test("Redis errors and malformed replies never expose dependency text", async ()
   await assert.rejects(() => store.startProcess(), code("INDEX_UNAVAILABLE"));
 });
 
+test("unusable mutation acknowledgements are unknown, and legacy claims never accept a v2 lease", async () => {
+  const store = new RedisCandidateStore({
+    vaultUid,
+    namespaceKey,
+    execute: async (args) => {
+      const r = JSON.parse(args.at(-1));
+      return JSON.stringify(
+        r.op === "claim"
+          ? {
+              ok: true,
+              created: false,
+              lease: { ...lease, configurationEpoch: 1 },
+            }
+          : { ok: true },
+      );
+    },
+  });
+  for (const action of [
+    () => store.startProcess(),
+    () => store.claim(spec),
+    () => store.claimInput(recipe, jobId),
+    () => store.append(lease, "concept", 0, [record]),
+    () => store.cleanup(jobId),
+    () => store.fail(lease, "INTERNAL"),
+    () => store.requestCancel(jobId),
+  ])
+    await assert.rejects(
+      action,
+      (error) =>
+        code("INDEX_UNAVAILABLE")(error) && error.outcome === "unknown",
+    );
+});
+
+test("dispatched mutations explicitly retain unknown outcome without replay, including late replies", async () => {
+  let calls = 0;
+  let settle;
+  const store = new RedisCandidateStore({
+    vaultUid,
+    namespaceKey,
+    operationTimeoutMs: 10,
+    execute: async () => {
+      calls++;
+      return await new Promise((resolve) => {
+        settle = resolve;
+      });
+    },
+  });
+  await assert.rejects(
+    () => store.startProcess(),
+    (error) => code("INDEX_UNAVAILABLE")(error) && error.outcome === "unknown",
+  );
+  settle(JSON.stringify({ ok: true, epoch: 1 }));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls, 1);
+  const cancel = new AbortController();
+  const pending = store.startProcess(cancel.signal);
+  await new Promise((resolve) => setImmediate(resolve));
+  cancel.abort("PRIVATE_MARKER");
+  await assert.rejects(
+    () => pending,
+    (error) =>
+      error.name === "AbortError" &&
+      error.outcome === "unknown" &&
+      !error.message.includes("PRIVATE_MARKER"),
+  );
+  settle(JSON.stringify({ ok: true, epoch: 2 }));
+  assert.equal(calls, 2);
+});
+
 test("deadline and cancellation fail observably even if the adapter ignores its signal", async () => {
   let calls = 0;
   let capturedSignal;
@@ -182,6 +412,7 @@ test("deadline and cancellation fail observably even if the adapter ignores its 
   });
   await assert.rejects(() => store.startProcess(), code("INDEX_UNAVAILABLE"));
   assert.equal(capturedSignal.aborted, true);
+  assert.equal(calls, 1);
   const controller = new AbortController();
   controller.abort("PRIVATE_MARKER");
   await assert.rejects(
