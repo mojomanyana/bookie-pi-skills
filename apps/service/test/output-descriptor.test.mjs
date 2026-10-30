@@ -35,6 +35,21 @@ test("literal v1 output descriptor encoding is stable and round-trips canonicall
   assert.throws(() => parseOutputDescriptor(`${literal}\n`), bad);
 });
 
+test("hash tokens reject trailing line terminators in every field", () => {
+  for (const suffix of ["\n", "\r", "\r\n", "\u2028", "\u2029"]) {
+    for (const field of ["recipeHash", "canonical", "concepts", "chunks"]) {
+      const value = structuredClone(input);
+      if (field === "recipeHash") value.recipeHash += suffix;
+      else value[field].hash += suffix;
+      assert.throws(() => encodeOutputDescriptor(value), bad);
+      const tuple = JSON.parse(encodeOutputDescriptor(input).serialized);
+      tuple[{ recipeHash: 2, canonical: 3, concepts: 7, chunks: 9 }[field]] +=
+        suffix;
+      assert.throws(() => parseOutputDescriptor(JSON.stringify(tuple)), bad);
+    }
+  }
+});
+
 test("genuine empty included corpus is not a fabricated placeholder", () => {
   const encoded = encodeOutputDescriptor({
     recipeHash: input.recipeHash,

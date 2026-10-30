@@ -1,4 +1,11 @@
-import { createHmac, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
+
+import { ownDataFields } from "./closed-data.js";
+import {
+  parseOutputDescriptor,
+  type EncodedOutputDescriptor,
+} from "./output-descriptor.js";
+import type { TrustedBuildRecipe } from "./trusted-builder.js";
 
 import type { ChunkProjection, ConceptProjection } from "./projection.js";
 import { candidateScript } from "./redis-candidate-script.js";
@@ -6,7 +13,10 @@ import { candidateScript } from "./redis-candidate-script.js";
 export type CandidateErrorCode =
   "BUILD_CONFLICT" | "FENCED" | "INDEX_UNAVAILABLE" | "NOT_FOUND";
 export class CandidateStoreError extends Error {
-  constructor(readonly code: CandidateErrorCode) {
+  constructor(
+    readonly code: CandidateErrorCode,
+    readonly outcome?: "unknown",
+  ) {
     super(code);
     this.name = "CandidateStoreError";
   }
@@ -35,6 +45,24 @@ export interface CandidateLease {
   readonly fence: number;
   readonly jobId: string;
   readonly buildId: string;
+}
+export interface CandidateInputLease extends CandidateLease {
+  readonly configurationEpoch: number;
+}
+/** Private v2 reconciliation data. Descriptor presence, not counts, selects phase. */
+export interface CandidateInputManifest {
+  readonly manifestVersion: 2;
+  readonly lease: CandidateInputLease;
+  readonly sourceCommit: string;
+  readonly manifestHash: string;
+  readonly policyHash: string;
+  readonly recipeHash: string;
+  readonly state: CandidateJob["state"];
+  readonly nextConcept: number;
+  readonly nextChunk: number;
+  readonly cleanupConcept: number;
+  readonly cleanupChunk: number;
+  readonly outputDescriptor?: EncodedOutputDescriptor;
 }
 export interface CandidateJob {
   readonly jobId: string;
@@ -104,20 +132,203 @@ function bounded(
 function input(condition: boolean): asserts condition {
   if (!condition) throw new TypeError("Candidate input is invalid.");
 }
-function unavailable(): never {
-  throw new CandidateStoreError("INDEX_UNAVAILABLE");
+function unavailable(outcome?: "unknown"): never {
+  throw new CandidateStoreError("INDEX_UNAVAILABLE", outcome);
 }
-function lease(value: unknown): value is CandidateLease {
-  return (
-    object(value) &&
-    Object.keys(value).length === 4 &&
-    matches(value.jobId, jobPattern) &&
-    matches(value.buildId, buildPattern) &&
-    bounded(value.ownerEpoch, 2147483647, 1) &&
-    bounded(value.fence, 2147483647, 1)
-  );
+function lease(value: unknown): value is CandidateLease | CandidateInputLease {
+  try {
+    let values: readonly unknown[];
+    try {
+      values = ownDataFields(value, [
+        "ownerEpoch",
+        "fence",
+        "jobId",
+        "buildId",
+      ]);
+    } catch {
+      values = ownDataFields(value, [
+        "ownerEpoch",
+        "fence",
+        "jobId",
+        "buildId",
+        "configurationEpoch",
+      ]);
+      if (!bounded(values[4], Number.MAX_SAFE_INTEGER, 1)) return false;
+    }
+    return (
+      bounded(values[0], 2147483647, 1) &&
+      bounded(values[1], 2147483647, 1) &&
+      matches(values[2], jobPattern) &&
+      matches(values[3], buildPattern)
+    );
+  } catch {
+    return false;
+  }
 }
-function job(value: unknown): CandidateJob {
+function wireLease(value: CandidateLease): Record<string, unknown> {
+  return {
+    ...value,
+    ...("configurationEpoch" in value
+      ? { configurationEpoch: String(value.configurationEpoch) }
+      : {}),
+  };
+}
+function inputLease(value: unknown): value is CandidateInputLease {
+  return lease(value) && "configurationEpoch" in value;
+}
+function receivedLease(value: unknown): CandidateInputLease {
+  if (
+    !object(value) ||
+    !matches(value.configurationEpoch, /^[1-9][0-9]{0,15}(?![\s\S])/u)
+  )
+    unavailable();
+  const result = {
+    ...value,
+    configurationEpoch: Number(value.configurationEpoch),
+  };
+  if (!inputLease(result)) unavailable();
+  return Object.freeze(result);
+}
+/** Consume the existing canonical v2 codec result; never persist its private tuple.
+ * Structural validation does not confer the S5 builder's process-local provenance. */
+function recipeMetadata(
+  recipe: TrustedBuildRecipe,
+  vaultUid: string,
+): Record<string, unknown> {
+  try {
+    const [
+      serialized,
+      scopeHash,
+      policyHash,
+      recipeHash,
+      buildId,
+      sourceCommit,
+      configurationEpoch,
+    ] = ownDataFields(recipe, [
+      "serialized",
+      "scopeHash",
+      "policyHash",
+      "recipeHash",
+      "buildId",
+      "sourceCommit",
+      "configurationEpoch",
+    ]);
+    input(
+      typeof serialized === "string" && Buffer.byteLength(serialized) <= 4096,
+    );
+    const tuple: unknown = JSON.parse(serialized);
+    input(
+      Array.isArray(tuple) &&
+        tuple.length === 17 &&
+        JSON.stringify(tuple) === serialized,
+    );
+    input(
+      tuple[0] === "bookie-build-inputs" &&
+        tuple[1] === 2 &&
+        tuple[2] === vaultUid &&
+        matches(sourceCommit, commitPattern) &&
+        tuple[4] === sourceCommit &&
+        tuple[3] === (sourceCommit.length === 40 ? "sha1" : "sha256") &&
+        tuple[5] === scopeHash &&
+        tuple[6] === "1.0" &&
+        tuple[8] === policyHash &&
+        tuple[16] === null,
+    );
+    input(
+      [scopeHash, policyHash, recipeHash, tuple[7], tuple[15]].every((v) =>
+        matches(v, hashPattern),
+      ) &&
+        tuple
+          .slice(9, 14)
+          .every((v) => matches(v, /^[A-Za-z0-9._+-]{1,128}(?![\s\S])/u)) &&
+        bounded(tuple[14], 65536, 16) &&
+        bounded(configurationEpoch, Number.MAX_SAFE_INTEGER, 1),
+    );
+    input(
+      recipeHash ===
+        `sha256:${createHash("sha256").update(serialized, "utf8").digest("hex")}` &&
+        buildId === `bld_${(recipeHash as string).slice(7)}`,
+    );
+    return {
+      buildId,
+      sourceCommit,
+      manifestHash: tuple[7],
+      policyHash,
+      recipeHash,
+      configurationEpoch: String(configurationEpoch),
+    };
+  } catch {
+    throw new TypeError("Candidate input is invalid.");
+  }
+}
+function candidate(value: unknown): CandidateInputManifest | null {
+  if (value === null) return null;
+  try {
+    input(object(value));
+    ownDataFields(value, [
+      "manifestVersion",
+      "lease",
+      "sourceCommit",
+      "manifestHash",
+      "policyHash",
+      "recipeHash",
+      "state",
+      "nextConcept",
+      "nextChunk",
+      "cleanupConcept",
+      "cleanupChunk",
+      ...(Object.hasOwn(value, "outputDescriptor") ? ["outputDescriptor"] : []),
+    ]);
+    const owner = receivedLease(value.lease);
+    input(
+      value.manifestVersion === 2 &&
+        matches(value.sourceCommit, commitPattern) &&
+        matches(value.manifestHash, hashPattern) &&
+        matches(value.policyHash, hashPattern) &&
+        matches(value.recipeHash, hashPattern) &&
+        owner.buildId === `bld_${value.recipeHash.slice(7)}` &&
+        typeof value.state === "string" &&
+        states.has(value.state),
+    );
+    const descriptor = Object.hasOwn(value, "outputDescriptor")
+      ? parseOutputDescriptor(value.outputDescriptor as string)
+      : undefined;
+    const tuple =
+      descriptor === undefined
+        ? undefined
+        : (JSON.parse(descriptor.serialized) as unknown[]);
+    input(
+      tuple === undefined
+        ? !["verifying", "evaluating", "complete"].includes(value.state)
+        : tuple[2] === value.recipeHash && value.state !== "queued",
+    );
+    const concepts = tuple === undefined ? 0 : (tuple[6] as number);
+    const chunks = tuple === undefined ? 0 : (tuple[8] as number);
+    input(
+      bounded(value.nextConcept, concepts) &&
+        bounded(value.nextChunk, chunks) &&
+        bounded(value.cleanupConcept, concepts) &&
+        bounded(value.cleanupChunk, chunks),
+    );
+    input(
+      ["failed", "cancelled"].includes(value.state) ||
+        (value.cleanupConcept === 0 && value.cleanupChunk === 0),
+    );
+    input(value.cleanupChunk === 0 || value.cleanupConcept === concepts);
+    input(
+      !["verifying", "evaluating", "complete"].includes(value.state) ||
+        (value.nextConcept === concepts && value.nextChunk === chunks),
+    );
+    return Object.freeze({
+      ...value,
+      lease: owner,
+      ...(descriptor === undefined ? {} : { outputDescriptor: descriptor }),
+    }) as unknown as CandidateInputManifest;
+  } catch {
+    unavailable();
+  }
+}
+function job(value: unknown, outcome?: "unknown"): CandidateJob {
   if (
     !object(value) ||
     Object.keys(value).length !== 5 ||
@@ -127,7 +338,7 @@ function job(value: unknown): CandidateJob {
     typeof value.state !== "string" ||
     !states.has(value.state)
   )
-    unavailable();
+    unavailable(outcome);
   if (
     value.state === "failed"
       ? !failureCodes.has(String(value.failureCode))
@@ -135,10 +346,11 @@ function job(value: unknown): CandidateJob {
         ? value.failureCode !== "CANCELLED"
         : value.failureCode !== null
   )
-    unavailable();
+    unavailable(outcome);
   return Object.freeze(value) as unknown as CandidateJob;
 }
-function jobId(): string {
+/** Allocate before dispatch; the future controller retains this attempt ID on uncertainty. */
+export function createCandidateJobId(): string {
   const alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
   let value = BigInt(`0x${randomBytes(16).toString("hex")}`);
   let result = "";
@@ -150,8 +362,9 @@ function jobId(): string {
 }
 
 /**
- * Trusted, non-serving builder primitive. Call only after Git approval, validation,
- * and projection policy checks. Redis never authorizes clients or canonical data.
+ * Trusted, non-serving builder primitive. Legacy claims require complete projection;
+ * v2 claims consume S5 input recipes, and only fully verified S5 output may attach.
+ * Redis and codec parsing never authorize clients or canonical data.
  * No complete/activate operation exists in this slice.
  */
 export class RedisCandidateStore {
@@ -216,6 +429,8 @@ export class RedisCandidateStore {
         ? deadline.signal
         : AbortSignal.any([signal, deadline.signal]);
     const timer = setTimeout(() => deadline.abort(), this.#timeout);
+    let dispatched = false;
+    const mutating = request.op !== "read" && request.op !== "readCandidate";
     let onAbort: () => void = () => {};
     try {
       const raw = await new Promise<unknown>((resolve, reject) => {
@@ -230,6 +445,7 @@ export class RedisCandidateStore {
           .then(() => {
             if (composed.aborted)
               throw new CandidateStoreError("INDEX_UNAVAILABLE");
+            dispatched = true;
             return this.#execute(command, composed);
           })
           .then(resolve, reject);
@@ -254,10 +470,18 @@ export class RedisCandidateStore {
       if (reply.ok !== true) unavailable();
       return reply;
     } catch (error) {
+      const outcome = dispatched && mutating ? ("unknown" as const) : undefined;
       if (signal?.aborted)
-        throw new DOMException("Candidate operation cancelled.", "AbortError");
-      if (error instanceof CandidateStoreError) throw error;
-      unavailable();
+        throw Object.assign(
+          new DOMException("Candidate operation cancelled.", "AbortError"),
+          outcome === undefined ? {} : { outcome },
+        );
+      if (
+        error instanceof CandidateStoreError &&
+        error.code !== "INDEX_UNAVAILABLE"
+      )
+        throw error;
+      throw new CandidateStoreError("INDEX_UNAVAILABLE", outcome);
     } finally {
       clearTimeout(timer);
       composed.removeEventListener("abort", onAbort);
@@ -266,9 +490,89 @@ export class RedisCandidateStore {
 
   async startProcess(signal?: AbortSignal): Promise<number> {
     const reply = await this.#call({ op: "start" }, signal);
-    if (!bounded(reply.epoch, 2147483647, 1)) unavailable();
+    if (!bounded(reply.epoch, 2147483647, 1)) unavailable("unknown");
     this.#epoch = reply.epoch;
     return reply.epoch;
+  }
+
+  /** Storage half of configuration publication; S7 owns the reload interlock.
+   * Decimal strings preserve S5's entire positive-safe-integer epoch contract in Lua. */
+  async setConfigurationEpoch(
+    epoch: number,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    input(bounded(epoch, Number.MAX_SAFE_INTEGER, 1));
+    await this.#call(
+      { op: "configure", configurationEpoch: String(epoch) },
+      signal,
+    );
+  }
+
+  async claimInput(
+    recipe: TrustedBuildRecipe,
+    attemptId: string,
+    signal?: AbortSignal,
+  ): Promise<Readonly<{ created: boolean; lease: CandidateInputLease }>> {
+    input(matches(attemptId, jobPattern));
+    const spec = recipeMetadata(recipe, this.#vaultUid);
+    const reply = await this.#call(
+      { op: "claimInput", spec, jobId: attemptId },
+      signal,
+    );
+    try {
+      const owner = receivedLease(reply.lease);
+      if (
+        typeof reply.created !== "boolean" ||
+        owner.buildId !== spec.buildId ||
+        (reply.created && owner.jobId !== attemptId) ||
+        String(owner.configurationEpoch) !== spec.configurationEpoch
+      )
+        unavailable();
+      return Object.freeze({ created: reply.created, lease: owner });
+    } catch {
+      unavailable("unknown");
+    }
+  }
+
+  async beginBuilding(
+    owner: CandidateInputLease,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    input(inputLease(owner));
+    await this.#call({ op: "begin", lease: wireLease(owner) }, signal);
+  }
+
+  /** Trusted primitive only: parsing a descriptor is not full-source authorization. */
+  async attachOutput(
+    owner: CandidateInputLease,
+    output: EncodedOutputDescriptor,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    input(inputLease(owner));
+    let serialized: string;
+    try {
+      const [raw, hash] = ownDataFields(output, ["serialized", "hash"]);
+      const parsed = parseOutputDescriptor(raw as string);
+      input(parsed.hash === hash);
+      serialized = parsed.serialized;
+    } catch {
+      throw new TypeError("Candidate input is invalid.");
+    }
+    await this.#call(
+      { op: "attach", lease: wireLease(owner), outputDescriptor: serialized },
+      signal,
+    );
+  }
+
+  /** Null means a cleaned terminal candidate, never a malformed present descriptor. */
+  async readCandidate(
+    id: string,
+    signal?: AbortSignal,
+  ): Promise<CandidateInputManifest | null> {
+    input(matches(id, jobPattern));
+    return candidate(
+      (await this.#call({ op: "readCandidate", jobId: id }, signal)).manifest,
+    );
   }
 
   async claim(
@@ -291,15 +595,16 @@ export class RedisCandidateStore {
     const expectedBuildId = metadata.buildId;
     void _vaultUid;
     const reply = await this.#call(
-      { op: "claim", spec: metadata, jobId: jobId() },
+      { op: "claim", spec: metadata, jobId: createCandidateJobId() },
       signal,
     );
     if (
       typeof reply.created !== "boolean" ||
       !lease(reply.lease) ||
+      inputLease(reply.lease) ||
       reply.lease.buildId !== expectedBuildId
     )
-      unavailable();
+      unavailable("unknown");
     return Object.freeze({
       created: reply.created,
       lease: Object.freeze(reply.lease),
@@ -342,16 +647,22 @@ export class RedisCandidateStore {
     );
     const expectedNext = offset + serialized.length;
     const reply = await this.#call(
-      { op: "append", lease: owner, kind, offset, records: serialized },
+      {
+        op: "append",
+        lease: wireLease(owner),
+        kind,
+        offset,
+        records: serialized,
+      },
       signal,
     );
-    if (reply.next !== expectedNext) unavailable();
+    if (reply.next !== expectedNext) unavailable("unknown");
     return reply.next as number;
   }
 
   async renew(owner: CandidateLease, signal?: AbortSignal): Promise<void> {
     input(lease(owner));
-    await this.#call({ op: "renew", lease: owner }, signal);
+    await this.#call({ op: "renew", lease: wireLease(owner) }, signal);
   }
   async readJob(id: string, signal?: AbortSignal): Promise<CandidateJob> {
     input(matches(id, jobPattern));
@@ -359,7 +670,10 @@ export class RedisCandidateStore {
   }
   async requestCancel(id: string, signal?: AbortSignal): Promise<CandidateJob> {
     input(matches(id, jobPattern));
-    return job((await this.#call({ op: "cancel", jobId: id }, signal)).job);
+    return job(
+      (await this.#call({ op: "cancel", jobId: id }, signal)).job,
+      "unknown",
+    );
   }
   async acknowledgeCancel(
     owner: CandidateLease,
@@ -367,7 +681,9 @@ export class RedisCandidateStore {
   ): Promise<CandidateJob> {
     input(lease(owner));
     return job(
-      (await this.#call({ op: "ackCancel", lease: owner }, signal)).job,
+      (await this.#call({ op: "ackCancel", lease: wireLease(owner) }, signal))
+        .job,
+      "unknown",
     );
   }
   async fail(
@@ -377,7 +693,13 @@ export class RedisCandidateStore {
   ): Promise<CandidateJob> {
     input(lease(owner) && failureCodes.has(failureCode));
     return job(
-      (await this.#call({ op: "fail", lease: owner, failureCode }, signal)).job,
+      (
+        await this.#call(
+          { op: "fail", lease: wireLease(owner), failureCode },
+          signal,
+        )
+      ).job,
+      "unknown",
     );
   }
   async cleanup(
@@ -387,7 +709,7 @@ export class RedisCandidateStore {
     input(matches(id, jobPattern));
     const reply = await this.#call({ op: "cleanup", jobId: id }, signal);
     if (typeof reply.done !== "boolean" || !bounded(reply.removed, 128))
-      unavailable();
+      unavailable("unknown");
     return { done: reply.done, removed: reply.removed };
   }
 }

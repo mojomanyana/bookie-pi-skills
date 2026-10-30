@@ -1,6 +1,16 @@
-# Next-session handoff — 2026-10-29 UTC
+# Next-session handoff — 2026-10-30 UTC
 
-## Latest delivery checkpoint — S5 merged and verified
+## S6 implementation and local verification checkpoint — 2026-10-30 UTC
+
+Current increment starts at `5c579883848964756ed782e1e3d86f8499e2d558` (merged PR #33), on `bk-017-fenced-output-attachment`, no upstream at this snapshot. S5 is delivered with integrated approval/merge/CI recorded below. Native S6 Build final is retained and settled. This handoff does not predict its own commit/merge; inspect live Git and current review/delivery receipts before continuing. The sibling `/home/neman/Code/bookie-bk017-trusted-builder` WIP remains untouched.
+
+**BK-017 stays Ready/partial; SPEC-004 In progress.** S6 implements private v2 absent-output claims, explicit live-fenced begin-building, immutable descriptor attachment, strict both-phase reconciliation and protected cancellation/failure/interruption/cleanup. It retains the original APIs/IDs/layout, five-field public job shape, namespace and serving-data protections. Preallocated attempt IDs and explicit unknown-outcome failures support later S7 reconciliation; they do not launch workers or release capacity.
+
+Actual repaired checks: real Redis **25/0/0**, targeted **35/0/0**, author root **950/0/0**; fresh runtime **1/0/0** and deployment **10/0/0** reproduce four local images of **`sha256:b95e259445577bee089c0220ee061fbc4e234c08c5c8a456aeaa8eda65468826`**. Exact red/green, immutable image IDs/profile and native source identity are in [S6 evidence](evidence/BK-017.md#s6-fenced-output-attachment--2026-10-30-utc). S5 `0b55…` and earlier digests remain historical. Local synthetic/Linux qualification is not production/registry distribution or scale proof.
+
+The first integrated S6 review requested complete-manifest admission/protection and negative-zero canonicalization repairs plus current-status wording. Its native final/probe evidence was retained before repair. All three regressions failed before correction; real Redis now passes 25/0/0, and four fresh repaired images qualify the digest above. Missing metadata no longer makes retained complete payloads replacement-cleanup-owned; raw/persisted literal negative-zero descriptors reject. Original `8436…` qualification is historical, not repaired-code evidence. Final independent integrated S6 review and actual merge/CI govern progression. Next accepted work after those gates is **S7 controller-owned capacity, configuration-publication interlock, single launch, disconnect/unknown-outcome/restart reconciliation**, under unchanged v1 semantics. No controller/new HTTP route, stored-stream completion verification, index, evaluation, activation, provider or serving path is enabled by S6. Preserve S8 production/scale gates, source/data-owner/license/provider approvals, blocked/deferred items and all established trust/portability assumptions.
+
+## Prior delivery checkpoint — S5 merged and verified (historical)
 
 [PR #32](https://github.com/mojomanyana/bookie-pi-skills/pull/32) merged at `2026-10-29T17:19:44Z` as **`9f50a205596db263acff01f01b108b743cf03d49`**. PR head `8f243121acdd9881410fa6b89a285457a16f7dda` passed [PR CI 40919854374](https://github.com/mojomanyana/bookie-pi-skills/actions/runs/40919854374); exact merged-main [CI 40920268072](https://github.com/mojomanyana/bookie-pi-skills/actions/runs/40920268072) passed clean `npm ci` and full `npm run check`, **944/0/0**, at `2026-10-29T17:22:18Z`. Independent final integrated review is **APPROVE** with native settlement/cleanup confirmed. [S5 delivery evidence](evidence/BK-017.md#s5-delivery-completed--2026-10-29-utc) retains exact source identities and the private report. All 23 reviewed contents matched the actual merged tree.
 
