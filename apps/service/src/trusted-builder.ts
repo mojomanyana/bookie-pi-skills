@@ -219,7 +219,7 @@ function decode(
 export async function createTrustedLexicalBuilder(
   options: Readonly<{
     runtimeIdentityFile: string;
-    tokens: readonly TokenVerifier[];
+    tokens: readonly TokenVerifier[] | (() => readonly TokenVerifier[]);
     configuration: () => BuilderConfiguration;
   }>,
 ): Promise<
@@ -257,7 +257,14 @@ export async function createTrustedLexicalBuilder(
     runtimeIdentityFile = file;
     configuration = current as () => BuilderConfiguration;
     snapshot(configuration);
-    authorize = createServiceAuthorizer(tokens as readonly TokenVerifier[]);
+    if (typeof tokens === "function") {
+      const currentTokens = tokens as () => readonly TokenVerifier[];
+      createServiceAuthorizer(currentTokens());
+      authorize = (header, vault, scope) =>
+        createServiceAuthorizer(currentTokens())(header, vault, scope);
+    } else {
+      authorize = createServiceAuthorizer(tokens as readonly TokenVerifier[]);
+    }
   } catch {
     invalid();
   }

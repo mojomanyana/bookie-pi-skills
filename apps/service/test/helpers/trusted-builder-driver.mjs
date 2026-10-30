@@ -1,3 +1,5 @@
+import { memoryCandidateStore } from "./memory-candidate-store.mjs";
+
 /** Runs only in the actual immutable image: no synthetic source/runtime approval. */
 export function trustedBuilderDriver(
   fixture,
@@ -11,6 +13,8 @@ import {createRequire,syncBuiltinESMExports} from 'node:module';
 import {exportCanonicalJsonl} from '/opt/bookie/node_modules/@bookie/core/dist/index.js';
 import {createTrustedLexicalBuilder} from '/opt/bookie/apps/service/dist/trusted-builder.js';
 import {prepareDeploymentLexicalProjection} from '/opt/bookie/apps/service/dist/ingestion.js';
+import {createOwnedRebuildController} from '/opt/bookie/apps/service/dist/rebuild-controller.js';
+import {CandidateStoreError} from '/opt/bookie/apps/service/dist/redis-candidate-store.js';
 const deployment=${JSON.stringify(fixture.config)};
 const sourceRef=${JSON.stringify(fixture.commit)};
 const h=bytes=>'sha256:'+createHash('sha256').update(bytes).digest('hex');
@@ -77,8 +81,37 @@ assert.deepEqual(descriptor,[
 assert.equal(out.outputDescriptor.hash,h(out.outputDescriptor.serialized));
 for(const canary of ['EXCLUDED_QUALIFICATION_MARKER','DOC-00000000000000000000000009','/excluded-qualification.md','-----BEGIN PRIVATE KEY-----'])assert.equal(JSON.stringify(out).includes(canary),false);
 ${
+  !adversarial
+    ? `
+// Genuine qualified S5 source/recipe/output through the S7 component. Only the
+// S6 component is fake here; real Lua lifecycle is separately tested with Redis.
+const MemoryCandidateStore=(${memoryCandidateStore.toString()})(CandidateStoreError);
+const candidate=new MemoryCandidateStore(deployment.projection.vaultUid);
+let attached;
+const attachment=new Promise(resolve=>{attached=resolve});
+candidate.reply=async(op,value)=>{if(op==='attach')attached();return value};
+const controller=await createOwnedRebuildController({configuration:{...current,tokens:startup.tokens},runtimeIdentityFile:startup.runtimeIdentityFile,stores:new Map([['demo',candidate]]),confirmPreviousWorkersStopped:async()=>{assert.equal(candidate.jobs.size,0)}});
+try {
+ const job=await controller.submit({authorization,vault:'demo',sourceRef});
+ let bound;
+ try {await Promise.race([attachment,new Promise((_,reject)=>{bound=setTimeout(()=>reject(new Error('Controller attachment did not settle.')),15000)})])} finally {clearTimeout(bound)}
+ assert.equal(candidate.manifests.get(job.jobId).outputDescriptor.serialized,out.outputDescriptor.serialized);
+ const duplicate=await controller.submit({authorization,vault:'demo',sourceRef});
+ assert.equal(duplicate.jobId,job.jobId);
+ assert.equal(candidate.calls.filter(op=>op==='claim').length,1);
+ assert.equal(candidate.jobs.get(job.jobId).state,'building');
+} finally {await controller.shutdown()}
+`
+    : ""
+}
+${
   adversarial
     ? `
+let liveTokens=startup.tokens;
+const rotating=await createTrustedLexicalBuilder({...startup,tokens:()=>liveTokens});
+assert.equal((await rotating.preflight(request)).ok,true);
+liveTokens=[];
+assert.deepEqual(await rotating.preflight(request),{ok:false,reason:'auth-invalid'});
 for(const forged of [{...recipe},structuredClone(recipe),{ok:true,sourceCommit:sourceRef,manifest:{}}])
  assert.deepEqual(await builder.build(forged),{ok:false,reason:'recipe-mismatch'});
 const other=await createTrustedLexicalBuilder(startup);

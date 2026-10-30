@@ -1,5 +1,9 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
+import {
+  RebuildControllerError,
+  type OwnedRebuildController,
+} from "./rebuild-controller.js";
 
 import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
 import * as formatsModule from "ajv-formats";
@@ -100,6 +104,8 @@ export interface CreateBookieServiceOptions {
   readonly tokens: readonly TokenVerifier[];
   readonly store: ServiceStore;
   readonly now?: () => Date;
+  /** Already-started deployment component; never request data or a runtime proof. */
+  readonly rebuilds?: OwnedRebuildController;
 }
 
 interface CompiledVerifier {
@@ -118,6 +124,10 @@ class ServiceHttpError extends Error {
       | "CONTENT_TYPE_INVALID"
       | "REQUEST_INVALID"
       | "REQUEST_TOO_LARGE"
+      | "RATE_LIMITED"
+      | "BUILD_CONFLICT"
+      | "BUILD_NOT_FOUND"
+      | "DEPENDENCY_UNAVAILABLE"
       | "INDEX_UNAVAILABLE"
       | "INTERNAL",
     readonly retryable: boolean,
@@ -268,6 +278,9 @@ function schemaValidators(): {
     "healthResponse",
     "indexResponse",
     "searchResponse",
+    "rebuildResponse",
+    "rebuildStatusResponse",
+    "cancelResponse",
   ];
   const validators = new Map(
     names.map((name) => [
@@ -339,6 +352,14 @@ function authorize(
   if (!identity.grants.get(vault)?.has(scope)) {
     throw new ServiceHttpError(403, "AUTH_FORBIDDEN", false);
   }
+}
+
+/** Compiled deployment-owned snapshot, shared with the controller/reload boundary. */
+export function createServiceAuthentication(
+  tokens: readonly TokenVerifier[],
+): (header: string | undefined) => ServiceIdentity {
+  const verifiers = compileVerifiers(tokens);
+  return (header) => authenticateHeader(header, verifiers, () => new Date());
 }
 
 /** Shared private auth boundary for non-HTTP source work; no Git/store lookup. */
@@ -417,6 +438,26 @@ function sendError(
   reply.code(error.statusCode).send(body);
 }
 
+function controllerHttpError(cause: unknown): ServiceHttpError {
+  if (cause instanceof ServiceHttpError) return cause;
+  if (!(cause instanceof RebuildControllerError))
+    return new ServiceHttpError(503, "DEPENDENCY_UNAVAILABLE", true);
+  const status = {
+    AUTH_INVALID: 401,
+    AUTH_FORBIDDEN: 403,
+    RATE_LIMITED: 429,
+    BUILD_CONFLICT: 409,
+    BUILD_NOT_FOUND: 404,
+    DEPENDENCY_UNAVAILABLE: 503,
+    REQUEST_INVALID: 400,
+  }[cause.code];
+  return new ServiceHttpError(
+    status,
+    cause.code,
+    status === 503 || status === 429,
+  );
+}
+
 export async function createBookieService(
   options: CreateBookieServiceOptions,
 ): Promise<FastifyInstance> {
@@ -435,6 +476,13 @@ export async function createBookieService(
   const now = options.now ?? (() => new Date());
   if (typeof now !== "function") throw new TypeError("now must be a function");
   const verifiers = compileVerifiers(options.tokens);
+  const rebuilds = options.rebuilds;
+  if (rebuilds !== undefined && !rebuilds.ready)
+    throw new TypeError("Rebuild controller is not ready.");
+  const authenticateCurrent = (request: FastifyRequest): ServiceIdentity =>
+    rebuilds === undefined
+      ? authenticate(request, verifiers, now)
+      : rebuilds.authenticate(request.headers.authorization);
   const { ajv, validators } = schemaValidators();
   const app = Fastify({ logger: false, bodyLimit: 65_536 });
   app.setValidatorCompiler(({ schema }) =>
@@ -474,13 +522,15 @@ export async function createBookieService(
         ? cause.statusCode
         : undefined;
     const error =
-      cause instanceof ServiceHttpError
-        ? cause
-        : causeStatus === 415
-          ? new ServiceHttpError(415, "CONTENT_TYPE_INVALID", false)
-          : causeStatus === 413
-            ? new ServiceHttpError(413, "REQUEST_TOO_LARGE", false)
-            : new ServiceHttpError(400, "REQUEST_INVALID", false);
+      cause instanceof RebuildControllerError
+        ? controllerHttpError(cause)
+        : cause instanceof ServiceHttpError
+          ? cause
+          : causeStatus === 415
+            ? new ServiceHttpError(415, "CONTENT_TYPE_INVALID", false)
+            : causeStatus === 413
+              ? new ServiceHttpError(413, "REQUEST_TOO_LARGE", false)
+              : new ServiceHttpError(400, "REQUEST_INVALID", false);
     sendError(validators, reply, id, error);
   });
 
@@ -504,7 +554,7 @@ export async function createBookieService(
   app.get("/health/ready", async (_request, reply) => {
     let ready: boolean;
     try {
-      ready = await options.store.ready();
+      ready = (await options.store.ready()) && (rebuilds?.ready ?? true);
     } catch {
       ready = false;
     }
@@ -521,7 +571,7 @@ export async function createBookieService(
   app.get("/v1/index", async (request, reply) => {
     const id = requestId();
     try {
-      const identity = authenticate(request, verifiers, now);
+      const identity = authenticateCurrent(request);
       const vaults = identity.vaults.filter((vault) =>
         identity.grants.get(vault)?.has("index:read"),
       );
@@ -539,9 +589,11 @@ export async function createBookieService(
       return reply.code(200).send(body);
     } catch (cause) {
       const error =
-        cause instanceof ServiceHttpError
-          ? cause
-          : new ServiceHttpError(503, "INDEX_UNAVAILABLE", true);
+        cause instanceof RebuildControllerError
+          ? controllerHttpError(cause)
+          : cause instanceof ServiceHttpError
+            ? cause
+            : new ServiceHttpError(503, "INDEX_UNAVAILABLE", true);
       sendError(validators, reply, id, error);
     }
   });
@@ -553,13 +605,13 @@ export async function createBookieService(
         body: { $ref: `${protocolSchemaId}#/$defs/searchRequest` },
       },
       preValidation: async (request) => {
-        authenticate(request, verifiers, now);
+        authenticateCurrent(request);
       },
     },
     async (request, reply) => {
       const id = requestId();
       try {
-        const identity = authenticate(request, verifiers, now);
+        const identity = authenticateCurrent(request);
         const searchRequest = request.body as ServiceSearchRequest;
         authorize(identity, searchRequest.vault, "search");
         const controller = new AbortController();
@@ -587,13 +639,138 @@ export async function createBookieService(
         }
       } catch (cause) {
         const error =
-          cause instanceof ServiceHttpError
-            ? cause
-            : new ServiceHttpError(503, "INDEX_UNAVAILABLE", true);
+          cause instanceof RebuildControllerError
+            ? controllerHttpError(cause)
+            : cause instanceof ServiceHttpError
+              ? cause
+              : new ServiceHttpError(503, "INDEX_UNAVAILABLE", true);
         sendError(validators, reply, id, error);
       }
     },
   );
+
+  if (rebuilds !== undefined) {
+    app.addHook("preClose", async () => rebuilds.shutdown());
+    const params = {
+      type: "object",
+      additionalProperties: false,
+      required: ["id"],
+      properties: { id: { $ref: `${protocolSchemaId}#/$defs/jobId` } },
+    };
+    const authorized = async (request: FastifyRequest): Promise<void> => {
+      rebuilds.authenticate(request.headers.authorization);
+    };
+    const control = async (
+      request: FastifyRequest,
+      reply: FastifyReply,
+      name: string,
+      status: number,
+      action: (signal: AbortSignal) => Promise<Record<string, unknown>>,
+    ): Promise<void> => {
+      const id = requestId();
+      const abort = new AbortController();
+      const onAborted = (): void => abort.abort();
+      const onClose = (): void => {
+        if (!reply.raw.writableEnded) abort.abort();
+      };
+      request.raw.once("aborted", onAborted);
+      reply.raw.once("close", onClose);
+      const timer = setTimeout(() => abort.abort(), 10_000);
+      if (reply.raw.destroyed && !reply.raw.writableEnded) onClose();
+      try {
+        const body = {
+          ...(await action(abort.signal)),
+          schema_version: "1",
+          request_id: id,
+        };
+        if (!validator(validators, name)(body))
+          throw new ServiceHttpError(500, "INTERNAL", false);
+        reply.code(status).send(body);
+      } catch (cause) {
+        sendError(validators, reply, id, controllerHttpError(cause));
+      } finally {
+        clearTimeout(timer);
+        request.raw.off("aborted", onAborted);
+        reply.raw.off("close", onClose);
+      }
+    };
+    app.post(
+      "/v1/admin/rebuild",
+      {
+        schema: { body: { $ref: `${protocolSchemaId}#/$defs/rebuildRequest` } },
+        preValidation: authorized,
+      },
+      async (request, reply) => {
+        await control(
+          request,
+          reply,
+          "rebuildResponse",
+          202,
+          async (signal) => {
+            const body = request.body as {
+              vault: string;
+              source_commit: string;
+              embedding_generation: unknown;
+            };
+            if (body.embedding_generation !== null)
+              throw new ServiceHttpError(400, "REQUEST_INVALID", false);
+            const job = await rebuilds.submit({
+              authorization: request.headers.authorization,
+              vault: body.vault,
+              sourceRef: body.source_commit,
+              signal,
+            });
+            return {
+              job_id: job.jobId,
+              build_id: job.buildId,
+              state: job.state,
+            };
+          },
+        );
+      },
+    );
+    app.get(
+      "/v1/admin/rebuild/:id",
+      { schema: { params }, preValidation: authorized },
+      async (request, reply) => {
+        await control(
+          request,
+          reply,
+          "rebuildStatusResponse",
+          200,
+          async (signal) => {
+            const { vault, job } = await rebuilds.status({
+              authorization: request.headers.authorization,
+              jobId: (request.params as { id: string }).id,
+              signal,
+            });
+            return {
+              job_id: job.jobId,
+              build_id: job.buildId,
+              vault,
+              source_commit: job.sourceCommit,
+              state: job.state,
+              failure_code: job.failureCode,
+            };
+          },
+        );
+      },
+    );
+    app.delete(
+      "/v1/admin/rebuild/:id",
+      { schema: { params }, preValidation: authorized },
+      async (request, reply) => {
+        await control(request, reply, "cancelResponse", 202, async (signal) => {
+          const job = await rebuilds.cancel({
+            authorization: request.headers.authorization,
+            jobId: (request.params as { id: string }).id,
+            signal,
+          });
+          return { job_id: job.jobId, state: job.state };
+        });
+      },
+    );
+  }
 
   await app.ready();
   return app;

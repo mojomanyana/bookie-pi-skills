@@ -64,6 +64,12 @@ export interface CandidateInputManifest {
   readonly cleanupChunk: number;
   readonly outputDescriptor?: EncodedOutputDescriptor;
 }
+export interface CandidateInspection {
+  readonly job: CandidateJob;
+  readonly manifest: CandidateInputManifest | null;
+  /** Same current process/configuration/controller/fence and an unexpired lease. */
+  readonly live: boolean;
+}
 export interface CandidateJob {
   readonly jobId: string;
   readonly buildId: string;
@@ -328,13 +334,21 @@ function candidate(value: unknown): CandidateInputManifest | null {
     unavailable();
   }
 }
-function job(value: unknown, outcome?: "unknown"): CandidateJob {
+function job(
+  value: unknown,
+  outcome?: "unknown",
+  expected?: Readonly<{ jobId: string; buildId?: string }>,
+): CandidateJob {
   if (
     !object(value) ||
     Object.keys(value).length !== 5 ||
     !matches(value.jobId, jobPattern) ||
     !matches(value.buildId, buildPattern) ||
     !matches(value.sourceCommit, commitPattern) ||
+    (expected !== undefined &&
+      (value.jobId !== expected.jobId ||
+        (expected.buildId !== undefined &&
+          value.buildId !== expected.buildId))) ||
     typeof value.state !== "string" ||
     !states.has(value.state)
   )
@@ -373,6 +387,10 @@ export class RedisCandidateStore {
     return this.#namespace;
   }
   readonly #vaultUid: string;
+  /** Deployment registry check only; never an HTTP assertion or lookup. */
+  isForVault(vaultUid: string): boolean {
+    return this.#vaultUid === vaultUid;
+  }
   readonly #execute: RedisExecutor;
   readonly #timeout: number;
   #epoch: number | undefined;
@@ -430,7 +448,9 @@ export class RedisCandidateStore {
         : AbortSignal.any([signal, deadline.signal]);
     const timer = setTimeout(() => deadline.abort(), this.#timeout);
     let dispatched = false;
-    const mutating = request.op !== "read" && request.op !== "readCandidate";
+    const mutating = !["read", "readCandidate", "current", "inspect"].includes(
+      String(request.op),
+    );
     let onAbort: () => void = () => {};
     try {
       const raw = await new Promise<unknown>((resolve, reject) => {
@@ -575,6 +595,36 @@ export class RedisCandidateStore {
     );
   }
 
+  /** Startup/status evidence only, always inside this configured namespace. */
+  async readCurrentJob(signal?: AbortSignal): Promise<CandidateJob | null> {
+    const reply = await this.#call({ op: "current" }, signal);
+    return reply.job === null ? null : job(reply.job);
+  }
+
+  /** One atomic, read-only observation under this process owner epoch. NOT_FOUND
+   * cannot prove that an earlier dispatched mutation will never commit. */
+  async inspectInput(
+    id: string,
+    signal?: AbortSignal,
+  ): Promise<CandidateInspection> {
+    input(matches(id, jobPattern));
+    const reply = await this.#call({ op: "inspect", jobId: id }, signal);
+    const observed = job(reply.job);
+    const manifest = candidate(reply.manifest);
+    if (
+      observed.jobId !== id ||
+      typeof reply.live !== "boolean" ||
+      (manifest === null
+        ? reply.live || !["failed", "cancelled"].includes(observed.state)
+        : manifest.lease.jobId !== id ||
+          manifest.lease.buildId !== observed.buildId ||
+          manifest.sourceCommit !== observed.sourceCommit ||
+          manifest.state !== observed.state)
+    )
+      unavailable();
+    return Object.freeze({ job: observed, manifest, live: reply.live });
+  }
+
   async claim(
     spec: CandidateSpec,
     signal?: AbortSignal,
@@ -666,25 +716,36 @@ export class RedisCandidateStore {
   }
   async readJob(id: string, signal?: AbortSignal): Promise<CandidateJob> {
     input(matches(id, jobPattern));
-    return job((await this.#call({ op: "read", jobId: id }, signal)).job);
+    return job(
+      (await this.#call({ op: "read", jobId: id }, signal)).job,
+      undefined,
+      { jobId: id },
+    );
   }
   async requestCancel(id: string, signal?: AbortSignal): Promise<CandidateJob> {
     input(matches(id, jobPattern));
-    return job(
+    const result = job(
       (await this.#call({ op: "cancel", jobId: id }, signal)).job,
       "unknown",
+      { jobId: id },
     );
+    if (result.state !== "cancelling" && result.state !== "cancelled")
+      unavailable("unknown");
+    return result;
   }
   async acknowledgeCancel(
     owner: CandidateLease,
     signal?: AbortSignal,
   ): Promise<CandidateJob> {
     input(lease(owner));
-    return job(
+    const result = job(
       (await this.#call({ op: "ackCancel", lease: wireLease(owner) }, signal))
         .job,
       "unknown",
+      owner,
     );
+    if (result.state !== "cancelled") unavailable("unknown");
+    return result;
   }
   async fail(
     owner: CandidateLease,
@@ -692,7 +753,7 @@ export class RedisCandidateStore {
     signal?: AbortSignal,
   ): Promise<CandidateJob> {
     input(lease(owner) && failureCodes.has(failureCode));
-    return job(
+    const result = job(
       (
         await this.#call(
           { op: "fail", lease: wireLease(owner), failureCode },
@@ -700,7 +761,11 @@ export class RedisCandidateStore {
         )
       ).job,
       "unknown",
+      owner,
     );
+    if (result.state !== "failed" || result.failureCode !== failureCode)
+      unavailable("unknown");
+    return result;
   }
   async cleanup(
     id: string,
