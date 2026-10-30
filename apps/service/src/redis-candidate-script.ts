@@ -198,6 +198,11 @@ local function run()
     redis.call('SET',lock,leasevalue(j),'PX',30000)
     return {ok=true,created=true,lease=owner(j)}
   end
+  if r.op=='current' then
+    local current=c.currentJob and load(c.currentJob) or nil
+    if c.currentJob and not current then return fail('INDEX_UNAVAILABLE') end
+    return {ok=true,job=current and snapshot(current) or cjson.null}
+  end
   local id=r.jobId or (type(r.lease)=='table' and r.lease.jobId)
   if not jobid(id) then return fail('INDEX_UNAVAILABLE') end
   local j=load(id)
@@ -205,6 +210,17 @@ local function run()
   if r.lease and (c.currentJob~=j.jobId or r.lease.buildId~=j.buildId or r.lease.ownerEpoch~=epoch or j.ownerEpoch~=epoch or r.lease.fence~=j.fence) then return fail('FENCED') end
   if r.op=='read' then return {ok=true,job=snapshot(j)} end
   local m=manifest(j)
+  if r.op=='inspect' then
+    if j.manifestVersion~='2' then return fail('BUILD_CONFLICT') end
+    if not m then
+      if j.state~='failed' and j.state~='cancelled' then return fail('INDEX_UNAVAILABLE') end
+      return {ok=true,job=snapshot(j),manifest=cjson.null,live=false}
+    end
+    local result={manifestVersion=2,lease=owner(j),sourceCommit=m.sourceCommit,manifestHash=m.manifestHash,policyHash=m.policyHash,recipeHash=m.recipeHash,state=m.state,nextConcept=m.nextConcept,nextChunk=m.nextChunk,cleanupConcept=m.cleanupConcept,cleanupChunk=m.cleanupChunk}
+    if m.outputDescriptor~=nil then result.outputDescriptor=m.outputDescriptor end
+    local live=c.currentJob==j.jobId and j.ownerEpoch==epoch and m.configurationEpoch==c.configurationEpoch and redis.call('GET',lock)==leasevalue(j)
+    return {ok=true,job=snapshot(j),manifest=result,live=live}
+  end
   if r.op=='readCandidate' then
     if j.manifestVersion~='2' then return fail('BUILD_CONFLICT') end
     if not m then

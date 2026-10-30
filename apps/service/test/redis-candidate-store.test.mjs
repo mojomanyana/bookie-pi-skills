@@ -73,6 +73,55 @@ const output = encodeOutputDescriptor({
   },
 });
 
+test("owner-epoch reconciliation reads live ownership and current job without dispatching a mutation", async () => {
+  const requests = [];
+  const publicJob = {
+    jobId,
+    buildId: inputLease.buildId,
+    sourceCommit: spec.sourceCommit,
+    state: "building",
+    failureCode: null,
+  };
+  const manifest = {
+    manifestVersion: 2,
+    lease: {
+      ...inputLease,
+      configurationEpoch: String(recipe.configurationEpoch),
+    },
+    sourceCommit: spec.sourceCommit,
+    manifestHash: hash,
+    policyHash: hash,
+    recipeHash: recipe.recipeHash,
+    state: "building",
+    nextConcept: 0,
+    nextChunk: 0,
+    cleanupConcept: 0,
+    cleanupChunk: 0,
+  };
+  const store = new RedisCandidateStore({
+    vaultUid,
+    namespaceKey,
+    execute: async (args) => {
+      const request = JSON.parse(args.at(-1));
+      requests.push(request);
+      return JSON.stringify(
+        request.op === "current"
+          ? { ok: true, job: publicJob }
+          : { ok: true, job: publicJob, manifest, live: true },
+      );
+    },
+  });
+  assert.deepEqual(await store.readCurrentJob(), publicJob);
+  const observed = await store.inspectInput(jobId);
+  assert.deepEqual(observed.job, publicJob);
+  assert.equal(observed.manifest.lease.ownerEpoch, 1);
+  assert.equal(observed.live, true);
+  assert.deepEqual(
+    requests.map((r) => r.op),
+    ["current", "inspect"],
+  );
+});
+
 test("v2 claim retains the controller-selected attempt identity before dispatch", async () => {
   let observed;
   const store = new RedisCandidateStore({
@@ -326,6 +375,50 @@ test("Redis errors and malformed replies never expose dependency text", async ()
     },
   });
   await assert.rejects(() => store.startProcess(), code("INDEX_UNAVAILABLE"));
+});
+
+test("well-shaped replies for a different job or build cannot prove the requested terminal transition", async () => {
+  for (const patch of [
+    { jobId: "job_" + "1".repeat(26) },
+    { buildId: "bld_" + "b".repeat(64) },
+  ]) {
+    const store = new RedisCandidateStore({
+      vaultUid,
+      namespaceKey,
+      execute: async () =>
+        JSON.stringify({
+          ok: true,
+          job: {
+            jobId,
+            buildId,
+            sourceCommit: spec.sourceCommit,
+            state: "failed",
+            failureCode: "INTERNAL",
+            ...patch,
+          },
+        }),
+    });
+    for (const action of [
+      () => store.fail(lease, "INTERNAL"),
+      () => store.acknowledgeCancel(lease),
+    ])
+      await assert.rejects(
+        action,
+        (error) =>
+          code("INDEX_UNAVAILABLE")(error) && error.outcome === "unknown",
+      );
+    if (patch.jobId) {
+      await assert.rejects(
+        () => store.readJob(jobId),
+        code("INDEX_UNAVAILABLE"),
+      );
+      await assert.rejects(
+        () => store.requestCancel(jobId),
+        (error) =>
+          code("INDEX_UNAVAILABLE")(error) && error.outcome === "unknown",
+      );
+    }
+  }
 });
 
 test("unusable mutation acknowledgements are unknown, and legacy claims never accept a v2 lease", async () => {

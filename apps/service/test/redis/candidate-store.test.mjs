@@ -18,6 +18,14 @@ import {
   parseOutputDescriptor,
 } from "../../dist/output-descriptor.js";
 import { candidateScript } from "../../dist/redis-candidate-script.js";
+import { OwnedRebuildController } from "../../dist/rebuild-controller.js";
+import {
+  configuration as controllerConfiguration,
+  recipeFor as controllerRecipe,
+  outputFor,
+  authorization,
+  deferred,
+} from "../helpers/controller-fixture.mjs";
 
 const image =
   "redis:8.2.1-alpine@sha256:987c376c727652f99625c7d205a1cba3cb2c53b92b0b62aade2bd48ee1593232";
@@ -224,6 +232,339 @@ test("Redis 8 fenced candidate lifecycle", { timeout: 240_000 }, async (t) => {
         JSON.stringify(request),
       ),
     );
+
+  await t.test(
+    "S7 original-attempt reconciliation, duplicate capacity, attachment and cancellation use real Redis",
+    async () => {
+      const config = controllerConfiguration();
+      config.sources.forEach((s) => {
+        s.projection.vaultUid = `VLT-${String(serial++).padStart(26, "0")}`;
+      });
+      let lost = true;
+      const cleaned = deferred();
+      const stores = new Map(
+        config.sources.map((s) => [
+          s.handle,
+          create(s.projection.vaultUid, undefined, async (reply, request) => {
+            // Redis has committed before this reply is lost; do not fake rollback.
+            if (request.op === "claimInput" && lost) {
+              lost = false;
+              return "PRIVATE_UNUSABLE_REPLY";
+            }
+            if (
+              request.op === "cleanup" &&
+              s.handle === "alpha" &&
+              JSON.parse(reply).done
+            )
+              cleaned.resolve();
+            return reply;
+          }),
+        ]),
+      );
+      let launches = 0;
+      const controller = new OwnedRebuildController({
+        configuration: config,
+        stores,
+        builder: {
+          async preflight(request) {
+            return {
+              ok: true,
+              recipe: controllerRecipe(
+                config,
+                request.vault,
+                request.sourceRef,
+              ),
+            };
+          },
+          async build(recipe) {
+            launches++;
+            return { ok: true, output: outputFor(recipe) };
+          },
+        },
+      });
+      try {
+        await controller.start(async () => {}); // fixture owns no previous workers
+        await assert.rejects(
+          () =>
+            controller.submit({
+              authorization,
+              vault: "alpha",
+              sourceRef: commit,
+            }),
+          code("DEPENDENCY_UNAVAILABLE"),
+        );
+        const store = stores.get("alpha");
+        for (let n = 0; n < 150; n++) {
+          const current = await store.readCurrentJob();
+          if (
+            current &&
+            (await store.inspectInput(current.jobId)).manifest?.outputDescriptor
+          )
+            break;
+          await delay(10);
+        }
+        const duplicate = await controller.submit({
+          authorization,
+          vault: "alpha",
+          sourceRef: commit,
+        });
+        const observed = await store.inspectInput(duplicate.jobId);
+        assert.equal(observed.live, true);
+        assert.ok(observed.manifest.outputDescriptor);
+        assert.equal(launches, 1);
+        await assert.rejects(
+          () =>
+            controller.submit({
+              authorization,
+              vault: "beta",
+              sourceRef: commit,
+            }),
+          code("RATE_LIMITED"),
+        );
+        await controller.cancel({ authorization, jobId: duplicate.jobId });
+        for (
+          let n = 0;
+          n < 100 &&
+          (await store.readJob(duplicate.jobId)).state !== "cancelled";
+          n++
+        )
+          await delay(10);
+        assert.equal((await store.readJob(duplicate.jobId)).state, "cancelled");
+        await cleaned.promise;
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(
+          (
+            await controller.submit({
+              authorization,
+              vault: "beta",
+              sourceRef: commit,
+            })
+          ).state,
+          "queued",
+        );
+      } finally {
+        await controller.shutdown();
+      }
+    },
+  );
+
+  for (const race of ["lost-claim-reply", "worker-failure"])
+    await t.test(
+      `S7 cancellation settles the ${race} interleaving through real Lua`,
+      async () => {
+        const config = controllerConfiguration();
+        config.sources.forEach((source) => {
+          source.projection.vaultUid = `VLT-${String(serial++).padStart(26, "0")}`;
+        });
+        const claimed = deferred(),
+          claimReply = deferred();
+        const cancelCommitted = deferred(),
+          cancelReply = deferred();
+        const failing = deferred(),
+          failReply = deferred();
+        const entered = deferred(),
+          workerResult = deferred();
+        const observed = [];
+        const stores = new Map(
+          config.sources.map((source) => [
+            source.handle,
+            create(
+              source.projection.vaultUid,
+              undefined,
+              async (reply, request) => {
+                if (source.handle !== "alpha") return reply;
+                observed.push(request.op);
+                if (
+                  request.op === "claimInput" &&
+                  race === "lost-claim-reply"
+                ) {
+                  claimed.resolve(request.jobId);
+                  await claimReply.promise;
+                  return "UNUSABLE_CLAIM_REPLY";
+                }
+                if (request.op === "cancel") {
+                  cancelCommitted.resolve();
+                  if (race === "worker-failure") await cancelReply.promise;
+                }
+                if (request.op === "fail" && race === "worker-failure") {
+                  failing.resolve(JSON.parse(reply));
+                  await failReply.promise;
+                }
+                return reply;
+              },
+            ),
+          ]),
+        );
+        let workers = 0;
+        const controller = new OwnedRebuildController({
+          configuration: config,
+          stores,
+          builder: {
+            async preflight(request) {
+              return {
+                ok: true,
+                recipe: controllerRecipe(
+                  config,
+                  request.vault,
+                  request.sourceRef,
+                ),
+              };
+            },
+            async build(recipe) {
+              workers++;
+              if (race === "worker-failure" && workers === 1) {
+                entered.resolve();
+                return await workerResult.promise;
+              }
+              return { ok: true, output: outputFor(recipe) };
+            },
+          },
+        });
+        const submit = (vault) =>
+          controller.submit({ authorization, vault, sourceRef: commit });
+        try {
+          await controller.start(async () => {}); // no prior workers in this owned fixture
+          let job;
+          if (race === "lost-claim-reply") {
+            const pending = submit("alpha");
+            const rejected = assert.rejects(
+              pending,
+              code("DEPENDENCY_UNAVAILABLE"),
+            );
+            const id = await claimed.promise;
+            job = await submit("alpha");
+            assert.equal(job.jobId, id);
+            await controller.cancel({ authorization, jobId: id });
+            claimReply.resolve();
+            await rejected;
+          } else {
+            job = await submit("alpha");
+            await entered.promise;
+            const cancellation = controller.cancel({
+              authorization,
+              jobId: job.jobId,
+            });
+            await cancelCommitted.promise;
+            workerResult.resolve({ ok: false, reason: "secret-policy" });
+            assert.deepEqual(await failing.promise, {
+              ok: false,
+              code: "FENCED",
+            });
+            cancelReply.resolve();
+            assert.equal((await cancellation).state, "cancelling");
+            failReply.resolve();
+          }
+          const store = stores.get("alpha");
+          for (
+            let n = 0;
+            n < 50 && (await store.readJob(job.jobId)).state !== "cancelled";
+            n++
+          )
+            await delay(10);
+          const cancelled = await store.readJob(job.jobId);
+          assert.equal(cancelled.state, "cancelled");
+          assert.equal(cancelled.failureCode, "CANCELLED");
+          for (
+            let n = 0;
+            n < 50 && (await store.inspectInput(job.jobId)).manifest !== null;
+            n++
+          )
+            await delay(10);
+          assert.equal((await store.inspectInput(job.jobId)).manifest, null);
+          assert.equal(controller.ready, true);
+          assert.equal(observed.filter((op) => op === "claimInput").length, 1);
+          assert.equal(observed.filter((op) => op === "ackCancel").length, 1);
+          assert.equal(
+            observed.filter((op) => op === "fail").length,
+            race === "worker-failure" ? 1 : 0,
+          );
+          assert.equal(workers, race === "worker-failure" ? 1 : 0);
+          assert.equal((await submit("beta")).state, "queued");
+          assert.equal((await store.readJob(job.jobId)).state, "cancelled");
+        } finally {
+          claimReply.resolve();
+          cancelReply.resolve();
+          workerResult.resolve({ ok: false, reason: "secret-policy" });
+          failReply.resolve();
+          await controller.shutdown();
+        }
+      },
+    );
+
+  await t.test(
+    "S7 replacement fences every configured namespace, queued and attached, and waits for supervision",
+    async () => {
+      const config = controllerConfiguration();
+      const prior = [];
+      for (const [n, source] of config.sources.entries()) {
+        source.projection.vaultUid = `VLT-${String(serial++).padStart(26, "0")}`;
+        const store = create(source.projection.vaultUid);
+        await store.startProcess();
+        await store.setConfigurationEpoch(1);
+        const recipe = controllerRecipe(config, source.handle);
+        const claimed = await store.claimInput(recipe, createCandidateJobId());
+        if (n === 1) {
+          await store.beginBuilding(claimed.lease);
+          await store.attachOutput(
+            claimed.lease,
+            descriptorFor(recipe, 129, 0),
+          );
+        }
+        prior.push(claimed.lease.jobId);
+      }
+      const stores = new Map(
+        config.sources.map((s) => [s.handle, create(s.projection.vaultUid)]),
+      );
+      let launches = 0;
+      const controller = new OwnedRebuildController({
+        configuration: config,
+        stores,
+        builder: {
+          async preflight() {
+            throw new Error("must not preflight during startup");
+          },
+          async build() {
+            launches++;
+            throw new Error("must never resume");
+          },
+        },
+      });
+      const supervised = deferred();
+      try {
+        const starting = controller.start(async () => {
+          assert.equal(controller.ready, false);
+          supervised.resolve();
+          await stopped.promise;
+        });
+        const stopped = deferred();
+        await supervised.promise;
+        for (const [n, source] of config.sources.entries())
+          assert.equal(
+            (await stores.get(source.handle).readJob(prior[n])).failureCode,
+            "INTERRUPTED",
+          );
+        assert.equal(controller.ready, false);
+        assert.equal(launches, 0);
+        stopped.resolve();
+        await starting;
+        assert.equal(controller.ready, true);
+        for (const [n, source] of config.sources.entries()) {
+          assert.equal(
+            (await stores.get(source.handle).inspectInput(prior[n])).manifest,
+            null,
+          );
+          assert.equal(
+            commands
+              .map((args) => JSON.parse(args.at(-1)))
+              .filter((r) => r.op === "cleanup" && r.jobId === prior[n]).length,
+            n === 0 ? 1 : 2,
+          );
+        }
+      } finally {
+        await controller.shutdown();
+      }
+    },
+  );
 
   await t.test(
     "input claim is definitive and absent, begin is explicit, and attachment is immutable",

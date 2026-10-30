@@ -101,7 +101,7 @@ test("identity, capability, privilege and baked/observed runtime mismatch fail s
     );
 });
 
-test("only trusted orchestration assembles qualified recipes; HTTP/Redis cannot start or qualify builders", async () => {
+test("only S5 orchestration assembles qualified recipes; only S7 deployment composition creates its builder", async () => {
   const root = new URL("../src/", import.meta.url);
   const consumers = new Set(["trusted-builder.ts", "ingestion-process.ts"]);
   for (const path of await readdir(root)) {
@@ -114,17 +114,29 @@ test("only trusted orchestration assembles qualified recipes; HTTP/Redis cannot 
         false,
         path,
       );
-    if (path === "server.ts" || path.startsWith("redis-")) {
-      // S6 consumes S5's data type, not its runtime or authorization boundary.
-      const executable =
-        path === "redis-candidate-store.ts"
-          ? source.replace(
-              /^import type \{ TrustedBuildRecipe \} from "\.\/trusted-builder\.js";$/mu,
-              "",
-            )
-          : source;
+    if (
+      ![
+        "trusted-builder.ts",
+        "ingestion-process.ts",
+        "runtime-qualification.ts",
+      ].includes(path)
+    )
       assert.equal(
-        /trusted-builder|qualifyBuildRuntime|loadBuildRuntime/u.test(
+        /\b(?:qualifyBuildRuntime|loadBuildRuntime|qualifyRuntime)\b/u.test(
+          source,
+        ),
+        false,
+        path,
+      );
+    if (path !== "trusted-builder.ts" && path !== "rebuild-controller.ts") {
+      // Exact type-only consumers confer no runtime/source authority. HTTP and
+      // Redis may use the controller component, never instantiate/qualify S5.
+      const executable = source.replace(
+        /import type [^;]+ from "\.\/trusted-builder\.js";/gu,
+        "",
+      );
+      assert.equal(
+        /from "\.\/trusted-builder\.js"|\bcreateTrustedLexicalBuilder\b/u.test(
           executable,
         ),
         false,
