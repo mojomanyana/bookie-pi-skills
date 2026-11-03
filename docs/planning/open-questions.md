@@ -115,7 +115,7 @@ Open questions are not permission to guess. Resolve them by the listed deadline,
 
 ## OQ-014: Retrieval evaluation corpus and acceptance threshold
 
-- **State:** Open; does not block the private read-only stored-output integrity increment.
+- **State:** Open; does not block private payload writing/stored-output verification. It still gates dependent evaluation/completion/cutover.
 - **Question:** Which versioned queries, relevant UIDs, expected filters, retrieval metric and agreed pass threshold must gate generation evaluation and cutover?
 - **Evidence:** The [retrieval evaluation gate](../architecture/retrieval.md#evaluation-gate) already requires a versioned set and an agreed threshold. The S8 authority/code inspection did not establish an accepted corpus or threshold; storage-integrity and synthetic runtime tests are not retrieval-quality evaluation.
 - **Current direction:** Service and evaluation/data owners must agree on representative, approved fixtures, labels, metrics and acceptance criteria, then record the accepted definition before implementing a dependent success transition. No numeric default, provider choice, real-data approval or evaluation success is inferred.

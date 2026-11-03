@@ -147,6 +147,7 @@ import {createTrustedLexicalBuilder} from '/opt/bookie/apps/service/dist/trusted
 import {prepareDeploymentLexicalProjection} from '/opt/bookie/apps/service/dist/ingestion.js';
 import {createOwnedRebuildController} from '/opt/bookie/apps/service/dist/rebuild-controller.js';
 import {CandidateStoreError} from '/opt/bookie/apps/service/dist/redis-candidate-store.js';
+import {parseOutputDescriptor} from '/opt/bookie/apps/service/dist/output-descriptor.js';
 const allowedStages=${JSON.stringify(trustedBuilderStages)};
 function stage(name) {assert.ok(allowedStages.includes(name));console.error('QUALIFICATION trusted-builder stage='+name)}
 const deployment=${JSON.stringify(fixture.config)};
@@ -245,7 +246,7 @@ for(const canary of ['EXCLUDED_QUALIFICATION_MARKER','DOC-0000000000000000000000
 stage('controller-composition');
 // Genuine qualified S5 source/recipe/output through the S7 component. Only the
 // S6 component is fake here; real Lua lifecycle is separately tested with Redis.
-const MemoryCandidateStore=(${memoryCandidateStore.toString()})(CandidateStoreError);
+const MemoryCandidateStore=(${memoryCandidateStore.toString()})(CandidateStoreError,parseOutputDescriptor);
 const candidate=new MemoryCandidateStore(deployment.projection.vaultUid);
 let attached;
 const attachment=new Promise(resolve=>{attached=resolve});

@@ -6,9 +6,11 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  rm,
   writeFile,
 } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { trustedBuilderStages } from "./qualification-labels.mjs";
 
@@ -16,6 +18,11 @@ export const repository = resolve(import.meta.dirname, "../../..");
 const owned = new Map();
 const active = new Map();
 let cancellation;
+const fixtures = [];
+let fixtureRegistrationClosed = false;
+let fixtureTeardown;
+let drainUntil;
+const drainBudget = new AbortController();
 const isMain =
   process.argv[1] &&
   resolve(process.argv[1]) === fileURLToPath(import.meta.url);
@@ -198,6 +205,54 @@ export async function privateWorkspace() {
   }
 }
 
+/** The actual enclosing qualification finalizer, shared with synthetic controls. */
+export function runtimeWorkspaceFinalizer({
+  parent,
+  images,
+  report,
+  diagnostic,
+}) {
+  let settlement;
+  return () =>
+    (settlement ??= (async () => {
+      let output = report();
+      let failure;
+      try {
+        // Join the registered owner even when setup never returned a fixture.
+        // Retained rejection/uncertainty withholds BOTH enclosing mutations.
+        await finishFixtures();
+        await docker([
+          "run",
+          "--rm",
+          "--network",
+          "none",
+          "--mount",
+          `type=bind,src=${parent},dst=/work`,
+          "--entrypoint",
+          "/bin/sh",
+          "node:24.19.0-bookworm@sha256:4196d66a565c6f195728d9952f161f4adfe2ad753052a08b7ec7f1c5a6bda42b",
+          "-c",
+          `chown -R ${process.getuid()}:${process.getgid()} /work`,
+        ]);
+        await rm(parent, { recursive: true, force: true });
+      } catch (error) {
+        output = undefined;
+        failure = error;
+      }
+      if (output === undefined) {
+        const results = await Promise.allSettled(
+          [...new Set(images.map((record) => record.imageId))].map((imageId) =>
+            docker(["image", "rm", "--no-prune", imageId]),
+          ),
+        );
+        if (results.some((result) => result.status === "rejected"))
+          failure ??= Error("Runtime container/child teardown unconfirmed.");
+      }
+      if (failure) throw failure;
+      if (output !== undefined) diagnostic(output);
+    })());
+}
+
 async function finishContainer(container) {
   try {
     await removeContainer(container);
@@ -228,11 +283,44 @@ function removeContainer(container) {
     }
   })());
 }
-async function drainCancellation() {
-  const results = await Promise.allSettled(
-    [...owned.values()].map(removeContainer),
-  );
-  let unconfirmed = results.some((result) => result.status === "rejected");
+/** Trusted test-fixture registration only. The callbacks close exact clients and
+ * delete their dependent private directory; neither grants raw command authority.
+ * Register before setup dispatch. Normal finalizers/signals retain one outcome.
+ */
+export function registerFixture({ closeClients, removeDirectory }) {
+  if (cancellation || fixtureRegistrationClosed)
+    throw Error("Runtime fixture registration closed.");
+  if (
+    fixtures.length === 4 ||
+    typeof closeClients !== "function" ||
+    typeof removeDirectory !== "function"
+  )
+    throw Error("Runtime fixture registration invalid.");
+  const container = ownContainer();
+  fixtures.push({ container, closeClients, removeDirectory });
+  return Object.freeze({
+    name: container.name,
+    finish: async () => {
+      try {
+        await finishFixtures();
+      } finally {
+        if (cancellation) await cancelled();
+      }
+    },
+  });
+}
+function finishFixtures() {
+  fixtureRegistrationClosed = true;
+  return (fixtureTeardown ??= (async () => {
+    const results = await Promise.allSettled(
+      fixtures.map((f) => removeContainer(f.container)),
+    );
+    await drainClientsAndFixtures(results);
+  })());
+}
+async function drainClientsAndFixtures(removals) {
+  drainUntil ??= performance.now() + 1000;
+  let unconfirmed = removals.some((result) => result.status === "rejected");
   // Include cleanup clients too, even if their command result already failed.
   const children = [...active];
   for (const [child] of children) {
@@ -245,13 +333,53 @@ async function drainCancellation() {
     }
   }
   let timer;
+  const budget = drainBudget;
+  // ONE shared allowance for CLI/client/socket settlement and directory work.
+  // Expiry is failure, never evidence an ignored callback or I/O has stopped.
+  const closed = Promise.all(children.map(([, settled]) => settled));
+  const resources = fixtures.map(
+    (fixture) =>
+      (fixture.externalTeardown ??= (async () => {
+        const removed = await fixture.container.teardown.then(
+          () => true,
+          () => false,
+        );
+        let clients = false;
+        try {
+          await fixture.closeClients(budget.signal);
+          clients = true;
+        } catch {
+          /* retained below as static unconfirmed failure */
+        }
+        await closed;
+        if (
+          !removed ||
+          !clients ||
+          budget.signal.aborted ||
+          performance.now() >= drainUntil
+        )
+          throw Error("Runtime fixture teardown unconfirmed.");
+        try {
+          await fixture.removeDirectory(budget.signal);
+        } catch {
+          throw Error("Runtime fixture teardown unconfirmed.");
+        }
+        if (budget.signal.aborted || performance.now() >= drainUntil)
+          throw Error("Runtime fixture teardown unconfirmed.");
+      })()),
+  );
   try {
     await Promise.race([
-      Promise.all(children.map(([, closed]) => closed)),
+      Promise.allSettled([closed, ...resources]).then((results) => {
+        if (results.some((r) => r.status === "rejected")) unconfirmed = true;
+      }),
       new Promise((_, reject) => {
         timer = setTimeout(
-          () => reject(Error("Runtime child teardown unconfirmed.")),
-          1000,
+          () => {
+            budget.abort();
+            reject(Error("Runtime fixture teardown unconfirmed."));
+          },
+          Math.max(0, drainUntil - performance.now()),
         );
       }),
     ]);
@@ -259,6 +387,19 @@ async function drainCancellation() {
     unconfirmed = true;
   } finally {
     clearTimeout(timer);
+  }
+  if (unconfirmed) throw Error("Runtime container/child teardown unconfirmed.");
+}
+async function drainCancellation() {
+  fixtureRegistrationClosed = true;
+  const results = await Promise.allSettled(
+    [...owned.values()].map(removeContainer),
+  );
+  let unconfirmed = results.some((result) => result.status === "rejected");
+  try {
+    await drainClientsAndFixtures(results);
+  } catch {
+    unconfirmed = true;
   }
   if (unconfirmed) throw Error("Runtime container/child teardown unconfirmed.");
 }

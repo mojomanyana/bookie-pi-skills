@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, fork } from "node:child_process";
 import {
   chmod,
   cp,
+  lstat,
   mkdir,
   readFile,
   readdir,
@@ -15,6 +16,8 @@ import {
   trustedBuilderGroups,
 } from "../helpers/trusted-builder-driver.mjs";
 import { basename, join } from "node:path";
+import { ownedRedisFixture } from "../helpers/owned-redis-fixture.mjs";
+import { controllerStorageDriver } from "../helpers/controller-storage-driver.mjs";
 import test from "node:test";
 import {
   buildRuntime,
@@ -24,6 +27,7 @@ import {
   privateWorkspace,
   repository,
   runRuntime,
+  runtimeWorkspaceFinalizer,
 } from "../../scripts/qualify-runtime.mjs";
 
 const hash = (bytes) =>
@@ -79,10 +83,11 @@ async function source(
   nested = false,
   secretCorpus = false,
   objectFormat = "sha1",
+  bulk = false,
 ) {
   const root = join(
     parent,
-    `${nested ? "nested-" : "root-"}${secretCorpus || "valid"}-${objectFormat}-source`,
+    `${bulk ? "bulk-" : ""}${nested ? "nested-" : "root-"}${secretCorpus || "valid"}-${objectFormat}-source`,
   );
   const vault = nested ? join(root, "nested") : root;
   await cp(join(repository, "examples/vault"), vault, { recursive: true });
@@ -116,6 +121,21 @@ async function source(
         ? document.replace("title: Demo vault overview\n", "")
         : document + `\n${secret}\n`,
     );
+  if (bulk)
+    for (let n = 100; n < 229; n++) {
+      await writeFile(
+        join(vault, `projects/demo/documents/document-${n}.md`),
+        document
+          .replace(
+            "DOC-01ARZ3NDEKTSV4RRFFQ69G5FAY",
+            `DOC-${String(n).padStart(26, "0")}`,
+          )
+          .replace(
+            "title: Demo vault overview",
+            `title: Synthetic document ${n}`,
+          ),
+      );
+    }
   await git(root, ["init", "-q", `--object-format=${objectFormat}`]);
   await git(root, ["add", "-A"]);
   await git(root, ["commit", "-qm", "synthetic qualification"]);
@@ -194,32 +214,14 @@ test(
     const parent = await privateWorkspace();
     let reportOutput;
     const images = [];
-    t.after(async () => {
-      try {
-        await docker([
-          "run",
-          "--rm",
-          "--network",
-          "none",
-          "--mount",
-          `type=bind,src=${parent},dst=/work`,
-          "--entrypoint",
-          "/bin/sh",
-          "node:24.19.0-bookworm@sha256:4196d66a565c6f195728d9952f161f4adfe2ad753052a08b7ec7f1c5a6bda42b",
-          "-c",
-          `chown -R ${process.getuid()}:${process.getgid()} /work`,
-        ]);
-        await rm(parent, { recursive: true, force: true });
-      } catch (error) {
-        reportOutput = undefined;
-        throw error;
-      } finally {
-        if (reportOutput === undefined)
-          for (const imageId of new Set(images.map((record) => record.imageId)))
-            await docker(["image", "rm", "--no-prune", imageId]);
-      }
-      if (reportOutput !== undefined) t.diagnostic(reportOutput);
-    });
+    t.after(
+      runtimeWorkspaceFinalizer({
+        parent,
+        images,
+        report: () => reportOutput,
+        diagnostic: (output) => t.diagnostic(output),
+      }),
+    );
     const contexts = [];
     for (const name of ["first", "relocated-second"]) {
       const context = join(parent, name);
@@ -361,6 +363,131 @@ test(
       assert.equal(checked.ok, true);
       if (f.root.includes("empty"))
         assert.deepEqual([checked.concepts, checked.chunks], [0, 0]);
+    }
+    // Separate genuine controller/actual-storage invocations, never added to the
+    // already-heavy default trusted-builder driver. Each retains the 45s cap.
+    const storageFixture = await ownedRedisFixture(parent);
+    const storageResults = [];
+    try {
+      const bulk = await source(parent, false, false, "sha1", true);
+      const nestedBulk = await source(parent, true, false, "sha256", true);
+      const empty = {
+        root: join(parent, "root-empty-sha1-source"),
+        commit: undefined,
+      };
+      // Reuse only the immutable synthetic source, never a recipe/provenance receipt.
+      empty.commit = (await git(empty.root, ["rev-parse", "HEAD"])).trim();
+      empty.config = config;
+      for (const record of images) {
+        const result = JSON.parse(
+          await runRuntime(record.imageId, controllerStorageDriver(bulk), {
+            ...qualifiedOptions(bulk),
+            mounts: [identityMount, storageFixture.mount],
+          }),
+        );
+        assert.ok(result.concepts > 128 && result.chunks > 128);
+        storageResults.push(result);
+      }
+      assert.deepEqual(storageResults[0], storageResults[1]);
+      for (const [f, mode] of [
+        [bulk, "tamper"],
+        [nestedBulk, "positive"],
+        [empty, "positive"],
+      ]) {
+        const result = JSON.parse(
+          await runRuntime(image.imageId, controllerStorageDriver(f, mode), {
+            ...qualifiedOptions(f),
+            mounts: [identityMount, storageFixture.mount],
+          }),
+        );
+        assert.equal(result.ok, true);
+        if (f === empty) {
+          assert.equal(result.pages, 0);
+          assert.ok(result.inventory > 0);
+          assert.equal(result.final, 1);
+        }
+        storageResults.push(result);
+      }
+    } finally {
+      await storageFixture.finish();
+    }
+    await assert.rejects(lstat(storageFixture.directory), { code: "ENOENT" });
+    // Actual fixture cleanup on success, expected operation failure and signal.
+    for (const mode of ["success", "failure", "cancel"]) {
+      const child = fork(
+        new URL("../helpers/socket-fixture-runner.mjs", import.meta.url),
+        [mode, image.imageId],
+        { stdio: ["ignore", "ignore", "pipe", "ipc"], execArgv: [] },
+      );
+      let stderr = "",
+        ready,
+        settled;
+      child.stderr.setEncoding("utf8");
+      child.stderr.on("data", (s) => {
+        stderr += s;
+      });
+      const messages = [];
+      let notify = () => {};
+      child.on("message", (m) => {
+        messages.push(m);
+        notify();
+      });
+      const closed = new Promise((resolve, reject) => {
+        child.once("error", reject);
+        child.once("close", (code, signal) => resolve({ code, signal }));
+      });
+      const wait = (event) =>
+        new Promise((resolve, reject) => {
+          const timer = setTimeout(
+            () => reject(Error("Redis fixture child stalled.")),
+            15000,
+          );
+          notify = () => {
+            const m = messages.find((m) => m.event === event);
+            if (m) {
+              clearTimeout(timer);
+              resolve(m);
+            }
+          };
+          notify();
+        });
+      try {
+        ready = await wait("ready");
+        // No child IPC message listener supplies accidental keepalive here:
+        // readiness must retain the runner's lifetime through owner teardown.
+        if (mode === "cancel") child.kill("SIGTERM");
+        else settled = await wait("settled");
+        assert.deepEqual(await closed, {
+          code: mode === "cancel" ? 1 : 0,
+          signal: null,
+        });
+        if (settled)
+          assert.deepEqual(settled, {
+            event: "settled",
+            failed: mode === "failure",
+            cleaned: true,
+          });
+        assert.equal(
+          await docker([
+            "ps",
+            "-a",
+            "--filter",
+            `name=^/${ready.name}$`,
+            "--format",
+            "{{.ID}}",
+          ]),
+          "",
+        );
+        await assert.rejects(lstat(ready.directory), { code: "ENOENT" });
+        if (mode === "cancel") await rm(ready.parent, { recursive: true });
+        else await assert.rejects(lstat(ready.parent), { code: "ENOENT" });
+        assert.equal(stderr.includes("PRIVATE"), false);
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) {
+          child.kill("SIGTERM");
+          await closed;
+        }
+      }
     }
     // A real equivalent clone at a different mount location retains recipe/output.
     const clone = join(parent, "relocated-clone");
@@ -624,7 +751,7 @@ test(
     );
     const closed = new Promise((resolve, reject) => {
       child.once("error", reject);
-      child.once("close", (code) => resolve(code));
+      child.once("close", (code, signal) => resolve({ code, signal }));
     });
     try {
       let running = false;
@@ -647,7 +774,7 @@ test(
       child.kill("SIGTERM");
       const timer = setTimeout(() => child.kill("SIGKILL"), 15000);
       try {
-        assert.equal(await closed, 1);
+        assert.deepEqual(await closed, { code: 1, signal: null });
       } finally {
         clearTimeout(timer);
       }
@@ -663,7 +790,7 @@ test(
         "",
       );
     } finally {
-      if (child.exitCode === null) {
+      if (child.exitCode === null && child.signalCode === null) {
         child.kill("SIGTERM");
         await closed;
       }
@@ -718,6 +845,7 @@ test(
       output: results[0],
       trustedOutput: trustedResults[0],
       trustedGroups,
+      storageResults,
       driverHash: hash(
         await readFile(
           new URL("../../scripts/qualify-runtime.mjs", import.meta.url),

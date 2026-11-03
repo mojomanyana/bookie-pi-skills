@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { fork } from "node:child_process";
+import { fork, spawnSync } from "node:child_process";
+import { lstat, rm } from "node:fs/promises";
+import { dirname, basename, join, resolve } from "node:path";
 import test from "node:test";
 
 const unconfirmed = "Runtime container teardown unconfirmed.";
@@ -340,6 +342,323 @@ test("unconfirmed client drain fails within its one-second allowance", async (t)
     false,
   );
 });
+
+for (const signal of [undefined, "SIGINT", "SIGTERM"])
+  test(`synthetic fixture ${signal ?? "normal"} joins container, clients and directory once`, async (t) => {
+    const r = await runner(t, "fixture");
+    r.close(r.first);
+    const removal = await r.command("rm");
+    if (signal) {
+      r.child.kill(signal);
+      r.child.kill(signal === "SIGINT" ? "SIGTERM" : "SIGINT");
+      r.send({ action: "late-registration" });
+      assert.deepEqual(await r.wait((e) => e.event === "registration"), {
+        event: "registration",
+        ok: false,
+        message: "Runtime fixture registration closed.",
+      });
+    }
+    await r.barrier();
+    r.close(removal);
+    await r.absence();
+    const clients = await r.wait(
+      (e) => e.event === "callback" && e.kind === "clients",
+    );
+    await r.barrier();
+    assert.equal(
+      r.events.some((e) => e.kind === "directory"),
+      false,
+    );
+    r.send({ action: "callback", id: clients.id });
+    const directory = await r.wait(
+      (e) => e.event === "callback" && e.kind === "directory",
+    );
+    await r.barrier();
+    r.send({ action: "callback", id: directory.id });
+    if (!signal)
+      assert.equal((await r.wait((e) => e.event === "result")).ok, true);
+    assert.deepEqual(await r.closed, { code: signal ? 1 : 0, signal: null });
+    assert.equal(r.commands("rm").length, 1);
+    assert.equal(r.events.filter((e) => e.kind === "clients").length, 1);
+    assert.equal(r.events.filter((e) => e.kind === "directory").length, 1);
+  });
+
+for (const failure of [
+  "container",
+  "clients",
+  "directory",
+  "hung-clients",
+  "hung-directory",
+])
+  test(`synthetic fixture ${failure} drains other resources without false directory proof`, async (t) => {
+    const r = await runner(t, "fixture", 2);
+    const other = await r.command("run", 1);
+    r.child.kill("SIGTERM");
+    r.close(r.first, 137);
+    r.close(other, 137);
+    const removals = [await r.command("rm"), await r.command("rm", 1)];
+    r.close(removals[0], failure === "container" ? 1 : 0);
+    r.close(removals[1]);
+    await r.absence(0, "", failure === "container" ? 1 : 0);
+    if (failure !== "container") await r.absence(1);
+    const a = await r.wait((e) => e.id === "clients-0");
+    const b = await r.wait((e) => e.id === "clients-1");
+    r.send({ action: "callback", id: b.id });
+    const otherDirectory = await r.wait((e) => e.id === "directory-1");
+    r.send({ action: "callback", id: otherDirectory.id });
+    if (failure !== "hung-clients")
+      r.send({ action: "callback", id: a.id, fail: failure === "clients" });
+    if (["directory", "hung-directory"].includes(failure)) {
+      const directory = await r.wait((e) => e.id === "directory-0");
+      if (failure === "directory")
+        r.send({ action: "callback", id: directory.id, fail: true });
+    }
+    if (failure.startsWith("hung")) {
+      r.send({ action: "tick", ms: 999 });
+      await r.barrier();
+      r.send({ action: "late-registration" });
+      assert.equal((await r.wait((e) => e.event === "registration")).ok, false);
+      r.send({ action: "tick", ms: 1 });
+    }
+    assert.deepEqual(await r.closed, { code: 1, signal: null });
+    assert.equal(r.commands("rm").length, 2);
+    assert.equal(r.stderr.includes("PRIVATE_"), false);
+    assert.equal(
+      r.events.some((e) => e.event === "result" && e.ok),
+      false,
+    );
+    if (["container", "clients", "hung-clients"].includes(failure))
+      assert.equal(
+        r.events.some((e) => e.id === "directory-0"),
+        false,
+      );
+  });
+
+test("synthetic client and external directory work share the same remaining one-second deadline", async (t) => {
+  const r = await runner(t, "fixture");
+  r.close(r.first);
+  r.close(await r.command("rm"));
+  await r.absence();
+  const clients = await r.wait((e) => e.kind === "clients");
+  r.send({ action: "tick", ms: 600 });
+  r.send({ action: "callback", id: clients.id });
+  await r.wait((e) => e.kind === "directory");
+  r.send({ action: "tick", ms: 399 });
+  await r.barrier();
+  r.send({ action: "tick", ms: 1 });
+  assert.equal((await r.wait((e) => e.event === "result")).ok, false);
+  await r.closed;
+  assert.equal(r.events.filter((e) => e.kind === "directory").length, 1);
+  assert.equal(r.commands("rm").length, 1);
+});
+
+test("synthetic completed fixture cannot cache away later ordinary-client cancellation drain", async (t) => {
+  const r = await runner(t, "fixture-later");
+  r.close(r.first);
+  r.close(await r.command("rm"));
+  await r.absence();
+  for (const kind of ["clients", "directory"]) {
+    const c = await r.wait((e) => e.kind === kind);
+    r.send({ action: "callback", id: c.id });
+  }
+  const later = await r.command("run", 1);
+  r.child.kill("SIGTERM");
+  r.close(await r.command("rm", 1));
+  await r.absence(1);
+  await r.wait((e) => e.event === "kill" && e.id === later.id);
+  await r.barrier();
+  r.close(later, 137);
+  assert.deepEqual(await r.closed, { code: 1, signal: null });
+  assert.equal(r.commands("rm").length, 2);
+});
+
+// Invoke the same callback wired into runtime.test.mjs's enclosing t.after.
+// Engine replies are synthetic; directory preservation/deletion is real.
+for (const [mode, failure] of [
+  ["workspace", "remove"],
+  ["workspace", "lost-ack"],
+  ["workspace", "clients"],
+  ["workspace-setup", "remove"],
+  ["workspace-setup", "lost-ack"],
+  ["workspace", undefined],
+])
+  test(`actual enclosing finalizer ${mode} ${failure ?? "success"} retains the fixture ownership boundary under reentry`, async (t) => {
+    const setup = mode === "workspace-setup";
+    const count = setup ? 1 : 2;
+    const r = await runner(t, mode, count);
+    const workspace = await r.wait((e) => e.event === "workspace");
+    assert.equal(
+      dirname(workspace.parent),
+      resolve(import.meta.dirname, "../../../.principal"),
+    );
+    assert.match(basename(workspace.parent), /^outer-cleanup-[a-zA-Z0-9]+$/u);
+    assert.equal(
+      spawnSync("git", ["check-ignore", "--quiet", workspace.parent]).status,
+      0,
+    );
+    t.after(async () => {
+      if (r.child.exitCode === null && r.child.signalCode === null)
+        r.child.kill("SIGKILL");
+      await r.closed;
+      // Supervised disposal only after observing intentionally retained failure state.
+      await rm(workspace.parent, { recursive: true, force: true });
+      await assert.rejects(lstat(workspace.parent), { code: "ENOENT" });
+    });
+    const directory = setup
+      ? r.first.args
+          .find((arg) => arg.startsWith("type=bind,src="))
+          .slice("type=bind,src=".length)
+          .split(",dst=")[0]
+      : workspace.directory;
+    assert.equal((await lstat(directory)).isDirectory(), true);
+    r.close(r.first, setup ? 1 : 0, "", { stderr: "PRIVATE_SETUP_ERROR" });
+    if (setup) {
+      // The failed setup client's own acknowledged removal is independent of
+      // the already-registered Redis owner, whose removal is tested below.
+      r.close(await r.command("rm"));
+      await r.absence();
+    } else r.close(await r.command("run", 1));
+    const removals = [];
+    for (let i = 0; i < count; i++)
+      removals.push(await r.command("rm", i + (setup ? 1 : 0)));
+    // Normal inner cleanup, enclosing cleanup and reentrant finalizers must join.
+    r.send({ action: "finalize-workspace" });
+    r.send({ action: "finalize-workspace" });
+    for (let i = 0; i < count; i++) {
+      const removal = removals[i];
+      if (i === 0 && failure === "lost-ack")
+        r.send({ action: "error", id: removal.id });
+      r.close(removal, i === 0 && failure === "remove" ? 1 : 0);
+      if (i !== 0 || !["remove", "lost-ack"].includes(failure)) {
+        const proof = await r.wait(
+          (e) =>
+            e.event === "command" &&
+            e.args[0] === "ps" &&
+            e.args.includes(`name=^/${removal.args[2]}$`),
+        );
+        r.close(proof);
+      }
+    }
+    if (!setup) {
+      for (let i = count - 1; i >= 0; i--) {
+        const clients = await r.wait((e) => e.id === `clients-${i}`);
+        if (i === 0 && failure === "clients") continue;
+        r.send({ action: "callback", id: clients.id });
+        if (i !== 0 || failure === undefined) {
+          const dependent = await r.wait((e) => e.id === `directory-${i}`);
+          r.send({ action: "callback", id: dependent.id });
+        }
+      }
+      if (failure === "clients") {
+        r.send({ action: "tick", ms: 999 });
+        await r.barrier();
+        r.send({ action: "tick", ms: 1 });
+      }
+    }
+    const result = await r.wait((e) => e.event === "result");
+    assert.deepEqual(await r.closed, { code: 0, signal: null });
+    assert.equal(r.stderr.includes("PRIVATE_"), false);
+    for (const removal of removals)
+      assert.equal(
+        r.commands("rm").filter((e) => e.args[2] === removal.args[2]).length,
+        1,
+      );
+    if (setup)
+      assert.deepEqual(await r.wait((e) => e.event === "setup-settled"), {
+        event: "setup-settled",
+        fixtureReturned: false,
+      });
+    const retained = await lstat(directory).then(
+      () => true,
+      (error) => {
+        if (error.code !== "ENOENT") throw error;
+        return false;
+      },
+    );
+    t.diagnostic(
+      JSON.stringify({
+        parentChowns: r
+          .commands("run")
+          .filter((e) => e.args.at(-1).startsWith("chown -R")).length,
+        parentDeletes: r.events.filter((e) => e.event === "parent-delete")
+          .length,
+        directoryRetained: retained,
+      }),
+    );
+    if (failure) {
+      assert.deepEqual(result, {
+        event: "result",
+        ok: false,
+        message: "Runtime container/child teardown unconfirmed.",
+      });
+      assert.equal(
+        r.commands("run").filter((e) => e.args.at(-1).startsWith("chown -R"))
+          .length,
+        0,
+        "uncertainty must not dispatch privileged parent chown",
+      );
+      assert.equal(
+        r.events.filter((e) => e.event === "parent-delete").length,
+        0,
+        "uncertainty must not dispatch recursive parent deletion",
+      );
+      assert.equal(retained, true);
+      assert.equal(r.events.filter((e) => e.id === "directory-0").length, 0);
+      assert.equal(
+        r.events.filter((e) => e.event === "workspace-record").length,
+        0,
+      );
+      assert.equal(
+        r.commands("image").length,
+        2,
+        "independent images still drain once",
+      );
+      t.diagnostic(
+        "Synthetic failure state retained before exact supervised directory disposal.",
+      );
+    } else {
+      assert.equal(result.ok, true);
+      assert.equal(
+        r.commands("run").filter((e) => e.args.at(-1).startsWith("chown -R"))
+          .length,
+        1,
+      );
+      assert.equal(
+        r.events.filter((e) => e.event === "parent-delete").length,
+        1,
+      );
+      await assert.rejects(lstat(workspace.parent), { code: "ENOENT" });
+      assert.equal(
+        r.events.filter((e) => e.event === "workspace-record").length,
+        1,
+      );
+      assert.equal(r.commands("image").length, 0);
+    }
+    if (!setup) {
+      assert.equal(r.events.filter((e) => e.id === "clients-0").length, 1);
+      assert.equal(r.events.filter((e) => e.id === "clients-1").length, 1);
+      assert.equal(
+        r.events.filter((e) => e.id === "directory-1").length,
+        1,
+        "independent fixture directory drains despite failure",
+      );
+      await assert.rejects(lstat(join(workspace.parent, "fixture-1")), {
+        code: "ENOENT",
+      });
+    }
+    assert.deepEqual(
+      r.events.filter((e) => e.event === "workspace-reentry"),
+      Array.from({ length: 2 }, () =>
+        failure
+          ? {
+              event: "workspace-reentry",
+              ok: false,
+              message: "Runtime container/child teardown unconfirmed.",
+            }
+          : { event: "workspace-reentry", ok: true },
+      ),
+    );
+  });
 
 for (const operation of ["rm", "ps"])
   test(`${operation} deadline keeps uncertain ownership and drains late clients without replay`, async (t) => {
