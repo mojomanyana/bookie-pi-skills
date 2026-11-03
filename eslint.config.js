@@ -4,7 +4,12 @@ import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   {
-    ignores: ["**/dist/**", "**/node_modules/**", "examples/vault/**"],
+    ignores: [
+      "**/dist/**",
+      "**/node_modules/**",
+      "examples/vault/**",
+      ".principal/**",
+    ],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, extname, join, normalize, resolve } from "node:path";
 import test from "node:test";
+import { ESLint } from "eslint";
 
 const root = resolve(import.meta.dirname, "..");
 
@@ -76,6 +77,33 @@ function workflowActions(source) {
     (match) => match[1],
   );
 }
+
+test("lint ignores private administration without excluding product, tests or configuration", async () => {
+  const eslint = new ESLint({ cwd: root });
+  assert.equal(
+    await eslint.isPathIgnored(resolve(root, ".principal/reports/probe.mjs")),
+    true,
+  );
+  for (const path of [
+    "apps/service/src/server.ts",
+    "apps/service/test/deployment/runtime.test.mjs",
+    "apps/service/scripts/qualify-runtime.mjs",
+    "packages/core/src/index.ts",
+    "test/repository.test.mjs",
+    "eslint.config.js",
+    "apps/service/.principal/probe.mjs",
+  ])
+    assert.equal(await eslint.isPathIgnored(resolve(root, path)), false, path);
+  const [result] = await eslint.lintText("const unused = 1;\n", {
+    filePath: resolve(root, "apps/service/src/server.ts"),
+  });
+  assert.ok(
+    result.messages.some(
+      (message) => message.ruleId === "@typescript-eslint/no-unused-vars",
+    ),
+    "bad product text must still be linted",
+  );
+});
 
 test("repository contains the agent handoff contract", () => {
   const missing = requiredFiles.filter(

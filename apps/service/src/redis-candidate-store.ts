@@ -1,4 +1,10 @@
 import { createHash, createHmac, randomBytes } from "node:crypto";
+import { performance } from "node:perf_hooks";
+import { types } from "node:util";
+import {
+  CANONICAL_EXPORT_VERSION,
+  PROJECTION_VERSIONS,
+} from "./build-input-versions.js";
 
 import { ownDataFields } from "./closed-data.js";
 import {
@@ -64,6 +70,14 @@ export interface CandidateInputManifest {
   readonly cleanupChunk: number;
   readonly outputDescriptor?: EncodedOutputDescriptor;
 }
+/** Ephemeral private observation, never a completion/authorization receipt. */
+export interface StoredOutputMeasurement {
+  readonly lease: CandidateInputLease;
+  readonly sourceCommit: string;
+  readonly descriptorHash: string;
+  readonly concepts: Readonly<{ count: number; hash: string }>;
+  readonly chunks: Readonly<{ count: number; hash: string }>;
+}
 export interface CandidateInspection {
   readonly job: CandidateJob;
   readonly manifest: CandidateInputManifest | null;
@@ -91,6 +105,20 @@ export type RedisExecutor = (
   signal: AbortSignal,
 ) => Promise<unknown>;
 
+// Separate payload domain; the metadata ceiling remains 4096 bytes.
+const PAGE_COUNT = 128;
+const ENCODED_BYTES = 1_048_576;
+const RAW_BYTES = 6 * ENCODED_BYTES;
+const INVENTORY_CALLS = 16_384;
+const readOperations = new Set([
+  "read",
+  "readCandidate",
+  "current",
+  "inspect",
+  "storedPage",
+  "storedInventory",
+  "storedFinish",
+]);
 const buildPattern = /^bld_[0-9a-f]{64}(?![\s\S])/u;
 const jobPattern = /^job_[0-9A-HJKMNP-TV-Z]{26}(?![\s\S])/u;
 const commitPattern = /^(?:[0-9a-f]{40}|[0-9a-f]{64})(?![\s\S])/u;
@@ -363,6 +391,130 @@ function job(
     unavailable(outcome);
   return Object.freeze(value) as unknown as CandidateJob;
 }
+function payloadStrings(value: unknown): string[] {
+  if (
+    !Array.isArray(value) ||
+    types.isProxy(value) ||
+    value.length < 1 ||
+    value.length > PAGE_COUNT + 1
+  )
+    unavailable();
+  const fields = Object.getOwnPropertyDescriptors(value);
+  if (Reflect.ownKeys(fields).length !== value.length + 1) unavailable();
+  const result: string[] = [];
+  let bytes = 0;
+  for (let i = 0; i < value.length; i++) {
+    const field = fields[String(i)];
+    if (
+      field === undefined ||
+      !Object.hasOwn(field, "value") ||
+      typeof field.value !== "string" ||
+      /[\uD800-\uDFFF]/u.test(field.value)
+    )
+      unavailable();
+    const text = field.value as string;
+    if (i > 0) bytes += Buffer.byteLength(text);
+    if ((i === 0 && Buffer.byteLength(text) > 4096) || bytes > RAW_BYTES)
+      unavailable();
+    result.push(text);
+  }
+  return result;
+}
+const conceptFields = [
+  "uid",
+  "path",
+  "type",
+  "title",
+  "project",
+  "lifecycle",
+  "workflow",
+  "sensitivity",
+  "tags",
+  "links",
+  "trust",
+  "verifiedBy",
+  "staleAfter",
+  "relations",
+  "sourceCommit",
+  "sourceHash",
+  "projectionSchemaVersion",
+  "contentTrust",
+];
+const chunkFields = [
+  "ordinal",
+  "heading",
+  "headingPath",
+  "text",
+  "chunkerVersion",
+  "embeddingGeneration",
+];
+/** Only parsed, bounded Redis JSON reaches this validator. Not an append-policy change. */
+function storedRecord(
+  raw: string,
+  kind: "concept" | "chunk",
+  ordinal: number,
+  source: string,
+  maxChunkBytes: number,
+): string {
+  // Reject excessive container depth before JSON.parse can allocate a hostile tree.
+  let depth = 0,
+    quoted = false,
+    escaped = false;
+  for (const char of raw) {
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') quoted = false;
+    } else if (char === '"') quoted = true;
+    else if (char === "{" || char === "[") {
+      if (++depth > 4) unavailable();
+    } else if (char === "}" || char === "]") depth--;
+  }
+  const value: unknown = JSON.parse(raw);
+  ownDataFields(value, [
+    ...conceptFields,
+    ...(kind === "chunk" ? chunkFields : []),
+  ]);
+  const v = value as Record<string, unknown>;
+  const text = (x: unknown): x is string =>
+    typeof x === "string" && !/[\uD800-\uDFFF]/u.test(x);
+  const nullable = (x: unknown): boolean => x === null || text(x);
+  const strings = (x: unknown): boolean => Array.isArray(x) && x.every(text);
+  if (
+    ![v.uid, v.path, v.type, v.title, v.lifecycle, v.sensitivity].every(text) ||
+    ![v.project, v.workflow, v.staleAfter].every(nullable) ||
+    ![v.tags, v.links, v.verifiedBy].every(strings) ||
+    typeof v.trust !== "string" ||
+    !["unverified", "declared", "verified"].includes(v.trust) ||
+    v.sourceCommit !== source ||
+    !matches(v.sourceHash, hashPattern) ||
+    v.projectionSchemaVersion !== PROJECTION_VERSIONS.projectionSchemaVersion ||
+    v.contentTrust !== "untrusted" ||
+    !Array.isArray(v.relations)
+  )
+    unavailable();
+  for (const relation of v.relations) {
+    const [kind, target, uid] = ownDataFields(relation, [
+      "kind",
+      "target",
+      "targetUid",
+    ]);
+    if (!text(kind) || !text(target) || !nullable(uid)) unavailable();
+  }
+  if (
+    kind === "chunk" &&
+    (v.ordinal !== ordinal ||
+      !nullable(v.heading) ||
+      !strings(v.headingPath) ||
+      !text(v.text) ||
+      Buffer.byteLength(v.text) > maxChunkBytes ||
+      v.chunkerVersion !== PROJECTION_VERSIONS.chunkerVersion ||
+      v.embeddingGeneration !== null)
+  )
+    unavailable();
+  return JSON.stringify(value);
+}
+
 /** Allocate before dispatch; the future controller retains this attempt ID on uncertainty. */
 export function createCandidateJobId(): string {
   const alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -430,6 +582,7 @@ export class RedisCandidateStore {
   async #call(
     request: Record<string, unknown>,
     signal?: AbortSignal,
+    timeoutMs = this.#timeout,
   ): Promise<Record<string, unknown>> {
     input(signal === undefined || signal instanceof AbortSignal);
     if (signal?.aborted)
@@ -446,9 +599,13 @@ export class RedisCandidateStore {
       signal === undefined
         ? deadline.signal
         : AbortSignal.any([signal, deadline.signal]);
-    const timer = setTimeout(() => deadline.abort(), this.#timeout);
+    const timer = setTimeout(
+      () => deadline.abort(),
+      Math.min(this.#timeout, timeoutMs),
+    );
     let dispatched = false;
-    const mutating = !["read", "readCandidate", "current", "inspect"].includes(
+    const mutating = !readOperations.has(String(request.op));
+    const native = ["storedPage", "storedInventory", "storedFinish"].includes(
       String(request.op),
     );
     let onAbort: () => void = () => {};
@@ -471,9 +628,12 @@ export class RedisCandidateStore {
           .then(resolve, reject);
       });
       if (composed.aborted) unavailable();
-      if (typeof raw !== "string" || Buffer.byteLength(raw) > 4096)
+      const parts =
+        native && Array.isArray(raw) ? payloadStrings(raw) : undefined;
+      const metadata = parts === undefined ? raw : parts[0];
+      if (typeof metadata !== "string" || Buffer.byteLength(metadata) > 4096)
         unavailable();
-      const reply: unknown = JSON.parse(raw);
+      const reply: unknown = JSON.parse(metadata);
       if (!object(reply)) unavailable();
       if (reply.ok === false) {
         if (
@@ -487,8 +647,8 @@ export class RedisCandidateStore {
           unavailable();
         throw new CandidateStoreError(reply.code as CandidateErrorCode);
       }
-      if (reply.ok !== true) unavailable();
-      return reply;
+      if (reply.ok !== true || (native && parts === undefined)) unavailable();
+      return native ? { ...reply, records: parts!.slice(1) } : reply;
     } catch (error) {
       const outcome = dispatched && mutating ? ("unknown" as const) : undefined;
       if (signal?.aborted)
@@ -582,6 +742,205 @@ export class RedisCandidateStore {
       { op: "attach", lease: wireLease(owner), outputDescriptor: serialized },
       signal,
     );
+  }
+
+  /** Read-only actual storage observation. Caller owns renewal/capacity and supplies
+   * remaining claim-relative time, not a new build lifetime. Never retries a read/write. */
+  async verifyStoredOutput(
+    owner: CandidateInputLease,
+    recipe: TrustedBuildRecipe,
+    expectedDescriptor: EncodedOutputDescriptor,
+    options: Readonly<{ timeoutMs: number; signal?: AbortSignal }>,
+  ): Promise<StoredOutputMeasurement> {
+    let held: CandidateInputLease;
+    let spec: Record<string, unknown>;
+    let descriptor: EncodedOutputDescriptor;
+    let tuple: unknown[];
+    let maxChunkBytes: number;
+    let timeoutMs: number;
+    let signal: AbortSignal | undefined;
+    try {
+      input(inputLease(owner));
+      held = Object.freeze({ ...owner });
+      spec = recipeMetadata(recipe, this.#vaultUid);
+      const [serialized] = ownDataFields(recipe, [
+        "serialized",
+        "scopeHash",
+        "policyHash",
+        "recipeHash",
+        "buildId",
+        "sourceCommit",
+        "configurationEpoch",
+      ]);
+      const r = JSON.parse(serialized as string) as unknown[];
+      input(
+        r[9] === CANONICAL_EXPORT_VERSION &&
+          r[10] === PROJECTION_VERSIONS.projectionSchemaVersion &&
+          r[11] === PROJECTION_VERSIONS.parserVersion &&
+          r[12] === PROJECTION_VERSIONS.chunkerVersion &&
+          r[13] === PROJECTION_VERSIONS.preprocessingVersion,
+      );
+      maxChunkBytes = r[14] as number;
+      const [raw, hash] = ownDataFields(expectedDescriptor, [
+        "serialized",
+        "hash",
+      ]);
+      descriptor = parseOutputDescriptor(raw as string);
+      input(descriptor.hash === hash);
+      tuple = JSON.parse(descriptor.serialized) as unknown[];
+      input(
+        tuple[2] === spec.recipeHash &&
+          held.buildId === spec.buildId &&
+          String(held.configurationEpoch) === spec.configurationEpoch,
+      );
+      input(object(options) && !types.isProxy(options));
+      const values = ownDataFields(options, [
+        "timeoutMs",
+        ...(Object.hasOwn(options, "signal") ? ["signal"] : []),
+      ]);
+      input(bounded(values[0], 21_600_000, 1));
+      timeoutMs = values[0];
+      input(values[1] === undefined || values[1] instanceof AbortSignal);
+      signal = values[1] as AbortSignal | undefined;
+    } catch {
+      throw new TypeError("Candidate input is invalid.");
+    }
+    const until = performance.now() + timeoutMs;
+    const remaining = (): number => {
+      if (signal?.aborted)
+        throw new DOMException("Candidate operation cancelled.", "AbortError");
+      const ms = Math.floor(until - performance.now());
+      if (ms < 1) unavailable();
+      return ms;
+    };
+    const request = {
+      lease: wireLease(held),
+      spec,
+      outputDescriptor: descriptor.serialized,
+    };
+    const call = async (
+      op: string,
+      extra: Record<string, unknown> = {},
+    ): Promise<Record<string, unknown>> => {
+      const reply = await this.#call(
+        { ...request, op, ...extra },
+        signal,
+        remaining(),
+      );
+      remaining();
+      return reply;
+    };
+    try {
+      const measured: { count: number; hash: string }[] = [];
+      for (const [kind, total] of [
+        ["concept", tuple[6]],
+        ["chunk", tuple[8]],
+      ] as const) {
+        const count = total as number;
+        const hash = createHash("sha256");
+        let offset = 0;
+        while (offset < count) {
+          const page = await call("storedPage", { kind, offset });
+          ownDataFields(page, [
+            "ok",
+            "kind",
+            "offset",
+            "next",
+            "rawBytes",
+            "records",
+          ]);
+          const rows = page.records as string[];
+          if (
+            page.kind !== kind ||
+            page.offset !== offset ||
+            !Array.isArray(rows) ||
+            rows.length < 1 ||
+            rows.length > PAGE_COUNT ||
+            page.next !== offset + rows.length ||
+            (page.next as number) > count ||
+            page.rawBytes !==
+              rows.reduce((n, raw) => n + Buffer.byteLength(raw), 0)
+          )
+            unavailable();
+          let bytes = 0;
+          for (const [i, raw] of rows.entries()) {
+            remaining();
+            const encoded = storedRecord(
+              raw,
+              kind,
+              offset + i,
+              spec.sourceCommit as string,
+              maxChunkBytes,
+            );
+            bytes += Buffer.byteLength(encoded);
+            if (bytes > ENCODED_BYTES) unavailable();
+            hash.update(encoded, "utf8").update("\n", "utf8");
+          }
+          offset += rows.length;
+        }
+        measured.push({ count: offset, hash: `sha256:${hash.digest("hex")}` });
+      }
+      if (measured[0]!.hash !== tuple[7] || measured[1]!.hash !== tuple[9])
+        unavailable();
+      // A compact ordinal bitset, not a generation/payload buffer. SCAN can
+      // duplicate entries: reject rather than counting them as new evidence.
+      const concepts = tuple[6] as number,
+        chunks = tuple[8] as number;
+      const seen = new Uint8Array(Math.ceil((concepts + chunks + 1) / 8));
+      let cursor = "0",
+        observed = 0;
+      const cursors = new Set<string>();
+      for (let iteration = 0; ; iteration++) {
+        if (iteration === INVENTORY_CALLS || cursors.has(cursor)) unavailable();
+        cursors.add(cursor);
+        const page = await call("storedInventory", { cursor });
+        ownDataFields(page, ["ok", "cursor", "next", "records"]);
+        if (
+          page.cursor !== cursor ||
+          !matches(page.next, /^(?:0|[1-9][0-9]{0,19})(?![\s\S])/u) ||
+          (page.next.length === 20 && page.next > "18446744073709551615")
+        )
+          unavailable();
+        const records = page.records as string[];
+        for (const token of records) {
+          let ordinal: number;
+          if (token === "manifest") ordinal = concepts + chunks;
+          else {
+            const match =
+              /^(concept|chunk):(0|[1-9][0-9]{0,5})(?![\s\S])/u.exec(token);
+            if (!match) unavailable();
+            const index = Number(match[2]);
+            if (index >= (match[1] === "concept" ? concepts : chunks))
+              unavailable();
+            ordinal = index + (match[1] === "concept" ? 0 : concepts);
+          }
+          const byte = ordinal >> 3,
+            bit = 1 << (ordinal & 7);
+          if (seen[byte]! & bit) unavailable();
+          seen[byte] = seen[byte]! | bit;
+          observed++;
+        }
+        cursor = page.next;
+        if (cursor === "0") break;
+      }
+      if (observed !== concepts + chunks + 1) unavailable();
+      const final = await call("storedFinish");
+      ownDataFields(final, ["ok", "records"]);
+      if ((final.records as string[]).length !== 0) unavailable();
+      remaining();
+      return Object.freeze({
+        lease: held,
+        sourceCommit: spec.sourceCommit as string,
+        descriptorHash: descriptor.hash,
+        concepts: Object.freeze(measured[0]!),
+        chunks: Object.freeze(measured[1]!),
+      });
+    } catch (error) {
+      if (signal?.aborted)
+        throw new DOMException("Candidate operation cancelled.", "AbortError");
+      if (error instanceof CandidateStoreError) throw error;
+      unavailable();
+    }
   }
 
   /** Null means a cleaned terminal candidate, never a malformed present descriptor. */

@@ -6,6 +6,13 @@ import { RedisCandidateStore } from "../dist/redis-candidate-store.js";
 import { encodeBuildInputRecipe } from "../dist/build-recipe.js";
 import { encodeOutputDescriptor } from "../dist/output-descriptor.js";
 
+import {
+  conceptFor,
+  chunkFor,
+  storedRecipe,
+  storedDescriptor,
+} from "./helpers/stored-output-fixture.mjs";
+
 const vaultUid = "VLT-00000000000000000000000009";
 const namespaceKey = randomBytes(32);
 const buildId = `bld_${"a".repeat(64)}`;
@@ -71,6 +78,396 @@ const output = encodeOutputDescriptor({
     count: 0,
     hash: "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   },
+});
+
+test("stored-output requests reject malformed budgets and pre-abort without a read", async () => {
+  let calls = 0;
+  const store = new RedisCandidateStore({
+    vaultUid,
+    namespaceKey,
+    execute: async () => {
+      calls++;
+    },
+  });
+  const r = storedRecipe(vaultUid);
+  const owner = { ...inputLease, buildId: r.buildId, configurationEpoch: 1 };
+  const d = storedDescriptor(r, [conceptFor(r)], [chunkFor(r)]);
+  for (const timeoutMs of [undefined, 0, -1, 1.5, 21600001, "1"])
+    await assert.rejects(
+      () => store.verifyStoredOutput(owner, r, d, { timeoutMs }),
+      /Candidate input is invalid/u,
+    );
+  const abort = new AbortController();
+  abort.abort("PRIVATE_REASON");
+  await assert.rejects(
+    () =>
+      store.verifyStoredOutput(owner, r, d, {
+        timeoutMs: 21600000,
+        signal: abort.signal,
+      }),
+    { name: "AbortError", message: "Candidate operation cancelled." },
+  );
+  assert.equal(calls, 0);
+});
+
+function verifierHarness(transform = (reply) => reply, options = {}) {
+  const r = storedRecipe(vaultUid);
+  const owner = { ...inputLease, buildId: r.buildId, configurationEpoch: 1 };
+  const concepts = [conceptFor(r)],
+    chunks = [chunkFor(r)];
+  const descriptor = storedDescriptor(r, concepts, chunks);
+  const calls = [];
+  const execute = async (args, signal) => {
+    const request = JSON.parse(args.at(-1));
+    calls.push(request);
+    let reply;
+    if (request.op === "storedPage") {
+      const rows = (request.kind === "concept" ? concepts : chunks).map(
+        JSON.stringify,
+      );
+      reply = [
+        JSON.stringify({
+          ok: true,
+          kind: request.kind,
+          offset: request.offset,
+          next: request.offset + rows.length,
+          rawBytes: rows.reduce((n, v) => n + Buffer.byteLength(v), 0),
+        }),
+        ...rows,
+      ];
+    } else if (request.op === "storedInventory")
+      reply = [
+        JSON.stringify({ ok: true, cursor: request.cursor, next: "0" }),
+        "manifest",
+        "concept:0",
+        "chunk:0",
+      ];
+    else if (request.op === "storedFinish")
+      reply = [JSON.stringify({ ok: true })];
+    else throw new Error("unexpected operation");
+    return await transform(reply, request, signal);
+  };
+  const store = new RedisCandidateStore({
+    vaultUid,
+    namespaceKey,
+    execute,
+    ...options,
+  });
+  return {
+    store,
+    owner,
+    recipe: r,
+    descriptor,
+    calls,
+    verify: (request = { timeoutMs: 10000 }) =>
+      store.verifyStoredOutput(owner, r, descriptor, request),
+  };
+}
+
+test("actual native strings are measured in order and all verifier inputs snapshot before dispatch", async () => {
+  const h = verifierHarness();
+  const owner = { ...h.owner },
+    r = { ...h.recipe },
+    d = { ...h.descriptor },
+    options = { timeoutMs: 10000 };
+  const pending = h.store.verifyStoredOutput(owner, r, d, options);
+  owner.fence = 100;
+  r.serialized = "null";
+  d.serialized = "null";
+  options.timeoutMs = 0;
+  const result = await pending;
+  assert.deepEqual(result.lease, h.owner);
+  assert.equal(result.descriptorHash, h.descriptor.hash);
+  assert.equal(result.concepts.count, 1);
+  assert.deepEqual(
+    h.calls.map((r) => r.op),
+    ["storedPage", "storedPage", "storedInventory", "storedFinish"],
+  );
+  for (const request of h.calls) {
+    assert.equal(request.lease.fence, 1);
+    assert.equal(request.outputDescriptor, h.descriptor.serialized);
+    assert.equal(JSON.stringify(request).includes(vaultUid), false);
+  }
+});
+
+test("hostile closed verifier inputs and unsupported recipes never execute getters or Redis", async () => {
+  const h = verifierHarness();
+  let touched = false;
+  const hostile = (value) =>
+    new Proxy(value, {
+      ownKeys() {
+        touched = true;
+        throw new Error("PRIVATE");
+      },
+    });
+  const getter = { ...h.descriptor };
+  Object.defineProperty(getter, "serialized", {
+    get() {
+      touched = true;
+      throw new Error("PRIVATE");
+    },
+  });
+  for (const [owner, suppliedRecipe, descriptor, options] of [
+    [hostile(h.owner), h.recipe, h.descriptor, { timeoutMs: 100 }],
+    [h.owner, hostile(h.recipe), h.descriptor, { timeoutMs: 100 }],
+    [h.owner, h.recipe, getter, { timeoutMs: 100 }],
+    [h.owner, h.recipe, h.descriptor, hostile({ timeoutMs: 100 })],
+    [h.owner, h.recipe, h.descriptor, { timeoutMs: 100, extra: true }],
+    [h.owner, h.recipe, h.descriptor, { timeoutMs: 100, signal: {} }],
+    [h.owner, h.recipe, { ...h.descriptor, hash }, { timeoutMs: 100 }],
+    [h.owner, recipe, h.descriptor, { timeoutMs: 100 }],
+  ])
+    await assert.rejects(
+      () =>
+        h.store.verifyStoredOutput(owner, suppliedRecipe, descriptor, options),
+      { name: "TypeError", message: "Candidate input is invalid." },
+    );
+  assert.equal(touched, false);
+  assert.equal(h.calls.length, 0);
+});
+
+test("malicious payload pages, envelopes, encoding and progression are static read failures", async () => {
+  const corruptions = [
+    () => null,
+    () => "PRIVATE_DEPENDENCY",
+    () => JSON.stringify({ ok: true }),
+    () => ["x".repeat(4097)],
+    () => [JSON.stringify({ ok: true }), ...Array(129).fill("{}")],
+    () => [JSON.stringify({ ok: true }), "x".repeat(6 * 1048576 + 1)],
+    (reply) => {
+      reply[1] = "null";
+      return reply;
+    },
+    (reply) => {
+      reply[1] = "{bad JSON PRIVATE";
+      return reply;
+    },
+    (reply) => {
+      reply[1] = '{"uid":"\\ud800"}';
+      return reply;
+    },
+    (reply) => {
+      reply[1] = '{"tags":' + "[".repeat(64) + "0" + "]".repeat(64) + "}";
+      return reply;
+    },
+    (reply) => {
+      const p = JSON.parse(reply[0]);
+      p.next = p.offset;
+      reply[0] = JSON.stringify(p);
+      return reply;
+    },
+    (reply) => {
+      const p = JSON.parse(reply[0]);
+      p.offset++;
+      reply[0] = JSON.stringify(p);
+      return reply;
+    },
+    (reply) => {
+      const p = JSON.parse(reply[0]);
+      p.next++;
+      reply[0] = JSON.stringify(p);
+      return reply;
+    },
+    (reply) => {
+      const p = JSON.parse(reply[0]);
+      p.kind = "chunk";
+      reply[0] = JSON.stringify(p);
+      return reply;
+    },
+    (reply) => {
+      const p = JSON.parse(reply[0]);
+      p.rawBytes++;
+      reply[0] = JSON.stringify(p);
+      return reply;
+    },
+    (reply) => {
+      reply.pop();
+      return reply;
+    },
+    (reply) => {
+      reply.extra = "PRIVATE";
+      return reply;
+    },
+  ];
+  for (const corrupt of corruptions) {
+    const h = verifierHarness((reply, r) =>
+      r.op === "storedPage" ? corrupt(reply) : reply,
+    );
+    await assert.rejects(
+      () => h.verify(),
+      (error) =>
+        code("INDEX_UNAVAILABLE")(error) && error.outcome === undefined,
+    );
+    assert.equal(h.calls.length, 1);
+  }
+});
+
+test("raw expansion and metadata budgets accept exact endpoints and reject one byte beyond", async () => {
+  for (const extra of [0, 1]) {
+    const h = verifierHarness((reply, r) => {
+      if (r.op !== "storedPage") return reply;
+      const metadata = JSON.parse(reply[0]);
+      const raw =
+        reply[1] +
+        " ".repeat(6 * 1048576 + extra - Buffer.byteLength(reply[1]));
+      metadata.rawBytes = Buffer.byteLength(raw);
+      return [JSON.stringify(metadata), raw];
+    });
+    if (extra)
+      await assert.rejects(() => h.verify(), code("INDEX_UNAVAILABLE"));
+    else assert.equal((await h.verify()).chunks.count, 1);
+    const metadata = verifierHarness((reply) => [
+      reply[0] + " ".repeat(4096 + extra - Buffer.byteLength(reply[0])),
+      ...reply.slice(1),
+    ]);
+    if (extra)
+      await assert.rejects(() => metadata.verify(), code("INDEX_UNAVAILABLE"));
+    else assert.equal((await metadata.verify()).concepts.count, 1);
+  }
+});
+
+test("inventory requires exhaustion, unique in-range records and bounded progressing cursors", async () => {
+  for (const corrupt of [
+    (reply) => {
+      const p = JSON.parse(reply[0]);
+      p.cursor = "skipped";
+      reply[0] = JSON.stringify(p);
+      return reply;
+    },
+    (reply) => {
+      const p = JSON.parse(reply[0]);
+      p.next = "00";
+      reply[0] = JSON.stringify(p);
+      return reply;
+    },
+    (reply) => {
+      const p = JSON.parse(reply[0]);
+      p.next = "18446744073709551616";
+      reply[0] = JSON.stringify(p);
+      return reply;
+    },
+    (reply) => {
+      reply.pop();
+      return reply;
+    },
+    (reply) => {
+      reply.push("concept:0");
+      return reply;
+    },
+    (reply) => {
+      reply[1] = "concept:99999";
+      return reply;
+    },
+    (reply) => {
+      reply[1] = "concept:00";
+      return reply;
+    },
+    (reply) => {
+      reply[1] = "unknown:0";
+      return reply;
+    },
+    (reply) => {
+      reply[1] = "x".repeat(4096);
+      return reply;
+    },
+    () => [JSON.stringify({ ok: true, cursor: "0", next: "1" })],
+  ]) {
+    const h = verifierHarness((reply, r) =>
+      r.op === "storedInventory" ? corrupt(reply) : reply,
+    );
+    await assert.rejects(
+      () => h.verify(),
+      (error) =>
+        code("INDEX_UNAVAILABLE")(error) && error.outcome === undefined,
+    );
+    assert.ok(h.calls.length <= 4);
+    assert.equal(
+      h.calls.some((r) => r.op === "storedFinish"),
+      false,
+    );
+  }
+  // Endless, distinct cursors/empty pages must hit the fixed iteration ceiling,
+  // not use COUNT as proof of completion or rely on a long wall-clock timeout.
+  let pages = 0;
+  const h = verifierHarness((reply, r) =>
+    r.op === "storedInventory"
+      ? [JSON.stringify({ ok: true, cursor: r.cursor, next: String(++pages) })]
+      : reply,
+  );
+  await assert.rejects(
+    () => h.verify({ timeoutMs: 21600000 }),
+    code("INDEX_UNAVAILABLE"),
+  );
+  assert.equal(pages, 16384);
+});
+
+test("abort/deadline settle promptly with no late hash, continuation, retry or partial reuse", async () => {
+  for (const stage of ["storedPage", "storedInventory", "storedFinish"]) {
+    for (const cause of ["abort", "deadline", "call-cap"]) {
+      let late, entered;
+      const reached = new Promise((resolve) => {
+        entered = resolve;
+      });
+      let stalled = true;
+      const h = verifierHarness(
+        async (reply, request, signal) => {
+          if (!stalled || request.op !== stage) return reply;
+          entered(signal);
+          return await new Promise((resolve) => {
+            late = () => resolve(reply);
+          });
+        },
+        { operationTimeoutMs: cause === "call-cap" ? 10 : 2000 },
+      );
+      const abort = new AbortController();
+      const pending = h.verify({
+        timeoutMs: cause === "deadline" ? 20 : 10000,
+        signal: abort.signal,
+      });
+      const rejected = assert.rejects(pending, (error) =>
+        cause === "abort"
+          ? error.name === "AbortError" &&
+            error.message === "Candidate operation cancelled." &&
+            error.outcome === undefined
+          : code("INDEX_UNAVAILABLE")(error) && error.outcome === undefined,
+      );
+      const signal = await reached;
+      if (cause === "abort") abort.abort("PRIVATE_ABORT");
+      await rejected;
+      assert.equal(signal.aborted, true);
+      const calls = h.calls.length;
+      late();
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(h.calls.length, calls);
+      stalled = false;
+      assert.equal(
+        (await h.verify()).concepts.count,
+        1,
+        "a new invocation reads/hashes from zero",
+      );
+      assert.equal(h.calls[calls].op, "storedPage");
+      assert.equal(h.calls[calls].offset, 0);
+    }
+  }
+});
+
+test("final ownership/reply failure discards measured hashes without mutating anything", async () => {
+  for (const final of [
+    JSON.stringify({ ok: false, code: "FENCED" }),
+    [JSON.stringify({ ok: true }), "PRIVATE_EXTRA"],
+    [JSON.stringify({ ok: true, extra: true })],
+  ]) {
+    const h = verifierHarness((reply, r) =>
+      r.op === "storedFinish" ? final : reply,
+    );
+    await assert.rejects(
+      () => h.verify(),
+      (error) =>
+        ["FENCED", "INDEX_UNAVAILABLE"].includes(error.code) &&
+        error.outcome === undefined,
+    );
+    assert.equal(h.calls.at(-1).op, "storedFinish");
+  }
 });
 
 test("owner-epoch reconciliation reads live ownership and current job without dispatching a mutation", async () => {

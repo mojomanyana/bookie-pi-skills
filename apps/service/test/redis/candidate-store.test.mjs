@@ -4,6 +4,13 @@ import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
+import {
+  conceptFor,
+  chunkFor,
+  storedRecipe,
+  storedDescriptor,
+  stream,
+} from "../helpers/stored-output-fixture.mjs";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 
@@ -63,6 +70,9 @@ function docker(args, input, signal) {
     });
     let stdout = "";
     let stderr = "";
+    // redis-cli JSON may split a UTF-8 scalar across pipe chunks. Decode as a
+    // stream; per-Buffer coercion corrupts otherwise valid stored bytes.
+    child.stdout.setEncoding("utf8");
     child.stdout.on("data", (data) => {
       stdout += data;
     });
@@ -162,8 +172,11 @@ async function environment(t) {
     );
     t.diagnostic(`Confirmed removal of owned Redis fixture ${name}`);
   });
-  const command = async (...args) =>
-    JSON.parse(await docker(["exec", name, "redis-cli", "--json", ...args]));
+  const command = async (...args) => {
+    const value = await docker(["exec", name, "redis-cli", "--json", ...args]);
+    // redis-cli prints INFO verbatim even with --json (not a store reply).
+    return args[0] === "INFO" ? value : JSON.parse(value);
+  };
   for (let attempt = 0; attempt < 20; attempt++) {
     try {
       if ((await command("PING")) === "PONG") break;
@@ -174,12 +187,13 @@ async function environment(t) {
   }
   assert.equal(await command("PING"), "PONG");
   const commands = [];
-  const create = (uid = vaultUid, username, reply) =>
+  const create = (uid = vaultUid, username, reply, before) =>
     new RedisCandidateStore({
       vaultUid: uid,
       namespaceKey,
       execute: async (args, signal) => {
         commands.push(args);
+        await before?.(JSON.parse(args.at(-1)));
         const result = JSON.parse(
           await docker(
             [
@@ -208,6 +222,826 @@ async function environment(t) {
 
 const code = (expected) => (error) =>
   error.code === expected && error.message === expected;
+
+test("Redis 8 stored-output integrity", { timeout: 600_000 }, async (t) => {
+  const { command, create, commands } = await environment(t);
+  let serial = 3000;
+  async function fixture(
+    conceptCount = 3,
+    chunkCount = 3,
+    sourceCommit = commit,
+    options = {},
+  ) {
+    const uid = `VLT-${String(serial++).padStart(26, "0")}`;
+    const recipe = storedRecipe(
+      uid,
+      sourceCommit,
+      options.epoch ?? Number.MAX_SAFE_INTEGER,
+    );
+    const concepts =
+      options.concepts?.(recipe) ??
+      Array.from({ length: conceptCount }, (_, i) =>
+        conceptFor(recipe, { title: `Record ${i} café 😀 \\"\n\t\u0000` }),
+      );
+    const chunks =
+      options.chunks?.(recipe) ??
+      Array.from({ length: chunkCount }, (_, i) => chunkFor(recipe, i));
+    const descriptor = storedDescriptor(recipe, concepts, chunks);
+    const transport = [];
+    const store = create(
+      uid,
+      options.username,
+      async (result, request) => {
+        if (Array.isArray(result))
+          transport.push({
+            op: request.op,
+            count: result.length - 1,
+            rawBytes: result
+              .slice(1)
+              .reduce((n, s) => n + Buffer.byteLength(s), 0),
+            envelopeBytes: Buffer.byteLength(JSON.stringify(result)),
+            metadataBytes: Buffer.byteLength(result[0]),
+          });
+        return options.reply ? await options.reply(result, request) : result;
+      },
+      options.before,
+    );
+    await store.startProcess();
+    await store.setConfigurationEpoch(recipe.configurationEpoch);
+    const { lease } = await store.claimInput(recipe, createCandidateJobId());
+    if (options.phase !== "queued") await store.beginBuilding(lease);
+    if (!options.phase) await store.attachOutput(lease, descriptor);
+    for (const [kind, rows] of options.phase
+      ? []
+      : [
+          ["concept", concepts],
+          ["chunk", chunks],
+        ]) {
+      let offset = 0;
+      while (offset < rows.length) {
+        const batch = [];
+        let bytes = 0;
+        while (batch.length < 128 && offset + batch.length < rows.length) {
+          const row = rows[offset + batch.length];
+          const size = Buffer.byteLength(JSON.stringify(row));
+          if (batch.length && bytes + size > 1048576) break;
+          batch.push(row);
+          bytes += size;
+        }
+        await store.append(lease, kind, offset, batch);
+        offset += batch.length;
+      }
+    }
+    const prefix = `${store.namespace}build:${recipe.buildId}:`;
+    return {
+      uid,
+      recipe,
+      concepts,
+      chunks,
+      descriptor,
+      store,
+      lease,
+      prefix,
+      transport,
+    };
+  }
+  const verify = (f) =>
+    f.store.verifyStoredOutput(f.lease, f.recipe, f.descriptor, {
+      timeoutMs: 20000,
+    });
+
+  await t.test(
+    "actual RedisJSON encoding preserves ordered ECMAScript bytes and native payload strings",
+    async () => {
+      const f = await fixture();
+      for (const [kind, rows] of [
+        ["concept", f.concepts],
+        ["chunk", f.chunks],
+      ]) {
+        for (const [i, row] of rows.entries()) {
+          const raw = await command("JSON.GET", f.prefix + kind + ":" + i);
+          assert.equal(JSON.stringify(JSON.parse(raw)), JSON.stringify(row));
+          const memory = await command(
+            "JSON.DEBUG",
+            "MEMORY",
+            f.prefix + kind + ":" + i,
+            ".",
+          );
+          assert.ok(Number.isSafeInteger(memory) && memory > 0);
+          t.diagnostic(
+            `${kind} encoded=${Buffer.byteLength(JSON.stringify(row))} raw=${Buffer.byteLength(raw)} memory=${memory}`,
+          );
+        }
+      }
+      const before = await command("HGETALL", f.prefix + "manifest");
+      const job = await f.store.readJob(f.lease.jobId);
+      const result = await verify(f);
+      assert.deepEqual(result, {
+        lease: f.lease,
+        sourceCommit: f.recipe.sourceCommit,
+        descriptorHash: f.descriptor.hash,
+        concepts: { count: 3, hash: stream(f.concepts) },
+        chunks: { count: 3, hash: stream(f.chunks) },
+      });
+      assert.ok(
+        Object.isFrozen(result) &&
+          Object.isFrozen(result.lease) &&
+          Object.isFrozen(result.concepts) &&
+          Object.isFrozen(result.chunks),
+      );
+      assert.deepEqual(await command("HGETALL", f.prefix + "manifest"), before);
+      assert.deepEqual(await f.store.readJob(f.lease.jobId), job);
+      assert.equal(await command("EXISTS", f.store.namespace + "active"), 0);
+    },
+  );
+
+  await t.test(
+    "stored-only text corruption defeats the original descriptor and unchanged cursors",
+    async () => {
+      const f = await fixture();
+      const before = await command("HGETALL", f.prefix + "manifest");
+      await command(
+        "JSON.SET",
+        f.prefix + "chunk:1",
+        ".text",
+        JSON.stringify("TAMPERED_PRIVATE_TEXT"),
+      );
+      await assert.rejects(() => verify(f), code("INDEX_UNAVAILABLE"));
+      assert.deepEqual(await command("HGETALL", f.prefix + "manifest"), before);
+      await command(
+        "JSON.SET",
+        f.prefix + "chunk:1",
+        ".text",
+        JSON.stringify(f.chunks[1].text),
+      );
+      assert.equal((await verify(f)).chunks.hash, stream(f.chunks));
+      assert.equal(
+        commands
+          .map((a) => JSON.parse(a.at(-1)))
+          .filter((r) => r.op === "append").length,
+        4,
+      );
+    },
+  );
+
+  await t.test(
+    "both Git lengths, zero chunks and actual empty inventory verify without state/TTL changes",
+    async () => {
+      for (const [concepts, chunks, source] of [
+        [0, 0, "b".repeat(64)],
+        [2, 0, commit],
+        [2, 2, "b".repeat(64)],
+      ]) {
+        const f = await fixture(concepts, chunks, source);
+        const leaseKey = f.store.namespace + "lease:" + f.recipe.buildId;
+        await command("ZADD", leaseKey, "1", "expired-reader");
+        const ttl = await command("PTTL", f.store.namespace + "lock:rebuild");
+        const before = await f.store.readCandidate(f.lease.jobId);
+        const result = await verify(f);
+        assert.equal(result.concepts.hash, stream(f.concepts));
+        assert.equal(result.chunks.hash, stream(f.chunks));
+        assert.equal(
+          await command("ZCARD", leaseKey),
+          1,
+          "no removal of expired reader leases",
+        );
+        const afterTtl = await command(
+          "PTTL",
+          f.store.namespace + "lock:rebuild",
+        );
+        assert.ok(
+          afterTtl > 0 && afterTtl < ttl,
+          "verification never renews the lock",
+        );
+        assert.deepEqual(await f.store.readCandidate(f.lease.jobId), before);
+        await f.store.requestCancel(f.lease.jobId);
+        await f.store.acknowledgeCancel(f.lease);
+        await f.store.cleanup(f.lease.jobId);
+        assert.equal((await f.store.readJob(f.lease.jobId)).state, "cancelled");
+      }
+    },
+  );
+
+  await t.test(
+    "storage corruption, holes, wrong types/order and nonadjacent inventory extras cannot be hidden by cursors",
+    async () => {
+      const f = await fixture();
+      const before = await command("HGETALL", f.prefix + "manifest");
+      const changes = [
+        ["concept:0", { ...f.concepts[0], title: "PRIVATE_TAMPER" }],
+        ["chunk:1", { ...f.chunks[1], text: "PRIVATE_TAMPER" }],
+        [
+          "concept:1",
+          { ...f.concepts[1], sourceHash: `sha256:${"b".repeat(64)}` },
+        ],
+        ["chunk:0", { ...f.chunks[0], sourceCommit: "b".repeat(40) }],
+        ["concept:0", f.concepts[1]],
+        ["chunk:1", { ...f.chunks[1], ordinal: 0 }],
+        ["concept:1", f.chunks[1]],
+        ["chunk:1", f.concepts[1]],
+        ["concept:1", { ...f.concepts[1], projectionSchemaVersion: "2" }],
+        ["chunk:2", { ...f.chunks[2], chunkerVersion: "unsupported" }],
+      ];
+      for (const [key, row] of changes) {
+        const saved = await command("JSON.GET", f.prefix + key);
+        try {
+          await command("JSON.SET", f.prefix + key, ".", JSON.stringify(row));
+          await assert.rejects(() => verify(f), code("INDEX_UNAVAILABLE"));
+          assert.deepEqual(
+            await command("HGETALL", f.prefix + "manifest"),
+            before,
+          );
+        } finally {
+          await command("JSON.SET", f.prefix + key, ".", saved);
+        }
+      }
+      for (const kind of ["concept", "chunk"]) {
+        for (const index of [0, 1, 2]) {
+          const key = f.prefix + kind + ":" + index;
+          const saved = await command("JSON.GET", key);
+          await command("DEL", key);
+          try {
+            await assert.rejects(() => verify(f), code("INDEX_UNAVAILABLE"));
+          } finally {
+            await command("JSON.SET", key, ".", saved);
+          }
+        }
+        const key = f.prefix + kind + ":0";
+        const saved = await command("JSON.GET", key);
+        await command("DEL", key);
+        await command("SET", key, "PRIVATE_WRONG_TYPE");
+        try {
+          await assert.rejects(() => verify(f), code("INDEX_UNAVAILABLE"));
+        } finally {
+          await command("DEL", key);
+          await command("JSON.SET", key, ".", saved);
+        }
+        for (const index of [3, 99999]) {
+          const extra = f.prefix + kind + ":" + index;
+          await command("SET", extra, "PRIVATE_EXTRA_NO_PAYLOAD_READ");
+          try {
+            await assert.rejects(() => verify(f), code("INDEX_UNAVAILABLE"));
+          } finally {
+            await command("DEL", extra);
+          }
+        }
+      }
+      await command(
+        "JSON.SET",
+        f.prefix + "concept:0",
+        ".",
+        JSON.stringify(f.concepts[1]),
+      );
+      await command(
+        "JSON.SET",
+        f.prefix + "concept:1",
+        ".",
+        JSON.stringify(f.concepts[0]),
+      );
+      await assert.rejects(() => verify(f), code("INDEX_UNAVAILABLE"));
+      for (const i of [0, 1])
+        await command(
+          "JSON.SET",
+          f.prefix + "concept:" + i,
+          ".",
+          JSON.stringify(f.concepts[i]),
+        );
+      assert.equal((await verify(f)).concepts.hash, stream(f.concepts));
+      for (const kind of ["concept", "chunk"]) {
+        const empty = await fixture(0, 0);
+        const extra = empty.prefix + kind + ":99999";
+        await command("SET", extra, "PRIVATE_EMPTY_EXTRA");
+        await assert.rejects(() => verify(empty), code("INDEX_UNAVAILABLE"));
+        await command("DEL", extra);
+        assert.equal((await verify(empty)).concepts.count, 0);
+      }
+    },
+  );
+
+  await t.test(
+    "full projection domains reject malformed fields even with matching asserted stream hashes",
+    async () => {
+      const patches = [
+        ["concept", { uid: null }],
+        ["concept", { path: 4 }],
+        ["concept", { type: [] }],
+        ["concept", { title: {} }],
+        ["concept", { project: false }],
+        ["concept", { lifecycle: 1 }],
+        ["concept", { workflow: [] }],
+        ["concept", { sensitivity: null }],
+        ["concept", { tags: [1] }],
+        ["concept", { links: "bad" }],
+        ["concept", { trust: "trusted" }],
+        ["concept", { verifiedBy: [null] }],
+        ["concept", { staleAfter: 0 }],
+        [
+          "concept",
+          {
+            relations: [{ kind: "x", target: "y", targetUid: null, extra: 1 }],
+          },
+        ],
+        [
+          "concept",
+          { relations: [{ kind: "x", target: null, targetUid: null }] },
+        ],
+        ["concept", { unknown: "PRIVATE_UNKNOWN" }],
+        ["concept", { sourceHash: "invalid" }],
+        ["concept", { contentTrust: "trusted" }],
+        ["concept", { projectionSchemaVersion: "unsupported" }],
+        ["concept", { tags: [[[[["PRIVATE_DEPTH"]]]]] }],
+        ["chunk", { heading: [] }],
+        ["chunk", { headingPath: [null] }],
+        ["chunk", { text: 1 }],
+        ["chunk", { text: "é".repeat(32769) }],
+        ["chunk", { embeddingGeneration: "vector" }],
+        ["chunk", { ordinal: 1 }],
+        ["chunk", { chunkerVersion: "wrong" }],
+      ];
+      const f = await fixture(1, 1);
+      for (const [kind, patch] of patches) {
+        const rows =
+          kind === "concept"
+            ? [{ ...f.concepts[0], ...patch }]
+            : [{ ...f.chunks[0], ...patch }];
+        const descriptor = storedDescriptor(
+          f.recipe,
+          kind === "concept" ? rows : f.concepts,
+          kind === "chunk" ? rows : f.chunks,
+        );
+        await command(
+          "JSON.SET",
+          f.prefix + kind + ":0",
+          ".",
+          JSON.stringify(rows[0]),
+        );
+        await command(
+          "HSET",
+          f.prefix + "manifest",
+          "outputDescriptor",
+          descriptor.serialized,
+        );
+        await assert.rejects(
+          () => verify({ ...f, descriptor }),
+          code("INDEX_UNAVAILABLE"),
+        );
+        await command(
+          "JSON.SET",
+          f.prefix + kind + ":0",
+          ".",
+          JSON.stringify(kind === "concept" ? f.concepts[0] : f.chunks[0]),
+        );
+      }
+      await command(
+        "HSET",
+        f.prefix + "manifest",
+        "outputDescriptor",
+        f.descriptor.serialized,
+      );
+      assert.equal((await verify(f)).chunks.count, 1);
+    },
+  );
+
+  await t.test(
+    "missing attachment/manifest, malformed metadata and incomplete cursors are not empty evidence",
+    async () => {
+      const f = await fixture();
+      const key = f.prefix + "manifest";
+      const original = await command("HGETALL", key);
+      const wrongDescriptor = storedDescriptor(
+        f.recipe,
+        [{ ...f.concepts[0], title: "different" }, ...f.concepts.slice(1)],
+        f.chunks,
+      );
+      for (const [field, value, expected] of [
+        ["outputDescriptor", undefined, "INDEX_UNAVAILABLE"],
+        ["outputDescriptor", wrongDescriptor.serialized, "BUILD_CONFLICT"],
+        [
+          "outputDescriptor",
+          f.descriptor.serialized.replace('output",1', 'output",2'),
+          "INDEX_UNAVAILABLE",
+        ],
+        ["manifestVersion", "3", "INDEX_UNAVAILABLE"],
+        ["nextConcept", "2", "INDEX_UNAVAILABLE"],
+        ["nextConcept", "4", "INDEX_UNAVAILABLE"],
+        ["nextChunk", "2", "INDEX_UNAVAILABLE"],
+        ["nextConcept", "-0", "INDEX_UNAVAILABLE"],
+        ["nextConcept", "01", "INDEX_UNAVAILABLE"],
+        ["nextChunk", "1.5", "INDEX_UNAVAILABLE"],
+        ["cleanupConcept", "1", "INDEX_UNAVAILABLE"],
+        ["cleanupChunk", "-1", "INDEX_UNAVAILABLE"],
+        ["state", "unknown", "INDEX_UNAVAILABLE"],
+        ["manifestHash", hash, "BUILD_CONFLICT"],
+        ["policyHash", hash, "BUILD_CONFLICT"],
+      ]) {
+        if (value === undefined) await command("HDEL", key, field);
+        else await command("HSET", key, field, value);
+        await assert.rejects(() => verify(f), code(expected));
+        await command("HSET", key, field, original[field]);
+      }
+      await command("DEL", key);
+      await assert.rejects(() => verify(f), code("INDEX_UNAVAILABLE"));
+      await command("HSET", key, ...Object.entries(original).flat());
+      assert.equal((await verify(f)).concepts.count, 3);
+      for (const phase of ["queued", "absent"]) {
+        const missing = await fixture(1, 0, commit, { phase });
+        await assert.rejects(
+          () => verify(missing),
+          code(phase === "queued" ? "FENCED" : "BUILD_CONFLICT"),
+        );
+        assert.equal(missing.transport.length, 0);
+      }
+    },
+  );
+
+  await t.test(
+    "live ownership, phases and serving/reader protections reject without payload disclosure",
+    async () => {
+      const f = await fixture();
+      for (const patch of [
+        { ownerEpoch: 2 },
+        { fence: 2 },
+        { jobId: `job_${"0".repeat(26)}` },
+        { configurationEpoch: 1 },
+      ]) {
+        const before = f.transport.length;
+        await assert.rejects(
+          () =>
+            f.store.verifyStoredOutput(
+              { ...f.lease, ...patch },
+              patch.configurationEpoch
+                ? { ...f.recipe, configurationEpoch: 1 }
+                : f.recipe,
+              f.descriptor,
+              { timeoutMs: 10000 },
+            ),
+          code("FENCED"),
+        );
+        assert.equal(f.transport.length, before);
+      }
+      for (const pointer of ["active", "previous", "reader"]) {
+        const key =
+          f.store.namespace +
+          (pointer === "reader" ? "lease:" + f.recipe.buildId : pointer);
+        if (pointer === "reader")
+          await command("ZADD", key, String(Date.now() + 60000), "reader");
+        else await command("SET", key, f.recipe.buildId);
+        const before = f.transport.length;
+        await assert.rejects(() => verify(f), code("BUILD_CONFLICT"));
+        assert.equal(f.transport.length, before);
+        await command("DEL", key);
+      }
+      for (const [state, failure, expected] of [
+        ["cancelling", "", "FENCED"],
+        ["cancelled", "CANCELLED", "FENCED"],
+        ["failed", "INTERNAL", "FENCED"],
+        ["complete", "", "BUILD_CONFLICT"],
+        ["verifying", "", "FENCED"],
+        ["evaluating", "", "FENCED"],
+      ]) {
+        await command("HSET", f.prefix + "manifest", "state", state);
+        await command(
+          "HSET",
+          f.store.namespace + "job:" + f.lease.jobId,
+          "state",
+          state,
+          "failureCode",
+          failure,
+        );
+        await assert.rejects(() => verify(f), code(expected));
+      }
+      await command("HSET", f.prefix + "manifest", "state", "building");
+      await command(
+        "HSET",
+        f.store.namespace + "job:" + f.lease.jobId,
+        "state",
+        "building",
+        "failureCode",
+        "",
+      );
+      const lock = f.store.namespace + "lock:rebuild";
+      await command("PEXPIREAT", lock, "1");
+      await assert.rejects(() => verify(f), code("FENCED"));
+      await f.store.startProcess();
+      await assert.rejects(() => verify(f), code("FENCED"));
+      await f.store.cleanup(f.lease.jobId);
+      assert.equal(
+        (await f.store.readJob(f.lease.jobId)).failureCode,
+        "INTERRUPTED",
+      );
+      const foreign = await fixture(0, 0);
+      await assert.rejects(
+        () =>
+          foreign.store.verifyStoredOutput(
+            { ...f.lease, buildId: foreign.recipe.buildId },
+            foreign.recipe,
+            foreign.descriptor,
+            { timeoutMs: 10000 },
+          ),
+        code("FENCED"),
+      );
+    },
+  );
+
+  for (const boundary of ["between-pages", "before-final"])
+    for (const invalidation of ["cancel", "configure", "restart", "lease-loss"])
+      await t.test(
+        `${invalidation} wins storage ordering ${boundary}`,
+        async () => {
+          let f,
+            fired = false;
+          const invalidate = async (request) => {
+            if (
+              !f ||
+              fired ||
+              request.op !==
+                (boundary === "between-pages" ? "storedPage" : "storedFinish")
+            )
+              return;
+            fired = true;
+            if (invalidation === "cancel")
+              await f.store.requestCancel(f.lease.jobId);
+            if (invalidation === "configure")
+              await f.store.setConfigurationEpoch(2);
+            if (invalidation === "restart") await f.store.startProcess();
+            if (invalidation === "lease-loss")
+              await command("DEL", f.store.namespace + "lock:rebuild");
+          };
+          f = await fixture(129, 0, commit, {
+            epoch: 1,
+            ...(boundary === "between-pages"
+              ? {
+                  reply: async (result, request) => {
+                    await invalidate(request);
+                    return result;
+                  },
+                }
+              : { before: invalidate }),
+          });
+          await assert.rejects(() => verify(f), code("FENCED"));
+          assert.equal(fired, true);
+          assert.equal(
+            f.transport.filter((p) => p.op === "storedPage").length,
+            boundary === "between-pages" ? 1 : 2,
+          );
+          if (invalidation === "cancel")
+            await f.store.acknowledgeCancel(f.lease);
+          else await f.store.startProcess();
+          while (!(await f.store.cleanup(f.lease.jobId)).done) {
+            /* bounded two-page fixture */
+          }
+          assert.ok(
+            ["cancelled", "failed"].includes(
+              (await f.store.readJob(f.lease.jobId)).state,
+            ),
+          );
+        },
+      );
+
+  await t.test(
+    "count and encoded-byte endpoints split actual native transport without widening metadata",
+    async () => {
+      const f = await fixture(129, 0);
+      await verify(f);
+      assert.deepEqual(
+        f.transport.filter((p) => p.op === "storedPage").map((p) => p.count),
+        [128, 1],
+      );
+      function sized(recipe, bytes, scalar) {
+        const base = conceptFor(recipe, { title: "" });
+        const remaining = bytes - Buffer.byteLength(JSON.stringify(base));
+        const width = Buffer.byteLength(JSON.stringify(scalar)) - 2;
+        return {
+          ...base,
+          title:
+            scalar.repeat(Math.floor(remaining / width)) +
+            "x".repeat(remaining % width),
+        };
+      }
+      for (const scalar of ["x", "😀", "\u0000"]) {
+        const large = await fixture(1, 0, commit, {
+          concepts: (r) => [sized(r, 1048576, scalar)],
+        });
+        assert.equal(
+          Buffer.byteLength(JSON.stringify(large.concepts[0])),
+          1048576,
+        );
+        assert.equal(
+          (await verify(large)).concepts.hash,
+          stream(large.concepts),
+        );
+        const pages = large.transport.filter((p) => p.op === "storedPage");
+        assert.equal(pages.length, 1);
+        assert.equal(pages[0].count, 1);
+        assert.ok(pages[0].rawBytes <= 6 * 1048576);
+        assert.ok(pages[0].metadataBytes <= 4096);
+        assert.ok(
+          pages[0].envelopeBytes <= 6 * (6 * 1048576 + 4096) + 3 * 129 + 2,
+        );
+        t.diagnostic(`native maximum ${JSON.stringify(pages[0])}`);
+        if (scalar === "x") {
+          await command(
+            "JSON.STRAPPEND",
+            large.prefix + "concept:0",
+            ".title",
+            '"x"',
+          );
+          const descriptor = storedDescriptor(
+            large.recipe,
+            [{ ...large.concepts[0], title: large.concepts[0].title + "x" }],
+            [],
+          );
+          await command(
+            "HSET",
+            large.prefix + "manifest",
+            "outputDescriptor",
+            descriptor.serialized,
+          );
+          await assert.rejects(
+            () => verify({ ...large, descriptor }),
+            code("INDEX_UNAVAILABLE"),
+          );
+        }
+      }
+      const exact = await fixture(2, 0, commit, {
+        concepts: (r) => [sized(r, 524288, "é"), sized(r, 524288, "x")],
+      });
+      await verify(exact);
+      assert.deepEqual(
+        exact.transport
+          .filter((p) => p.op === "storedPage")
+          .map((p) => p.rawBytes),
+        [1048576],
+      );
+      const over = await fixture(2, 0, commit, {
+        concepts: (r) => [sized(r, 524288, "é"), sized(r, 524289, "x")],
+      });
+      await verify(over);
+      assert.deepEqual(
+        over.transport.filter((p) => p.op === "storedPage").map((p) => p.count),
+        [1, 1],
+      );
+      await assert.rejects(
+        () =>
+          over.store.append(over.lease, "concept", 0, [
+            sized(over.recipe, 1048577, "x"),
+          ]),
+        /Candidate input is invalid/u,
+      );
+    },
+  );
+
+  await t.test(
+    "oversized external DOM fails server-side before JSON.GET and bounded reply transport",
+    async () => {
+      const f = await fixture(1, 0);
+      // A huge shallow array has a tiny seed command; expansion stays in this owned fixture.
+      await command(
+        "JSON.SET",
+        f.prefix + "concept:0",
+        ".tags",
+        '["' + "x".repeat(65536) + '"]',
+      );
+      await command(
+        "EVAL",
+        `for i=1,10 do local a=redis.call('JSON.GET',KEYS[1],'.tags'); local v=cjson.decode(a); for j=1,#v do v[j]=cjson.encode(v[j]) end; redis.call('JSON.ARRAPPEND',KEYS[1],'.tags',unpack(v)) end return 1`,
+        "1",
+        f.prefix + "concept:0",
+      );
+      const memory = await command(
+        "JSON.DEBUG",
+        "MEMORY",
+        f.prefix + "concept:0",
+        ".",
+      );
+      assert.ok(memory > 67108864);
+      await command("CONFIG", "RESETSTAT");
+      await assert.rejects(() => verify(f), code("INDEX_UNAVAILABLE"));
+      const stats = await command("INFO", "commandstats");
+      assert.equal(
+        /cmdstat_json.get:/iu.test(stats),
+        false,
+        "the oversized value was not serialized/read",
+      );
+      assert.equal(f.transport.length, 0);
+      await command("DEL", f.prefix + "concept:0");
+      await command(
+        "JSON.SET",
+        f.prefix + "concept:0",
+        ".",
+        JSON.stringify(f.concepts[0]),
+      );
+      assert.equal((await verify(f)).concepts.count, 1);
+    },
+  );
+
+  await t.test(
+    "a committed lost append reply is measured without replay or phase/capacity inference",
+    async () => {
+      const uid = `VLT-${String(serial++).padStart(26, "0")}`;
+      const recipe = storedRecipe(uid);
+      const concepts = [conceptFor(recipe)];
+      const descriptor = storedDescriptor(recipe, concepts, []);
+      const committed = deferred();
+      let late;
+      const store = create(uid, undefined, async (reply, r) => {
+        if (r.op !== "append") return reply;
+        committed.resolve();
+        return await new Promise((resolve) => {
+          late = () => resolve(reply);
+        });
+      });
+      await store.startProcess();
+      await store.setConfigurationEpoch(1);
+      const { lease } = await store.claimInput(recipe, createCandidateJobId());
+      await store.beginBuilding(lease);
+      await store.attachOutput(lease, descriptor);
+      const abort = new AbortController();
+      const pending = store.append(lease, "concept", 0, concepts, abort.signal);
+      const rejected = assert.rejects(
+        pending,
+        (error) => error.name === "AbortError" && error.outcome === "unknown",
+      );
+      await committed.promise;
+      abort.abort("PRIVATE_APPEND_REPLY_LOST");
+      await rejected;
+      late();
+      const writes = commands.filter(
+        (args) =>
+          JSON.parse(args.at(-1)).op === "append" &&
+          args[3] === store.namespace,
+      ).length;
+      assert.equal(writes, 1);
+      assert.equal(
+        (
+          await store.verifyStoredOutput(lease, recipe, descriptor, {
+            timeoutMs: 10000,
+          })
+        ).concepts.hash,
+        stream(concepts),
+      );
+      assert.equal(
+        commands.filter(
+          (args) =>
+            JSON.parse(args.at(-1)).op === "append" &&
+            args[3] === store.namespace,
+        ).length,
+        writes,
+      );
+      assert.equal((await store.readJob(lease.jobId)).state, "building");
+      assert.equal((await store.inspectInput(lease.jobId)).live, true);
+      await store.fail(lease, "INTERNAL");
+      await store.cleanup(lease.jobId);
+    },
+  );
+
+  await t.test(
+    "ACL/dependency faults are static read failures, never empty or uncertain mutations",
+    async () => {
+      for (const denied of ["json.get", "json.debug", "scan", "info"]) {
+        const username = "deny-" + denied.replaceAll(".", "-");
+        await command(
+          "ACL",
+          "SETUSER",
+          username,
+          "on",
+          "nopass",
+          "~*",
+          "+@all",
+          "-" + denied,
+        );
+        const f = await fixture(1, 0, commit, { username });
+        const before = await f.store.readCandidate(f.lease.jobId);
+        await assert.rejects(
+          () => verify(f),
+          (error) =>
+            code("INDEX_UNAVAILABLE")(error) && error.outcome === undefined,
+        );
+        assert.deepEqual(await f.store.readCandidate(f.lease.jobId), before);
+      }
+      const f = await fixture(1, 0, commit, {
+        reply: async (result, r) => {
+          if (r.op === "storedPage")
+            throw new Error("PRIVATE_DEPENDENCY_CREDENTIAL");
+          return result;
+        },
+      });
+      await assert.rejects(
+        () => verify(f),
+        (error) =>
+          code("INDEX_UNAVAILABLE")(error) &&
+          error.outcome === undefined &&
+          !JSON.stringify(error).includes("PRIVATE"),
+      );
+      await f.store.fail(f.lease, "DEPENDENCY_FAILED");
+      await f.store.cleanup(f.lease.jobId);
+      assert.equal(
+        (await f.store.readJob(f.lease.jobId)).failureCode,
+        "DEPENDENCY_FAILED",
+      );
+    },
+  );
+});
 
 test("Redis 8 fenced candidate lifecycle", { timeout: 240_000 }, async (t) => {
   const { command, create, commands } = await environment(t);
@@ -1914,6 +2748,50 @@ test("Redis 8 fenced candidate lifecycle", { timeout: 240_000 }, async (t) => {
       assert.equal(await command("EXISTS", `${real.namespace}active`), 0);
       await real.fail(lease, "INTERNAL");
       await real.cleanup(lease.jobId);
+      // Explicit test-only composition, not S5 provenance or legacy-ID migration.
+      const recipe = storedRecipe(uid, sourceRef);
+      const outputDescriptor = encodeOutputDescriptor({
+        recipeHash: recipe.recipeHash,
+        canonical: projection.canonicalOutput,
+        concepts: {
+          count: projection.concepts.length,
+          hash: stream(projection.concepts),
+        },
+        chunks: {
+          count: projection.chunks.length,
+          hash: stream(projection.chunks),
+        },
+      });
+      await real.setConfigurationEpoch(1);
+      const input = await real.claimInput(recipe, createCandidateJobId());
+      await real.beginBuilding(input.lease);
+      await real.attachOutput(input.lease, outputDescriptor);
+      await real.append(input.lease, "concept", 0, projection.concepts);
+      await real.append(input.lease, "chunk", 0, projection.chunks);
+      const measured = await real.verifyStoredOutput(
+        input.lease,
+        recipe,
+        outputDescriptor,
+        { timeoutMs: 20000 },
+      );
+      assert.equal(measured.concepts.hash, projection.conceptStreamHash);
+      assert.equal(measured.chunks.hash, projection.chunkStreamHash);
+      assert.notEqual(recipe.buildId, projection.buildId);
+      const surfaces =
+        JSON.stringify(measured) +
+        JSON.stringify(await real.readJob(input.lease.jobId));
+      for (const excluded of [
+        excludedUid,
+        excludedPath,
+        excludedMarker,
+        "SECRET_REDIS_CANARY_7742",
+        "Included control",
+        uid,
+      ])
+        assert.equal(surfaces.includes(excluded), false);
+      assert.equal((await real.readJob(input.lease.jobId)).state, "building");
+      await real.fail(input.lease, "INTERNAL");
+      await real.cleanup(input.lease.jobId);
     },
   );
 

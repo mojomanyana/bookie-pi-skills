@@ -10,7 +10,10 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
-import { trustedBuilderDriver } from "../helpers/trusted-builder-driver.mjs";
+import {
+  trustedBuilderDriver,
+  trustedBuilderGroups,
+} from "../helpers/trusted-builder-driver.mjs";
 import { basename, join } from "node:path";
 import test from "node:test";
 import {
@@ -310,16 +313,27 @@ test(
       );
     }
     assert.deepEqual(trustedResults[0], trustedResults[1]);
-    assert.equal(
-      JSON.parse(
-        await runRuntime(
-          image.imageId,
-          trustedBuilderDriver(fixture, { adversarial: true }),
-          qualifiedOptions(fixture),
+    // Each group owns a fresh authenticated builder/preflight; no serialized
+    // recipe is reused. Positive reproducibility/S7 composition above still run
+    // unchanged through BOTH clean images, not before each independent negative.
+    const trustedGroups = [];
+    for (const mode of Object.keys(trustedBuilderGroups)) {
+      const started = performance.now();
+      assert.deepEqual(
+        JSON.parse(
+          await runRuntime(
+            image.imageId,
+            trustedBuilderDriver(fixture, { mode }),
+            qualifiedOptions(fixture),
+          ),
         ),
-      ).ok,
-      true,
-    );
+        { ok: true },
+      );
+      trustedGroups.push({
+        mode,
+        durationMs: Math.ceil(performance.now() - started),
+      });
+    }
     const nested = await source(parent, true);
     assert.equal(
       JSON.parse(
@@ -429,7 +443,7 @@ test(
     await chmod(signals, 0o777);
     const drift = runRuntime(
       image.imageId,
-      trustedBuilderDriver(fixture, { drift: true }),
+      trustedBuilderDriver(fixture, { mode: "drift" }),
       {
         source: fixture.root,
         mounts: [identityMount, `type=bind,src=${signals},dst=/signals`],
@@ -487,7 +501,7 @@ test(
       JSON.parse(
         await runRuntime(
           image.imageId,
-          trustedBuilderDriver(invalid, { failure: "secret-policy" }),
+          trustedBuilderDriver(invalid, { mode: "secret-policy" }),
           qualifiedOptions(invalid),
         ),
       ),
@@ -508,7 +522,7 @@ test(
       JSON.parse(
         await runRuntime(
           image.imageId,
-          trustedBuilderDriver(malformed, { failure: "invalid-vault" }),
+          trustedBuilderDriver(malformed, { mode: "invalid-vault" }),
           qualifiedOptions(malformed),
         ),
       ),
@@ -703,6 +717,7 @@ test(
       images,
       output: results[0],
       trustedOutput: trustedResults[0],
+      trustedGroups,
       driverHash: hash(
         await readFile(
           new URL("../../scripts/qualify-runtime.mjs", import.meta.url),

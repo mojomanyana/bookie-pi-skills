@@ -128,6 +128,12 @@ test("only S5 orchestration assembles qualified recipes; only S7 deployment comp
         false,
         path,
       );
+    // This first integrity primitive has no runtime consumer: in particular S7
+    // must still stop at attachment, and HTTP/default startup cannot invoke it.
+    if (path !== "redis-candidate-store.ts")
+      assert.equal(/\bverifyStoredOutput\b/u.test(source), false, path);
+    if (path === "rebuild-controller.ts")
+      assert.equal(/\.(?:append|verifyStoredOutput)\s*\(/u.test(source), false);
     if (path !== "trusted-builder.ts" && path !== "rebuild-controller.ts") {
       // Exact type-only consumers confer no runtime/source authority. HTTP and
       // Redis may use the controller component, never instantiate/qualify S5.

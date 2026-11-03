@@ -112,3 +112,12 @@ Open questions are not permission to guess. Resolve them by the listed deadline,
 - **Revisit trigger:** External reliance on the experimental ID algorithm is discovered, initial-scale admission/retrieval limits fail, or a real consumer requires public output-content addressing. Reopen the decision rather than weakening its guarantees.
 - **Decision deadline:** Before BK-017 controller submission or HTTP rebuild wiring.
 - **Owner:** Service architect and repository owner.
+
+## OQ-014: Retrieval evaluation corpus and acceptance threshold
+
+- **State:** Open; does not block the private read-only stored-output integrity increment.
+- **Question:** Which versioned queries, relevant UIDs, expected filters, retrieval metric and agreed pass threshold must gate generation evaluation and cutover?
+- **Evidence:** The [retrieval evaluation gate](../architecture/retrieval.md#evaluation-gate) already requires a versioned set and an agreed threshold. The S8 authority/code inspection did not establish an accepted corpus or threshold; storage-integrity and synthetic runtime tests are not retrieval-quality evaluation.
+- **Current direction:** Service and evaluation/data owners must agree on representative, approved fixtures, labels, metrics and acceptance criteria, then record the accepted definition before implementing a dependent success transition. No numeric default, provider choice, real-data approval or evaluation success is inferred.
+- **Decision deadline:** Before S8 evaluation/completion or generation cutover relies on retrieval-quality evidence.
+- **Owner:** Repository/service owner and evaluation/data owner.
