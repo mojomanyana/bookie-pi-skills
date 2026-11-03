@@ -231,6 +231,66 @@ local function run()
     if m.outputDescriptor~=nil then result.outputDescriptor=m.outputDescriptor end
     return {ok=true,manifest=result}
   end
+  if r.op=='storedPage' or r.op=='storedInventory' or r.op=='storedFinish' then
+    -- All three operations are read-only, including expired reader protection.
+    if not m then return fail('INDEX_UNAVAILABLE') end
+    if not m.v2 then return fail('BUILD_CONFLICT') end
+    if protected(j) then return fail('BUILD_CONFLICT') end
+    if not owned(j,m) or j.state~='building' or redis.call('PTTL',lock)<=0 then return fail('FENCED') end
+    if m.outputDescriptor==nil then return fail('BUILD_CONFLICT') end
+    local s=r.spec
+    if type(s)~='table' or s.buildId~=j.buildId or s.sourceCommit~=m.sourceCommit or s.manifestHash~=m.manifestHash or s.policyHash~=m.policyHash or s.recipeHash~=m.recipeHash or s.configurationEpoch~=m.configurationEpoch or r.outputDescriptor~=m.outputDescriptor then return fail('BUILD_CONFLICT') end
+    if m.nextConcept~=m.concepts or m.nextChunk~=m.chunks or m.cleanupConcept~=0 or m.cleanupChunk~=0 then return fail('INDEX_UNAVAILABLE') end
+    if r.op=='storedFinish' then return {native={cjson.encode({ok=true})}} end
+    local base=p..'build:'..j.buildId..':'
+    if r.op=='storedPage' then
+      if (r.kind~='concept' and r.kind~='chunk') or not integer(r.offset,0,250000) then return fail('INDEX_UNAVAILABLE') end
+      local maximum=r.kind=='concept' and m.concepts or m.chunks
+      if r.offset>=maximum then return fail('INDEX_UNAVAILABLE') end
+      local values={}; local bytes=0; local offset=r.offset
+      while #values<128 and offset<maximum and bytes<1048576 do
+        local key=base..r.kind..':'..decimal(offset)
+        -- DEBUG MEMORY measures the stored DOM before JSON.GET serializes it.
+        -- 64 bytes of DOM per append-encoded byte covers this projection domain
+        -- (fixed object fields, string arrays, three-field relation objects).
+        -- It also bounds corrupt DOM serialization before any raw reply exists.
+        local memory=redis.call('JSON.DEBUG','MEMORY',key,'.')
+        if not integer(memory,1,67108864) then return fail('INDEX_UNAVAILABLE') end
+        local raw=redis.call('JSON.GET',key,'.')
+        if type(raw)~='string' or #raw>6291456 then return fail('INDEX_UNAVAILABLE') end
+        -- Conservative raw-page packing, with a single expanded legal record
+        -- allowed up to 6 MiB. Node independently enforces encoded bytes.
+        if #values>0 and bytes+#raw>1048576 then break end
+        values[#values+1]=raw; bytes=bytes+#raw; offset=offset+1
+      end
+      local result={cjson.encode({ok=true,kind=r.kind,offset=r.offset,next=offset,rawBytes=bytes})}
+      for _,raw in ipairs(values) do result[#result+1]=raw end
+      return {native=result}
+    end
+    if type(r.cursor)~='string' or #r.cursor>20 or not string.match(r.cursor,'^[0-9]+$') or (#r.cursor>1 and string.sub(r.cursor,1,1)=='0') or (#r.cursor==20 and r.cursor>'18446744073709551615') then return fail('INDEX_UNAVAILABLE') end
+    -- COUNT is only a hint. Bound ambient dictionary work/allocation before SCAN,
+    -- then check actual count and key bytes before returning bounded suffixes.
+    if redis.call('DBSIZE')>1000000 then return fail('INDEX_UNAVAILABLE') end
+    local info=redis.call('INFO','memory')
+    local memory=tonumber(string.match(info,'\r\nused_memory:(%d+)\r\n'))
+    if not memory or memory>1073741824 then return fail('INDEX_UNAVAILABLE') end
+    local scan=redis.call('SCAN',r.cursor,'MATCH',base..'*','COUNT',64)
+    if type(scan)~='table' or #scan~=2 or type(scan[1])~='string' or type(scan[2])~='table' or #scan[2]>128 then return fail('INDEX_UNAVAILABLE') end
+    local result={cjson.encode({ok=true,cursor=r.cursor,next=scan[1]})}; local bytes=0
+    for _,key in ipairs(scan[2]) do
+      bytes=bytes+#key
+      if #key>#base+14 or bytes>128*(#base+14) or string.sub(key,1,#base)~=base then return fail('INDEX_UNAVAILABLE') end
+      local suffix=string.sub(key,#base+1)
+      if suffix~='manifest' then
+        local stream,index=string.match(suffix,'^(%a+):(%d+)$')
+        if (stream~='concept' and stream~='chunk') or #index>6 or (#index>1 and string.sub(index,1,1)=='0') then return fail('INDEX_UNAVAILABLE') end
+        local n=tonumber(index)
+        if not integer(n,0,(stream=='concept' and m.concepts or m.chunks)-1) then return fail('INDEX_UNAVAILABLE') end
+      end
+      result[#result+1]=suffix
+    end
+    return {native=result}
+  end
   if r.op=='cleanup' then
     if not terminal[j.state] or j.state=='complete' or protected(j) then return fail('BUILD_CONFLICT') end
     if not m then
@@ -319,5 +379,6 @@ local function run()
 end
 local ok,result=pcall(run)
 if not ok then return cjson.encode(fail('INDEX_UNAVAILABLE')) end
+if result.native then return result.native end
 return cjson.encode(result)
 `;
