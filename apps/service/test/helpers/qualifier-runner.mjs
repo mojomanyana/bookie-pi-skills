@@ -4,6 +4,57 @@ import { PassThrough } from "node:stream";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { mock } from "node:test";
 import { performance } from "node:perf_hooks";
+import { execFileSync } from "node:child_process";
+import { join, resolve } from "node:path";
+
+const [mode = "runtime", count = "1", traceConfig] = process.argv.slice(2);
+const fs = createRequire(import.meta.url)("node:fs/promises");
+const fsSync = createRequire(import.meta.url)("node:fs");
+let workspaceParent;
+if (mode.startsWith("workspace")) {
+  // Real bootstrap BEFORE spawn/timer instrumentation. A synthetic CLI reply is
+  // not privacy proof. Keep the exclusive absent-policy semantics of the shared
+  // qualifier, but a short owned name leaves room for the unchanged socket cap.
+  let failed = false;
+  try {
+    const repository = resolve(import.meta.dirname, "../../../..");
+    const directory = join(repository, ".principal");
+    await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+    if (!(await fs.lstat(directory)).isDirectory()) throw Error();
+    try {
+      await fs.writeFile(join(directory, ".gitignore"), "*\n", {
+        flag: "wx",
+        mode: 0o600,
+      });
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+    }
+    workspaceParent = await fs.mkdtemp(join(directory, "oc-"));
+    execFileSync(
+      "git",
+      ["-C", repository, "check-ignore", "--quiet", "--", workspaceParent],
+      { stdio: "ignore", timeout: 5000 },
+    );
+  } catch {
+    failed = true;
+  }
+  if (failed) {
+    let message = "Synthetic workspace bootstrap failed.";
+    if (workspaceParent)
+      try {
+        // Still empty: no fixture data, registration or setup was authorized.
+        await fs.rmdir(workspaceParent);
+      } catch {
+        message = "Synthetic workspace bootstrap cleanup unconfirmed.";
+      }
+    await new Promise((done) =>
+      process.send({ event: "result", ok: false, message }, done),
+    );
+    process.disconnect();
+    process.exit(1);
+  }
+}
+
 let elapsed = 0;
 mock.method(performance, "now", () => elapsed);
 
@@ -13,9 +64,7 @@ const children = new Map();
 let runLate;
 let registerLate;
 let finalizeWorkspace;
-let workspaceParent;
 const parentContainers = new Set();
-const fs = createRequire(import.meta.url)("node:fs/promises");
 const remove = fs.rm;
 mock.method(fs, "rm", async (path, options) => {
   if (path === workspaceParent)
@@ -25,6 +74,7 @@ mock.method(fs, "rm", async (path, options) => {
       force: options.force,
     });
   await remove(path, options);
+  if (path === workspaceParent) send({ event: "parent-deleted" });
 });
 const callbacks = new Map();
 let next = 0;
@@ -48,8 +98,13 @@ mock.method(cp, "spawn", (program, args, options) => {
     },
   });
   children.set(id, child);
-  send({ event: "command", id, program, args, timeout: options.timeout });
-  // Only the enclosing parent repair and failure-image disposal auto-complete.
+  const flood = mode.startsWith("workspace-pipe") && args[0] === "version";
+  const failed = flood && args[1] === "fail";
+  if (!flood)
+    send({ event: "command", id, program, args, timeout: options.timeout });
+  if (args.includes("PRIVATE_METADATA_DRIVER"))
+    parentContainers.add(args[args.indexOf("--name") + 1]);
+  // Only exact synthetic controls, parent repair and image disposal auto-complete.
   // They remain synthetic CLI replies; fs.rm below really deletes owned state.
   if (
     workspaceParent &&
@@ -63,11 +118,13 @@ mock.method(cp, "spawn", (program, args, options) => {
     (args[0] === "rm" && parentContainers.has(args[2])) ||
     (args[0] === "ps" &&
       [...parentContainers].some((name) => args.includes(`name=^/${name}$`))) ||
-    (workspaceParent && args[0] === "image")
+    (workspaceParent && args[0] === "image") ||
+    flood ||
+    (mode === "trace-metadata" && args[0] === "version")
   )
     queueMicrotask(() => {
-      child.exitCode = 0;
-      child.emit("close", 0, null);
+      child.exitCode = failed ? 1 : 0;
+      child.emit("close", child.exitCode, null);
     });
   return child;
 });
@@ -121,9 +178,97 @@ const {
   extractRuntime,
   mutateRuntimeImage,
   registerFixture,
-  repository,
   runtimeWorkspaceFinalizer,
+  enableQualificationTrace,
+  qualificationTraceStatus,
 } = await import("../../scripts/qualify-runtime.mjs");
+let metadataCalls = 0;
+const forbiddenMetadata = () => {
+  metadataCalls++;
+  throw Error("PRIVATE_METADATA_CANARY");
+};
+const executableMetadata = (kind, field, value) => {
+  if (kind === "getter")
+    return Object.defineProperty({}, field, { get: forbiddenMetadata });
+  if (kind === "inherited-getter")
+    return Object.create(
+      Object.defineProperty({}, field, { get: forbiddenMetadata }),
+    );
+  if (kind === "inherited-value") return Object.create({ [field]: value });
+  if (kind === "revoked-proxy") {
+    const { proxy, revoke } = Proxy.revocable({}, {});
+    revoke();
+    return proxy;
+  }
+  return new Proxy(
+    { [field]: value },
+    {
+      get: forbiddenMetadata,
+      ownKeys: forbiddenMetadata,
+      getOwnPropertyDescriptor: forbiddenMetadata,
+      getPrototypeOf: forbiddenMetadata,
+    },
+  );
+};
+let traceEnabled = false;
+if (mode === "trace-config-metadata") {
+  try {
+    enableQualificationTrace(executableMetadata(count, "maxRecords", 8192));
+    traceEnabled = true;
+    send({ event: "validation", ok: true });
+  } catch (error) {
+    send({ event: "validation", ok: false, message: error.message });
+  }
+  send({ event: "metadata-observations", calls: metadataCalls });
+}
+let sinkWrites = 0;
+if (["trace-blocking-sink", "trace-file-sink"].includes(mode)) {
+  const readFileSync = fsSync.readFileSync;
+  const fstatSync = fsSync.fstatSync;
+  const writeSync = fsSync.writeSync;
+  if (mode === "trace-blocking-sink")
+    mock.method(fsSync, "readFileSync", (path, ...args) =>
+      path === `/proc/self/fdinfo/${process.stderr.fd}`
+        ? "flags:\t02\n"
+        : readFileSync(path, ...args),
+    );
+  else
+    mock.method(fsSync, "fstatSync", (fd, ...args) =>
+      fd === process.stderr.fd
+        ? { isFIFO: () => false, isSocket: () => false }
+        : fstatSync(fd, ...args),
+    );
+  mock.method(fsSync, "writeSync", (...args) => {
+    sinkWrites++;
+    return writeSync(...args);
+  });
+  syncBuiltinESMExports();
+}
+if (traceConfig && !traceEnabled)
+  enableQualificationTrace(JSON.parse(traceConfig));
+if (
+  [
+    "trace-write-error",
+    "trace-write-short",
+    "workspace-trace-write-error",
+    "workspace-trace-unavailable",
+  ].includes(mode)
+) {
+  const writeSync = fsSync.writeSync;
+  let failed = false;
+  mock.method(fsSync, "writeSync", (fd, bytes, ...args) => {
+    if (!failed && String(bytes).startsWith("QUALIFICATION TRACE ")) {
+      failed = true;
+      if (mode === "trace-write-short")
+        return writeSync(fd, Buffer.from(bytes).subarray(0, 8));
+      throw Object.assign(Error("PRIVATE_TRACE_WRITE_ERROR"), {
+        code: mode === "workspace-trace-unavailable" ? "EAGAIN" : "EIO",
+      });
+    }
+    return writeSync(fd, bytes, ...args);
+  });
+  syncBuiltinESMExports();
+}
 const callback = (kind, index) => () =>
   new Promise((resolve, reject) => {
     const id = `${kind}-${index}`;
@@ -149,20 +294,15 @@ runLate = () => {
       send({ event: "late-result", ok: false, message: error.message }),
   );
 };
-const [mode = "runtime", count = "1"] = process.argv.slice(2);
 const operations = [];
-if (mode === "workspace" || mode === "workspace-setup") {
-  const { join } = await import("node:path");
-  workspaceParent = await fs.mkdtemp(
-    join(repository, ".principal/outer-cleanup-"),
-  );
+if (mode.startsWith("workspace")) {
   const directory = join(workspaceParent, "fixture-0");
   send({ event: "workspace", parent: workspaceParent, directory });
   finalizeWorkspace = runtimeWorkspaceFinalizer({
     parent: workspaceParent,
     images: [{ imageId: image }, { imageId: `sha256:${"b".repeat(64)}` }],
     report: () =>
-      mode === "workspace" ? "synthetic-workspace-record" : undefined,
+      mode === "workspace-setup" ? undefined : "synthetic-workspace-record",
     diagnostic: () => send({ event: "workspace-record" }),
   });
   operations.push(
@@ -200,6 +340,37 @@ if (mode === "workspace" || mode === "workspace-setup") {
               }),
             );
           }
+          if (mode.startsWith("workspace-pipe")) {
+            // Real stderr is deliberately unconsumed. No real CLI is dispatched;
+            // enough bounded static records fill the child's actual OS pipe.
+            for (let n = 0; n < 2400; n++) await docker(["version"]);
+            send({
+              event: "pipe-filled",
+              ...qualificationTraceStatus(),
+              nonblocking: Boolean(
+                Number.parseInt(
+                  fsSync
+                    .readFileSync(
+                      `/proc/self/fdinfo/${process.stderr.fd}`,
+                      "utf8",
+                    )
+                    .match(/^flags:\s+(\d+)$/mu)[1],
+                  8,
+                ) & fsSync.constants.O_NONBLOCK,
+              ),
+            });
+          }
+          if (mode === "workspace-pipe-failure") {
+            try {
+              await docker(["version", "fail"]);
+            } catch (error) {
+              send({
+                event: "pipe-command-failure",
+                message: error.message,
+                category: error.category,
+              });
+            }
+          }
           await Promise.all(
             fixtures.map(async (fixture) => {
               try {
@@ -215,8 +386,54 @@ if (mode === "workspace" || mode === "workspace-setup") {
       }
     })(),
   );
-} else
-  for (let i = 0; i < Number(count); i++) {
+} else if (mode === "trace-copy-image") {
+  operations.push(
+    (async () => {
+      await extractRuntime(image, "/PRIVATE_TARGET");
+      await docker(["image", "rm", "--no-prune", "PRIVATE_IMAGE"], {
+        trace: { stage: "runtime-mutation-image-remove", context: "finalizer" },
+      });
+    })(),
+  );
+} else {
+  if (mode === "trace-invalid") {
+    for (const trace of [
+      { stage: "PRIVATE_STAGE", context: "body" },
+      { stage: "runtime-execute", context: "PRIVATE_CONTEXT" },
+      { stage: "runtime-execute", source: "PRIVATE_SOURCE" },
+      { stage: "runtime-execute", error: "PRIVATE_ERROR" },
+    ]) {
+      try {
+        await docker(["version", "PRIVATE_ARGUMENT"], { trace });
+        send({ event: "validation", ok: true });
+      } catch (error) {
+        send({ event: "validation", ok: false, message: error.message });
+      }
+    }
+  }
+  if (mode === "trace-metadata") {
+    const [location, kind] = count.split(":");
+    const options =
+      location === "outer"
+        ? executableMetadata(kind, "trace", { stage: "runtime-execute" })
+        : { trace: executableMetadata(kind, "stage", "runtime-execute") };
+    for (const boundary of ["docker", "runRuntime"]) {
+      try {
+        if (boundary === "docker") await docker(["version"], options);
+        else await runRuntime(image, "PRIVATE_METADATA_DRIVER", options);
+        send({ event: "validation", boundary, ok: true });
+      } catch (error) {
+        send({
+          event: "validation",
+          boundary,
+          ok: false,
+          message: error.message,
+        });
+      }
+    }
+    send({ event: "metadata-observations", calls: metadataCalls });
+  }
+  for (let i = 0; i < (mode.startsWith("trace-") ? 1 : Number(count)); i++) {
     if (mode === "fixture" || mode === "fixture-later") {
       operations.push(
         (async () => {
@@ -239,8 +456,14 @@ if (mode === "workspace" || mode === "workspace-setup") {
       operations.push(mutateRuntimeImage(image, "", "/synthetic", "symlink"));
     else if (mode === "docker")
       operations.push(docker(["run", "--rm", image, "synthetic"]));
-    else operations.push(runRuntime(image, "synthetic"));
+    else
+      operations.push(
+        runRuntime(image, "PRIVATE_DRIVER", {
+          env: ["PRIVATE_ENV=PRIVATE_CREDENTIAL"],
+        }),
+      );
   }
+}
 if (mode === "command") operations.push(docker(["version"]));
 // Catch only to report the operation result, not to defer its settlement.
 // Exiting here deliberately exposes a rejection beating cancellation's drain.
@@ -248,6 +471,7 @@ try {
   const values = await Promise.all(operations);
   send({ event: "result", ok: true, values });
 } catch (error) {
+  if (workspaceParent && traceConfig) process.exitCode = 1;
   send({
     event: "result",
     ok: false,
@@ -256,6 +480,12 @@ try {
     ...(error.stage === undefined ? {} : { stage: error.stage }),
   });
 } finally {
+  if (traceConfig) {
+    await new Promise((resolve) => setImmediate(resolve));
+    send({ event: "trace-status", ...qualificationTraceStatus() });
+    if (["trace-blocking-sink", "trace-file-sink"].includes(mode))
+      send({ event: "sink-writes", count: sinkWrites });
+  }
   mock.restoreAll();
   mock.timers.reset();
   syncBuiltinESMExports();

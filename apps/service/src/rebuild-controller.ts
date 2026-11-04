@@ -136,6 +136,9 @@ interface Attempt {
   stopCode?: CandidateFailureCode;
   worker?: Promise<void>;
   finishing?: Promise<void>;
+  /** Retain the original raw fence-method settlement, including rejection. A
+   * controller abort/timeout alone cannot prove its client cache stopped changing. */
+  recoveryFence?: Promise<number>;
   deadline?: ReturnType<typeof setTimeout>;
   renewal?: ReturnType<typeof setTimeout>;
 }
@@ -953,8 +956,11 @@ export class OwnedRebuildController {
         attempt.retirementDispatched.add("fence");
         try {
           const store = this.#store(attempt.vault);
-          const epoch = await this.#call((s) => store.startProcess(s));
-          if (this.#active !== attempt || this.#publishing) return;
+          const fencing = this.#call((s) => store.startProcess(s));
+          attempt.recoveryFence = fencing;
+          const epoch = await fencing;
+          if (this.#active !== attempt || this.#publishing || this.#disabled)
+            return;
           this.#epochs.set(attempt.vault, epoch);
           attempt.fenced = true;
           await this.#call((s) =>
@@ -1152,13 +1158,16 @@ export class OwnedRebuildController {
   async #boundedWait(
     task: Promise<unknown>,
     milliseconds: number,
-  ): Promise<void> {
+  ): Promise<boolean> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      await Promise.race([
-        task.catch(() => undefined),
-        new Promise<void>((resolve) => {
-          timer = setTimeout(resolve, milliseconds);
+      return await Promise.race([
+        task.then(
+          () => true,
+          () => false,
+        ),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(false), milliseconds);
         }),
       ]);
     } finally {
@@ -1192,7 +1201,21 @@ export class OwnedRebuildController {
       if (this.#preflightTask)
         await this.#boundedWait(this.#preflightTask, 9000);
       if (this.#claimTask) await this.#boundedWait(this.#claimTask, 2500);
+      const ownershipUntil = performance.now() + 2500;
       if (attempt?.worker) await this.#boundedWait(attempt.worker, 2500);
+      // S5/worker settlement is not retirement settlement. A pending original
+      // startProcess can still assign the store client's cached epoch before our
+      // stale-attempt guards run. Join that RAW method before another start, in
+      // the same ownership window. Rejection/expiry is unproved, never a retry
+      // permission; retain the attempt and close admission for supervised recovery.
+      if (
+        attempt?.recoveryFence &&
+        !(await this.#boundedWait(
+          attempt.recoveryFence,
+          Math.max(0, ownershipUntil - performance.now()),
+        ))
+      )
+        unavailable();
       await this.#initialize(next); // interrupts queued too, never resumes
       if (attempt) {
         attempt.fenced = true;
@@ -1233,7 +1256,8 @@ export class OwnedRebuildController {
     if (this.#claimTask) await this.#boundedWait(this.#claimTask, 2500);
     if (attempt) {
       attempt.stopCode ??= "INTERRUPTED";
-      await this.#finish(attempt);
+      if (!(await this.#boundedWait(this.#finish(attempt), 2500)))
+        this.#quarantine(attempt);
     }
   }
 }

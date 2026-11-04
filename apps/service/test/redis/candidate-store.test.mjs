@@ -32,6 +32,7 @@ import {
   outputFor,
   authorization,
   deferred,
+  turn,
 } from "../helpers/controller-fixture.mjs";
 
 const image =
@@ -1048,6 +1049,183 @@ test("Redis 8 stored-output integrity", { timeout: 600_000 }, async (t) => {
     },
   );
 });
+
+// Fake S5 producer, actual controller/client/Lua/JSON. Keep this owned fault
+// fixture independent of the already bounded full lifecycle matrix.
+test(
+  "Redis 8 reload joins the original recovery-fence ACK before replacement publication",
+  { timeout: 30_000 },
+  async (t) => {
+    const { command, create, commands } = await environment(t);
+    const config = controllerConfiguration();
+    const entered = deferred(),
+      late = deferred(),
+      verified = deferred();
+    let store,
+      controller,
+      launches = 0,
+      starts = 0,
+      renewals = 0;
+    store = create(
+      config.sources[0].projection.vaultUid,
+      undefined,
+      async (reply, r) => {
+        if (r.op === "append") {
+          // Real JSON.MSET/cursor commit; lose the lease and ACK, not the write.
+          await command("DEL", store.namespace + "lock:rebuild");
+          return "UNUSABLE_APPEND_ACK";
+        }
+        if (r.op === "start" && JSON.parse(reply).epoch === 2) {
+          entered.resolve();
+          await late.promise; // real increment committed, original cache update pending
+        }
+        if (r.op === "renew") renewals++;
+        if (r.op === "storedFinish") verified.resolve();
+        return reply;
+      },
+    );
+    const start = store.startProcess.bind(store);
+    store.startProcess = async (...args) => {
+      starts++;
+      return await start(...args);
+    };
+    const stores = new Map([
+      ["alpha", store],
+      ["beta", create(config.sources[1].projection.vaultUid)],
+    ]);
+    const leases = [];
+    const claim = store.claimInput.bind(store);
+    store.claimInput = async (...args) => {
+      const value = await claim(...args);
+      leases.push(value.lease);
+      return value;
+    };
+    controller = new OwnedRebuildController({
+      configuration: config,
+      stores,
+      builder: {
+        async preflight(r) {
+          return {
+            ok: true,
+            recipe: controllerRecipe(
+              controller.configuration,
+              r.vault,
+              r.sourceRef,
+            ),
+          };
+        },
+        async build(recipe) {
+          launches++;
+          return {
+            ok: true,
+            output: outputFor(
+              recipe,
+              launches === 1 ? [conceptFor(recipe)] : [],
+            ),
+          };
+        },
+      },
+    });
+    let publication;
+    try {
+      await controller.start(async () => {});
+      const original = await controller.submit({
+        authorization,
+        vault: "alpha",
+        sourceRef: commit,
+      });
+      await entered.promise;
+      publication = controller.reload({ ...config, epoch: 2 });
+      await turn();
+      assert.equal(
+        starts,
+        2,
+        "reload must join the original raw startProcess, not dispatch a competing fence",
+      );
+      assert.equal(controller.configuration.epoch, 1);
+      assert.equal(
+        await command("HGET", store.namespace + "control", "epoch"),
+        "2",
+      );
+      await assert.rejects(
+        controller.submit({ authorization, vault: "beta", sourceRef: commit }),
+        code("DEPENDENCY_UNAVAILABLE"),
+      );
+      late.resolve();
+      await publication;
+      assert.equal(starts, 3);
+      assert.equal(controller.ready, true);
+      // Observe cleanup before the same recipe reuses its build namespace.
+      assert.equal(await store.readCandidate(original.jobId), null);
+      assert.equal(
+        await command(
+          "EXISTS",
+          `${store.namespace}build:${original.buildId}:concept:0`,
+        ),
+        0,
+      );
+      const replacement = await controller.submit({
+        authorization,
+        vault: "alpha",
+        sourceRef: commit,
+      });
+      assert.notEqual(replacement.jobId, original.jobId);
+      assert.equal(leases[1].ownerEpoch, 3);
+      // Submission confirms queued ownership, not asynchronous begin/build. Join
+      // the actual final storage check rather than racing Redis command clients.
+      await verified.promise;
+      assert.equal(
+        (await controller.status({ authorization, jobId: replacement.jobId }))
+          .job.state,
+        "building",
+      );
+      await store.renew(leases[1]);
+      assert.equal(renewals, 1);
+      assert.equal(
+        (await controller.status({ authorization, jobId: replacement.jobId }))
+          .job.state,
+        "building",
+      );
+      assert.equal(controller.ready, true);
+      assert.equal(launches, 2);
+      await assert.rejects(
+        controller.submit({ authorization, vault: "beta", sourceRef: commit }),
+        code("RATE_LIMITED"),
+      );
+      const originalRequests = () =>
+        commands
+          .filter((args) => args[3] === store.namespace)
+          .map((args) => JSON.parse(args.at(-1)));
+      assert.equal(
+        originalRequests().filter((r) => r.op === "append").length,
+        1,
+      );
+      assert.equal(originalRequests().filter((r) => r.op === "fail").length, 1);
+      assert.equal(
+        (await store.readJob(original.jobId)).failureCode,
+        "INTERRUPTED",
+      );
+      assert.deepEqual(
+        (await store.readCandidate(replacement.jobId)).lease,
+        leases[1],
+      );
+      await controller.shutdown();
+      assert.equal(
+        starts,
+        3,
+        "shutdown does not replay the original recovery fence",
+      );
+      assert.equal(
+        originalRequests().filter((r) => r.op === "append").length,
+        1,
+      );
+    } finally {
+      late.resolve();
+      if (publication) await publication;
+      await controller.shutdown();
+    }
+  },
+);
 
 test("Redis 8 fenced candidate lifecycle", { timeout: 240_000 }, async (t) => {
   const { command, create, commands } = await environment(t);

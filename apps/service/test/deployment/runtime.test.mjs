@@ -724,7 +724,12 @@ test(
           true,
         );
       } finally {
-        await docker(["image", "rm", "--no-prune", mutated.trim()]);
+        await docker(["image", "rm", "--no-prune", mutated.trim()], {
+          trace: {
+            stage: "runtime-mutation-image-remove",
+            context: "finalizer",
+          },
+        });
       }
     }
     for (const kind of ["hardlink", "symlink", "special"]) {
@@ -736,7 +741,12 @@ test(
             : rejectDriver;
         assert.equal(JSON.parse(await runRuntime(mutated, driver)).ok, true);
       } finally {
-        await docker(["image", "rm", "--no-prune", mutated]);
+        await docker(["image", "rm", "--no-prune", mutated], {
+          trace: {
+            stage: "runtime-mutation-image-remove",
+            context: "finalizer",
+          },
+        });
       }
     }
     // Real cancellation must remove its owned container, not just its Docker client.

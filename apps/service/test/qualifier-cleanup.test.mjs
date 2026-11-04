@@ -1,41 +1,145 @@
 import assert from "node:assert/strict";
 import { fork, spawnSync } from "node:child_process";
-import { lstat, rm } from "node:fs/promises";
-import { dirname, basename, join, resolve } from "node:path";
+import {
+  copyFile,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, basename, join } from "node:path";
 import test from "node:test";
 
 const unconfirmed = "Runtime container teardown unconfirmed.";
+const ignoringPolicy = "# Preserve this existing policy byte-for-byte.\n*\n";
+const nonignoringPolicy = "# PRIVATE_IGNORE_POLICY\n!*\n";
 
-async function runner(t, mode = "runtime", count = 1) {
-  const child = fork(
-    new URL("./helpers/qualifier-runner.mjs", import.meta.url),
-    [mode, String(count)],
-    { stdio: ["ignore", "ignore", "pipe", "ipc"], execArgv: [] },
+// Only the bounded synthetic module closure is copied. Each invocation gets real
+// Git and its own administrative state, never the caller's .principal or policy.
+async function workspaceRepository(policy) {
+  const parent = await mkdtemp(join(tmpdir(), "bqc-"));
+  try {
+    const bytes = policy === "ignoring" ? 56 : 51;
+    const root = join(
+      parent,
+      "c".repeat(bytes - Buffer.byteLength(parent) - 1),
+    );
+    assert.equal(Buffer.byteLength(root), bytes);
+    for (const path of [
+      "scripts/qualify-runtime.mjs",
+      "scripts/qualification-labels.mjs",
+      "test/helpers/qualifier-runner.mjs",
+      "test/helpers/owned-redis-fixture.mjs",
+      "test/helpers/redis-socket.mjs",
+    ]) {
+      const destination = join(root, "apps/service", path);
+      await mkdir(dirname(destination), { recursive: true });
+      await copyFile(new URL(`../${path}`, import.meta.url), destination);
+    }
+    const env = Object.fromEntries(
+      Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")),
+    );
+    Object.assign(env, {
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+    });
+    const git = (...args) =>
+      spawnSync("git", ["-C", root, ...args], { env, encoding: "utf8" });
+    assert.equal(git("init", "--quiet", "--template=").status, 0);
+    if (policy !== "absent") {
+      await mkdir(join(root, ".principal"));
+      if (policy !== "missing")
+        await writeFile(
+          join(root, ".principal/.gitignore"),
+          policy === "ignoring" ? ignoringPolicy : nonignoringPolicy,
+          { flag: "wx" },
+        );
+    }
+    if (policy === "absent")
+      await assert.rejects(lstat(join(root, ".principal")), { code: "ENOENT" });
+    else if (policy === "missing")
+      await assert.rejects(lstat(join(root, ".principal/.gitignore")), {
+        code: "ENOENT",
+      });
+    return { parent, root, env, git };
+  } catch (error) {
+    await rm(parent, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+async function runner(
+  t,
+  mode = "runtime",
+  count = 1,
+  policy = "absent",
+  trace,
+  consumeStderr = true,
+) {
+  const fixture = mode.startsWith("workspace")
+    ? await workspaceRepository(policy)
+    : undefined;
+  let child, closed;
+  t.after(async () => {
+    if (child) {
+      if (child.exitCode === null && child.signalCode === null)
+        child.kill("SIGKILL");
+      // A failed pipe-exit assertion supervises only this owned child's pipe,
+      // after terminating it; draining it is never settlement evidence.
+      if (!consumeStderr) child.stderr.destroy();
+      await closed;
+      assert.equal(child.exitCode !== null || child.signalCode !== null, true);
+    }
+    if (fixture) {
+      // Supervised disposal after assertions on intentionally retained state and
+      // after the child/IPC lifetime has settled. Only this exact owned tree.
+      await rm(fixture.parent, { recursive: true, force: true });
+      await assert.rejects(lstat(fixture.parent), { code: "ENOENT" });
+    }
+  });
+  child = fork(
+    fixture
+      ? join(fixture.root, "apps/service/test/helpers/qualifier-runner.mjs")
+      : new URL("./helpers/qualifier-runner.mjs", import.meta.url),
+    [mode, String(count), ...(trace ? [JSON.stringify(trace)] : [])],
+    {
+      stdio: ["ignore", "ignore", "pipe", "ipc"],
+      execArgv: [],
+      ...(fixture ? { cwd: fixture.root, env: fixture.env } : {}),
+    },
   );
   const events = [];
   const waiting = new Set();
   let stderr = "";
   let exited = false;
   child.stderr.setEncoding("utf8");
-  child.stderr.on("data", (chunk) => (stderr += chunk));
+  if (consumeStderr) child.stderr.on("data", (chunk) => (stderr += chunk));
+  const terminated = new Promise((resolve) =>
+    child.once("exit", (code, signal) =>
+      resolve({
+        code,
+        signal,
+        consumedBeforeExit: child.stderr.readableFlowing === true,
+      }),
+    ),
+  );
   const receive = (event) => {
     events.push(event);
     for (const notify of waiting) notify();
   };
   child.on("message", receive);
   child.on("error", (error) => receive({ event: "error", error }));
-  const closed = new Promise((resolve) =>
+  closed = new Promise((resolve) =>
     child.once("close", (code, signal) => {
       exited = true;
       receive({ event: "close", code, signal });
       resolve({ code, signal });
     }),
   );
-  t.after(async () => {
-    if (!exited) child.kill("SIGKILL");
-    await closed;
-    assert.equal(child.exitCode !== null || child.signalCode !== null, true);
-  });
   const wait = (predicate) =>
     new Promise((resolve, reject) => {
       const timer = setTimeout(
@@ -94,10 +198,25 @@ async function runner(t, mode = "runtime", count = 1) {
     close(proof, 0, stdout);
     return proof;
   };
-  const first = await command(
-    mode === "extract" || mode === "mutate" ? "create" : "run",
+  const operation = ["extract", "mutate", "trace-copy-image"].includes(mode)
+    ? "create"
+    : "run";
+  const first = await wait(
+    (event) => event === commands(operation)[0] || event.event === "result",
   );
+  if (mode === "trace-metadata")
+    assert.equal(
+      events.some(
+        (e) =>
+          e.event === "command" &&
+          (e.args[0] === "version" ||
+            e.args.includes("PRIVATE_METADATA_DRIVER")),
+      ),
+      false,
+      "executable or inherited metadata must not dispatch a command",
+    );
   return {
+    fixture,
     child,
     events,
     commands,
@@ -109,6 +228,7 @@ async function runner(t, mode = "runtime", count = 1) {
     barrier,
     absence,
     closed,
+    terminated,
     get stderr() {
       return stderr;
     },
@@ -472,6 +592,75 @@ test("synthetic completed fixture cannot cache away later ordinary-client cancel
   assert.equal(r.commands("rm").length, 2);
 });
 
+async function assertPrivateWorkspace(r, workspace) {
+  assert.equal(dirname(workspace.parent), join(r.fixture.root, ".principal"));
+  const info = await lstat(workspace.parent);
+  assert.equal(info.isDirectory(), true);
+  assert.equal(info.uid, process.getuid());
+  assert.equal(info.mode & 0o077, 0);
+  assert.equal(
+    r.fixture.git("check-ignore", "--quiet", workspace.parent).status,
+    0,
+  );
+  // Independent worst-case socket spelling, not a relaxed/truncated guard.
+  const socketBytes = Buffer.byteLength(
+    join(workspace.parent, `r-${"a".repeat(16)}`, "redis.sock"),
+  );
+  assert.ok(socketBytes <= 107);
+  assert.match(basename(workspace.parent), /^oc-[a-zA-Z0-9]+$/u);
+  return socketBytes;
+}
+
+for (const policy of ["absent", "missing", "ignoring"])
+  test(`synthetic workspace bootstraps ${policy} administrative policy at socket-safe checkout length`, async (t) => {
+    const r = await runner(t, "workspace", 1, policy);
+    assert.equal(r.first.event, "command");
+    const workspace = await r.wait((e) => e.event === "workspace");
+    const socketBytes = await assertPrivateWorkspace(r, workspace);
+    if (policy === "ignoring") assert.equal(socketBytes, 107);
+    assert.equal(
+      await readFile(join(r.fixture.root, ".principal/.gitignore"), "utf8"),
+      policy === "ignoring" ? ignoringPolicy : "*\n",
+    );
+    r.close(r.first);
+    r.close(await r.command("rm"));
+    await r.absence();
+    for (const kind of ["clients", "directory"]) {
+      const pending = await r.wait((e) => e.kind === kind);
+      r.send({ action: "callback", id: pending.id });
+    }
+    assert.equal((await r.wait((e) => e.event === "result")).ok, true);
+    assert.deepEqual(await r.closed, { code: 0, signal: null });
+    await assert.rejects(lstat(workspace.parent), { code: "ENOENT" });
+  });
+
+test("synthetic workspace preserves nonignoring policy and fails statically before fixture or engine work", async (t) => {
+  const r = await runner(t, "workspace", 1, "nonignoring");
+  assert.deepEqual(r.first, {
+    event: "result",
+    ok: false,
+    message: "Synthetic workspace bootstrap failed.",
+  });
+  assert.deepEqual(await r.closed, { code: 1, signal: null });
+  assert.equal(
+    r.events.some((e) => e.event === "workspace"),
+    false,
+  );
+  assert.equal(
+    r.events.some((e) => e.event === "command"),
+    false,
+  );
+  assert.equal(r.stderr.includes("PRIVATE_"), false);
+  assert.equal(r.stderr.includes(r.fixture.root), false);
+  assert.equal(
+    await readFile(join(r.fixture.root, ".principal/.gitignore"), "utf8"),
+    nonignoringPolicy,
+  );
+  assert.deepEqual(await readdir(join(r.fixture.root, ".principal")), [
+    ".gitignore",
+  ]);
+});
+
 // Invoke the same callback wired into runtime.test.mjs's enclosing t.after.
 // Engine replies are synthetic; directory preservation/deletion is real.
 for (const [mode, failure] of [
@@ -487,23 +676,7 @@ for (const [mode, failure] of [
     const count = setup ? 1 : 2;
     const r = await runner(t, mode, count);
     const workspace = await r.wait((e) => e.event === "workspace");
-    assert.equal(
-      dirname(workspace.parent),
-      resolve(import.meta.dirname, "../../../.principal"),
-    );
-    assert.match(basename(workspace.parent), /^outer-cleanup-[a-zA-Z0-9]+$/u);
-    assert.equal(
-      spawnSync("git", ["check-ignore", "--quiet", workspace.parent]).status,
-      0,
-    );
-    t.after(async () => {
-      if (r.child.exitCode === null && r.child.signalCode === null)
-        r.child.kill("SIGKILL");
-      await r.closed;
-      // Supervised disposal only after observing intentionally retained failure state.
-      await rm(workspace.parent, { recursive: true, force: true });
-      await assert.rejects(lstat(workspace.parent), { code: "ENOENT" });
-    });
+    await assertPrivateWorkspace(r, workspace);
     const directory = setup
       ? r.first.args
           .find((arg) => arg.startsWith("type=bind,src="))
@@ -660,9 +833,509 @@ for (const [mode, failure] of [
     );
   });
 
+const traceRecords = (r) =>
+  r.stderr
+    .split("\n")
+    .filter((line) => line.startsWith("QUALIFICATION TRACE "))
+    .map((line) => JSON.parse(line.slice("QUALIFICATION TRACE ".length)));
+const tracedRunner = (t, mode = "runtime", limits = {}) =>
+  runner(t, mode, 1, "absent", limits);
+const finishSyntheticRuntime = async (r) => {
+  r.close(r.first, 0, "PRIVATE_STDOUT");
+  r.close(await r.command("rm"));
+  await r.absence();
+  assert.equal((await r.wait((e) => e.event === "result")).ok, true);
+  await r.closed;
+};
+
+test("trace pairs copy and image commands with static body/finalizer callsites, never arguments", async (t) => {
+  const r = await tracedRunner(t, "trace-copy-image");
+  r.close(r.first);
+  const copy = await r.command("cp");
+  r.send({ action: "tick", ms: 37 });
+  r.close(copy, 0, "PRIVATE_COPY_OUTPUT");
+  r.close(await r.command("rm"));
+  await r.absence();
+  r.close(await r.command("image"));
+  assert.equal((await r.wait((e) => e.event === "result")).ok, true);
+  await r.closed;
+  const records = traceRecords(r);
+  assert.equal(new Set(records.map((e) => e.invocation)).size, 1);
+  assert.match(records[0].invocation, /^[a-f0-9]{16}$/u);
+  for (const [category, stage, context] of [
+    ["container-copy", "runtime-extract-copy", "body"],
+    ["image-command", "runtime-mutation-image-remove", "finalizer"],
+  ]) {
+    const start = records.find(
+      (e) => e.event === "start" && e.category === category,
+    );
+    assert.ok(start);
+    assert.equal(start.stage, stage);
+    assert.equal(start.context, context);
+    const paired = records.filter((e) => e.id === start.id);
+    assert.deepEqual(
+      paired.map((e) => e.event),
+      ["start", "close", "settle"],
+    );
+    assert.equal(paired.at(-1).outcome, "ok");
+    assert.equal(
+      paired.at(-1).elapsedMs,
+      category === "container-copy" ? 37 : 0,
+    );
+    assert.equal(start.capMs, 300000);
+  }
+  const owner = records.find(
+    (e) => e.category === "ownership" && e.event === "start",
+  );
+  assert.deepEqual(
+    records
+      .filter((e) => e.id === owner.id && e.event === "proof")
+      .map((e) => e.outcome),
+    ["ack", "absent"],
+  );
+  assert.equal(
+    records.find((e) => e.id === owner.id && e.event === "settle").outcome,
+    "confirmed",
+  );
+  assert.equal(r.stderr.includes("PRIVATE_"), false);
+});
+
+for (const failure of ["deadline", "error"])
+  test(`trace ${failure} settles once, preserves late close and cached owned cleanup`, async (t) => {
+    const r = await tracedRunner(t);
+    if (failure === "deadline") {
+      r.send({ action: "tick", ms: 44999 });
+      await r.barrier();
+      assert.equal(
+        traceRecords(r).some((e) => e.event === "deadline"),
+        false,
+      );
+      r.send({ action: "tick", ms: 1 });
+    } else r.send({ action: "error", id: r.first.id });
+    const removal = await r.command("rm");
+    r.close(r.first, 0, "PRIVATE_LATE_OUTPUT");
+    r.close(removal);
+    await r.absence();
+    assert.equal((await r.wait((e) => e.event === "result")).ok, false);
+    await r.closed;
+    const records = traceRecords(r);
+    const start = records.find(
+      (e) => e.category === "runtime-driver" && e.event === "start",
+    );
+    const paired = records.filter((e) => e.id === start.id);
+    assert.deepEqual(
+      paired.map((e) => e.event),
+      ["start", failure, "settle", "late-close"],
+    );
+    assert.equal(
+      paired[2].outcome,
+      failure === "deadline" ? "deadline" : "child-error",
+    );
+    assert.equal(paired[2].elapsedMs, failure === "deadline" ? 45000 : 0);
+    assert.equal(r.commands("rm").length, 1);
+    assert.equal(r.stderr.includes("PRIVATE_"), false);
+  });
+
+test("trace cancellation correlates ACK, exact absence and clients before dependent directory and success", async (t) => {
+  const r = await tracedRunner(t, "fixture");
+  r.close(r.first);
+  const removal = await r.command("rm");
+  r.child.kill("SIGTERM");
+  r.child.kill("SIGINT");
+  r.close(removal);
+  await r.absence();
+  const clients = await r.wait((e) => e.kind === "clients");
+  await r.barrier();
+  let records = traceRecords(r);
+  assert.equal(
+    records.some((e) => e.category === "fixture-directory"),
+    false,
+  );
+  assert.equal(
+    records.some((e) => e.category === "cancellation" && e.event === "settle"),
+    false,
+  );
+  r.send({ action: "callback", id: clients.id });
+  const directory = await r.wait((e) => e.kind === "directory");
+  r.send({ action: "callback", id: directory.id });
+  assert.deepEqual(await r.closed, { code: 1, signal: null });
+  records = traceRecords(r);
+  const index = (category, event, outcome) =>
+    records.findIndex(
+      (e) =>
+        e.category === category &&
+        e.event === event &&
+        (outcome === undefined || e.outcome === outcome),
+    );
+  const ack = index("ownership", "proof", "ack");
+  const absent = index("ownership", "proof", "absent");
+  const closed = index("fixture-clients", "settle", "confirmed");
+  const deleted = index("fixture-directory", "settle", "confirmed");
+  assert.ok(ack >= 0 && ack < absent && absent < closed && closed < deleted);
+  assert.equal(
+    records.filter((e) => e.category === "cancellation" && e.event === "start")
+      .length,
+    1,
+  );
+  assert.equal(
+    records.find(
+      (e) => e.category === "container-remove" && e.event === "start",
+    ).context,
+    "finalizer",
+  );
+  assert.equal(r.commands("rm").length, 1);
+  assert.equal(r.stderr.includes("PRIVATE_"), false);
+});
+
+for (const limits of [{ maxRecords: 4 }, { maxBytes: 1024 }])
+  test(`trace finite ${Object.keys(limits)[0]} budget discloses incomplete evidence without abandoning cleanup`, async (t) => {
+    const r = await tracedRunner(t, "runtime", limits);
+    await finishSyntheticRuntime(r);
+    const records = traceRecords(r);
+    const lines = r.stderr
+      .split("\n")
+      .filter((s) => s.startsWith("QUALIFICATION TRACE "));
+    assert.ok(records.length <= (limits.maxRecords ?? 8192));
+    if (limits.maxRecords) assert.equal(records.length, limits.maxRecords);
+    assert.ok(
+      Buffer.byteLength(lines.join("\n") + "\n") <=
+        (limits.maxBytes ?? 2097152),
+    );
+    assert.equal(records.filter((e) => e.event === "incomplete").length, 1);
+    assert.equal(records.at(-1).outcome, "exhausted");
+    const status = await r.wait((e) => e.event === "trace-status");
+    assert.equal(status.complete, false);
+    assert.equal(status.reason, "exhausted");
+    assert.equal(r.commands("rm").length, 1);
+    assert.equal(r.commands("ps").length, 1);
+  });
+
+test("trace rejects unknown stage/context/source/error without echo or dispatch, retaining a valid control", async (t) => {
+  const r = await tracedRunner(t, "trace-invalid");
+  await finishSyntheticRuntime(r);
+  assert.deepEqual(
+    r.events.filter((e) => e.event === "validation"),
+    Array.from({ length: 4 }, () => ({
+      event: "validation",
+      ok: false,
+      message: "Runtime trace labels invalid.",
+    })),
+  );
+  assert.equal(r.commands("version").length, 0);
+  assert.equal(r.stderr.includes("PRIVATE_"), false);
+  assert.equal(
+    (await r.wait((e) => e.event === "trace-status")).complete,
+    true,
+  );
+});
+
+for (const mode of ["trace-write-error", "trace-write-short"])
+  test(`${mode} is observable but cannot discard already-owned cleanup or change command outcome`, async (t) => {
+    const r = await tracedRunner(t, mode);
+    await finishSyntheticRuntime(r);
+    const status = await r.wait((e) => e.event === "trace-status");
+    assert.equal(status.complete, false);
+    assert.equal(status.reason, "write-error");
+    assert.equal(r.commands("rm").length, 1);
+    assert.equal(r.commands("ps").length, 1);
+    assert.equal(r.stderr.includes("PRIVATE_"), false);
+  });
+
+for (const [mode, limits, reason] of [
+  ["workspace", { maxRecords: 4 }, "exhausted"],
+  ["workspace", { maxBytes: 1024 }, "exhausted"],
+  ["workspace-trace-write-error", {}, "write-error"],
+  ["workspace-trace-unavailable", {}, undefined],
+])
+  test(`incomplete trace ${mode}/${Object.keys(limits)[0] ?? reason ?? "unavailable"} rejects qualification after independent cleanup, never individual commands`, async (t) => {
+    const r = await runner(t, mode, 1, "absent", limits);
+    const workspace = await r.wait((e) => e.event === "workspace");
+    r.close(r.first);
+    const removal = await r.command("rm");
+    r.send({ action: "finalize-workspace" });
+    r.send({ action: "finalize-workspace" });
+    await r.barrier();
+    r.close(removal);
+    await r.absence();
+    for (const kind of ["clients", "directory"]) {
+      const pending = await r.wait((e) => e.kind === kind);
+      r.send({ action: "callback", id: pending.id });
+    }
+    const result = await r.wait((e) => e.event === "result");
+    assert.deepEqual(result, {
+      event: "result",
+      ok: false,
+      message: "Runtime qualification trace incomplete; record withheld.",
+    });
+    assert.deepEqual(await r.closed, { code: 1, signal: null });
+    assert.deepEqual(
+      r.events.filter((e) => e.event === "workspace-reentry"),
+      Array.from({ length: 2 }, () => ({
+        event: "workspace-reentry",
+        ok: false,
+        message: "Runtime qualification trace incomplete; record withheld.",
+      })),
+    );
+    await assert.rejects(lstat(workspace.parent), { code: "ENOENT" });
+    assert.equal(r.events.filter((e) => e.event === "parent-delete").length, 1);
+    assert.equal(
+      r.events.some((e) => e.event === "workspace-record"),
+      false,
+    );
+    assert.equal(
+      r.commands("image").length,
+      2,
+      "unqualified images are not retained",
+    );
+    const status = await r.wait((e) => e.event === "trace-status");
+    assert.equal(status.complete, false);
+    if (reason) assert.equal(status.reason, reason);
+    else assert.ok(["pending-write", "backpressure"].includes(status.reason));
+  });
+
+for (const location of ["inner", "outer"])
+  for (const kind of [
+    "getter",
+    "proxy",
+    "revoked-proxy",
+    "inherited-getter",
+    "inherited-value",
+  ])
+    test(`trace ${location} ${kind} is rejected without executing metadata, leaking or dispatching`, async (t) => {
+      const r = await runner(
+        t,
+        "trace-metadata",
+        `${location}:${kind}`,
+        "absent",
+        {},
+      );
+      await finishSyntheticRuntime(r);
+      assert.deepEqual(
+        r.events.filter((e) => e.event === "validation"),
+        ["docker", "runRuntime"].map((boundary) => ({
+          event: "validation",
+          boundary,
+          ok: false,
+          message: "Runtime trace labels invalid.",
+        })),
+      );
+      assert.deepEqual(
+        await r.wait((e) => e.event === "metadata-observations"),
+        {
+          event: "metadata-observations",
+          calls: 0,
+        },
+      );
+      assert.equal(r.commands("version").length, 0);
+      assert.equal(
+        r.commands("run").length,
+        1,
+        "only the valid control can dispatch",
+      );
+      assert.equal(r.stderr.includes("PRIVATE_"), false);
+      assert.equal(
+        (await r.wait((e) => e.event === "trace-status")).complete,
+        true,
+      );
+    });
+
+for (const kind of [
+  "getter",
+  "proxy",
+  "revoked-proxy",
+  "inherited-getter",
+  "inherited-value",
+])
+  test(`trace configuration ${kind} is rejected statically before a valid configuration`, async (t) => {
+    const r = await runner(t, "trace-config-metadata", kind, "absent", {});
+    await finishSyntheticRuntime(r);
+    assert.deepEqual(await r.wait((e) => e.event === "validation"), {
+      event: "validation",
+      ok: false,
+      message: "Runtime trace labels invalid.",
+    });
+    assert.deepEqual(await r.wait((e) => e.event === "metadata-observations"), {
+      event: "metadata-observations",
+      calls: 0,
+    });
+    assert.equal(r.stderr.includes("PRIVATE_"), false);
+    assert.equal(
+      (await r.wait((e) => e.event === "trace-status")).complete,
+      true,
+    );
+  });
+
+for (const commandFailure of [false, true])
+  test(`real unconsumed stderr pipe${commandFailure ? " after command failure" : ""} cannot retain qualification after observable owned cleanup`, async (t) => {
+    const r = await runner(
+      t,
+      commandFailure ? "workspace-pipe-failure" : "workspace-pipe",
+      1,
+      "absent",
+      {},
+      false,
+    );
+    const workspace = await r.wait((e) => e.event === "workspace");
+    const filled = await r.wait((e) => e.event === "pipe-filled");
+    assert.equal(
+      filled.nonblocking,
+      true,
+      "supported Node/Linux pipe must already be nonblocking",
+    );
+    if (commandFailure)
+      assert.deepEqual(
+        await r.wait((e) => e.event === "pipe-command-failure"),
+        {
+          event: "pipe-command-failure",
+          message: "Runtime qualification command failed.",
+          category: "engine-command",
+        },
+      );
+    r.close(r.first);
+    r.close(await r.command("rm"));
+    await r.absence();
+    for (const kind of ["clients", "directory"]) {
+      const pending = await r.wait((e) => e.kind === kind);
+      r.send({ action: "callback", id: pending.id });
+    }
+    await r.wait((e) => e.event === "parent-deleted");
+    const afterCleanup = performance.now();
+    const result = await r.wait((e) => e.event === "result");
+    const status = await r.wait((e) => e.event === "trace-status");
+    let timer;
+    let termination;
+    try {
+      // Failure watchdog, not a sleep/drain allowance. NEVER consume stderr before
+      // observing process exit; failed-test disposal may kill/destroy only its child.
+      termination = await Promise.race([
+        r.terminated,
+        new Promise((_, reject) => {
+          timer = setTimeout(
+            () =>
+              reject(
+                Error(
+                  "Owned cleanup settled but the unconsumed trace pipe retained the process.",
+                ),
+              ),
+            Math.max(0, 1500 - (performance.now() - afterCleanup)),
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+    assert.equal(termination.consumedBeforeExit, false);
+    assert.deepEqual(
+      { code: termination.code, signal: termination.signal },
+      { code: 1, signal: null },
+    );
+    assert.deepEqual(result, {
+      event: "result",
+      ok: false,
+      message: "Runtime qualification trace incomplete; record withheld.",
+    });
+    await assert.rejects(lstat(workspace.parent), { code: "ENOENT" });
+    assert.equal(r.commands("image").length, 2);
+    assert.equal(
+      r.commands("rm").length,
+      2,
+      "fixture and parent repair each removed exactly once",
+    );
+    assert.equal(r.commands("ps").length, 2);
+    assert.equal(
+      r.events.some((e) => e.event === "workspace-record"),
+      false,
+    );
+    assert.equal(status.complete, false);
+    assert.equal(status.reason, "backpressure");
+    assert.equal(
+      status.records,
+      filled.records,
+      "no later trace write can upgrade settlement",
+    );
+    assert.equal(status.bytes, filled.bytes);
+    assert.ok(
+      status.records < 7200,
+      "stop queuing at the first backpressure, before record/byte exhaustion",
+    );
+    assert.ok(status.bytes <= 2097152);
+    t.diagnostic(
+      JSON.stringify({
+        records: status.records,
+        bytes: status.bytes,
+        cleanupToExitMs: performance.now() - afterCleanup,
+        consumedBeforeExit: false,
+      }),
+    );
+  });
+
+for (const mode of ["trace-blocking-sink", "trace-file-sink"])
+  test(`${mode} fails closed without attempting blocking output, preserving owned cleanup`, async (t) => {
+    const r = await tracedRunner(t, mode);
+    await finishSyntheticRuntime(r);
+    const status = await r.wait((e) => e.event === "trace-status");
+    assert.equal(status.complete, false);
+    assert.equal(status.reason, "write-error");
+    assert.equal(status.records, 0);
+    assert.deepEqual(await r.wait((e) => e.event === "sink-writes"), {
+      event: "sink-writes",
+      count: 0,
+    });
+    assert.equal(r.commands("rm").length, 1);
+    assert.equal(r.commands("ps").length, 1);
+  });
+
+for (const failure of ["lost-ack", "unproved-clients"])
+  test(`trace ${failure} cannot turn uncertain teardown into proof or replay`, async (t) => {
+    const r = await tracedRunner(t, "fixture");
+    r.close(r.first);
+    const removal = await r.command("rm");
+    if (failure === "lost-ack") r.send({ action: "error", id: removal.id });
+    r.close(removal);
+    if (failure !== "lost-ack") await r.absence();
+    const clients = await r.wait((e) => e.kind === "clients");
+    if (failure === "lost-ack") r.send({ action: "callback", id: clients.id });
+    else {
+      r.send({ action: "tick", ms: 999 });
+      await r.barrier();
+      r.send({ action: "tick", ms: 1 });
+    }
+    assert.equal((await r.wait((e) => e.event === "result")).ok, false);
+    await r.closed;
+    const records = traceRecords(r);
+    assert.equal(
+      records.some((e) => e.category === "fixture-directory"),
+      false,
+    );
+    assert.equal(
+      records.find((e) => e.category === "client-drain" && e.event === "settle")
+        .outcome,
+      "unconfirmed",
+    );
+    if (failure === "lost-ack") {
+      assert.equal(
+        records.some((e) => e.category === "ownership" && e.event === "proof"),
+        false,
+      );
+      assert.equal(
+        records.find((e) => e.category === "ownership" && e.event === "settle")
+          .outcome,
+        "unconfirmed",
+      );
+    } else
+      assert.equal(
+        records.find(
+          (e) => e.category === "client-drain" && e.event === "deadline",
+        ).elapsedMs,
+        1000,
+      );
+    assert.equal(r.commands("rm").length, 1);
+    assert.equal(r.stderr.includes("PRIVATE_"), false);
+  });
+
 for (const operation of ["rm", "ps"])
   test(`${operation} deadline keeps uncertain ownership and drains late clients without replay`, async (t) => {
-    const r = await runner(t);
+    const r = await tracedRunner(t);
     r.child.kill("SIGTERM");
     const removal = await r.command("rm");
     if (operation === "ps") r.close(removal);
@@ -681,5 +1354,36 @@ for (const operation of ["rm", "ps"])
     assert.deepEqual(await r.closed, { code: 1, signal: null });
     assert.equal(r.commands("rm").length, 1);
     assert.equal(r.commands("ps").length, operation === "ps" ? 1 : 0);
-    assert.match(r.stderr, /Runtime container\/child teardown unconfirmed\./u);
+    const records = traceRecords(r);
+    assert.ok(
+      records.some(
+        (e) =>
+          e.category === "diagnostic" &&
+          e.context === "cancellation" &&
+          e.event === "settle" &&
+          e.outcome === "failed",
+      ),
+      "traced cancellation failure stays observable without async stderr output",
+    );
+    assert.equal(
+      records.find((e) => e.category === "cancellation" && e.event === "settle")
+        .outcome,
+      "unconfirmed",
+    );
+    assert.equal(r.stderr.includes("PRIVATE_"), false);
+    const stage = operation === "rm" ? "owned-remove" : "owned-absence";
+    const start = records.find((e) => e.stage === stage && e.event === "start");
+    assert.equal(start.context, "cancellation");
+    assert.equal(start.capMs, 15000);
+    const paired = records.filter((e) => e.id === start.id);
+    assert.deepEqual(
+      paired.map((e) => e.event),
+      ["start", "deadline", "settle", "late-close"],
+    );
+    assert.equal(paired[2].elapsedMs, 15000);
+    assert.equal(
+      records.find((e) => e.category === "ownership" && e.event === "settle")
+        .outcome,
+      "unconfirmed",
+    );
   });

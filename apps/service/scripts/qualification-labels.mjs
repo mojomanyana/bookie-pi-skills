@@ -1,5 +1,32 @@
 // Node/test qualification labels only. Never derive a label from fixture data,
 // command arguments, dependency errors or runtime/source identity.
+export const qualificationCallsites = Object.freeze([
+  "engine-work",
+  "private-workspace-check",
+  "runtime-execute",
+  "runtime-build",
+  "runtime-artifact-measure",
+  "runtime-profile-check",
+  "runtime-build-failure-image-remove",
+  "runtime-workspace-repair",
+  "runtime-workspace-directory",
+  "runtime-workspace-image-remove",
+  "runtime-mutation-create",
+  "runtime-mutation-read",
+  "runtime-mutation-write",
+  "runtime-mutation-start",
+  "runtime-mutation-commit",
+  "runtime-mutation-image-remove",
+  "runtime-extract-create",
+  "runtime-extract-copy",
+  "owned-container",
+  "owned-remove",
+  "owned-absence",
+  "fixture-clients",
+  "fixture-directory",
+  "client-drain",
+  "cancellation-drain",
+]);
 export const trustedBuilderGroups = Object.freeze({
   authority: Object.freeze([
     "token-rotation",

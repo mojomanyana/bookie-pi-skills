@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CandidateStoreError } from "../dist/redis-candidate-store.js";
+import {
+  CandidateStoreError,
+  RedisCandidateStore,
+} from "../dist/redis-candidate-store.js";
 import {
   authorization,
   commit,
@@ -20,7 +23,7 @@ import {
 
 const code = (expected) => (error) =>
   error.code === expected && error.message === expected;
-async function harness(t, changes = {}) {
+async function harness(t, changes = {}, prepareStores = () => {}) {
   const { OwnedRebuildController } =
     await import("../dist/rebuild-controller.js");
   const config = configuration();
@@ -49,6 +52,7 @@ async function harness(t, changes = {}) {
     },
     ...changes,
   };
+  prepareStores(stores, config);
   const controller = new OwnedRebuildController({
     configuration: config,
     builder,
@@ -79,6 +83,303 @@ async function harness(t, changes = {}) {
       }),
   };
 }
+
+// Synthetic Redis replies, but the ORIGINAL production client owns its private
+// epoch cache. The model is only server state/payload storage: it cannot stand in
+// for both epochs. Commit start before holding its transport acknowledgement.
+async function recoveryHarness(t, fenceReply = async (value) => value) {
+  const { performance } = await import("node:perf_hooks");
+  t.mock.method(performance, "now", () => 0);
+  const requests = [];
+  let launches = 0;
+  const h = await harness(
+    t,
+    {
+      async build(recipe) {
+        launches++;
+        return {
+          ok: true,
+          output: outputFor(recipe, launches === 1 ? [conceptFor(recipe)] : []),
+        };
+      },
+    },
+    (stores, config) => {
+      for (const source of config.sources) {
+        const server = stores.get(source.handle);
+        const start = server.startProcess.bind(server),
+          configure = server.setConfigurationEpoch.bind(server),
+          current = server.readCurrentJob.bind(server),
+          read = server.readJob.bind(server),
+          renew = server.renew.bind(server);
+        const client = new RedisCandidateStore({
+          vaultUid: source.projection.vaultUid,
+          namespaceKey: new Uint8Array(32).fill(7),
+          execute: async (args, signal) => {
+            const r = JSON.parse(args.at(-1));
+            requests.push({ vault: source.handle, ...r });
+            if (r.op === "start") {
+              const epoch = await start(signal);
+              const reply = JSON.stringify({ ok: true, epoch });
+              return source.handle === "alpha" && epoch === 2
+                ? await fenceReply(reply)
+                : reply;
+            }
+            if (r.epoch !== server.epoch)
+              return JSON.stringify({ ok: false, code: "FENCED" });
+            if (r.op === "configure") {
+              await configure(Number(r.configurationEpoch), signal);
+              return JSON.stringify({ ok: true });
+            }
+            if (r.op === "current")
+              return JSON.stringify({
+                ok: true,
+                job: (await current(signal)) ?? null,
+              });
+            if (r.op === "read")
+              return JSON.stringify({
+                ok: true,
+                job: await read(r.jobId, signal),
+              });
+            if (r.op === "renew") {
+              await renew(
+                {
+                  ...r.lease,
+                  configurationEpoch: Number(r.lease.configurationEpoch),
+                },
+                signal,
+              );
+              return JSON.stringify({ ok: true });
+            }
+            throw Error("Unexpected synthetic Redis operation.");
+          },
+        });
+        server.startProcess = (signal) => client.startProcess(signal);
+        server.setConfigurationEpoch = (epoch, signal) =>
+          client.setConfigurationEpoch(epoch, signal);
+        server.readCurrentJob = (signal) => client.readCurrentJob(signal);
+        server.readJob = (id, signal) => client.readJob(id, signal);
+        server.renew = (owner, signal) => client.renew(owner, signal);
+      }
+    },
+  );
+  const store = h.stores.get("alpha"),
+    append = store.append.bind(store);
+  store.append = async (...args) => {
+    await append(...args);
+    store.manifests.get(args[0].jobId).live = false;
+    throw new CandidateStoreError("INDEX_UNAVAILABLE", "unknown");
+  };
+  return { ...h, store, requests, workers: () => launches };
+}
+
+test("publication joins a committed recovery-fence ACK before replacing the real client's owner", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const entered = deferred(),
+    late = deferred();
+  const h = await recoveryHarness(t, async (reply) => {
+    entered.resolve();
+    await late.promise;
+    return reply;
+  });
+  const job = await h.submit();
+  await entered.promise;
+  let settled = false;
+  const publication = h.controller.reload(configuration(2)).finally(() => {
+    settled = true;
+  });
+  try {
+    await turn();
+    assert.equal(
+      settled,
+      false,
+      "publication cannot overtake the pending raw store method/cache update",
+    );
+    assert.equal(h.store.epoch, 2);
+    assert.equal(h.controller.configuration.epoch, 1);
+    assert.equal(h.controller.ready, false);
+    await assert.rejects(h.submit("beta"), code("DEPENDENCY_UNAVAILABLE"));
+    assert.equal(h.stores.get("beta").calls.includes("claim"), false);
+    late.resolve();
+    await publication;
+    assert.equal(h.store.epoch, 3);
+    assert.equal(h.controller.ready, true);
+    assert.equal((await h.store.readJob(job.jobId)).failureCode, "INTERRUPTED");
+    assert.equal(h.store.manifests.has(job.jobId), false);
+    const replacement = await h.submit();
+    await turn();
+    assert.equal(
+      (await h.controller.status({ authorization, jobId: replacement.jobId }))
+        .job.state,
+      "building",
+    );
+    t.mock.timers.tick(10000);
+    await turn();
+    assert.equal(h.requests.findLast((r) => r.op === "renew").epoch, 3);
+    assert.equal(h.store.calls.filter((op) => op === "renew").length, 1);
+    assert.equal(
+      (await h.controller.status({ authorization, jobId: replacement.jobId }))
+        .job.state,
+      "building",
+    );
+    assert.equal(h.controller.ready, true);
+    assert.equal(h.workers(), 2);
+    await assert.rejects(h.submit("beta"), code("RATE_LIMITED"));
+    assert.equal(h.store.calls.filter((op) => op === "append").length, 1);
+    assert.equal(
+      h.store.calls.filter((op) => op === "fail").length,
+      0,
+      "expired ownership rejected failure before commit",
+    );
+    assert.equal(
+      h.requests.filter((r) => r.vault === "alpha" && r.op === "start").length,
+      3,
+    );
+  } finally {
+    late.resolve();
+    await publication;
+    await h.controller.shutdown();
+    t.mock.timers.reset();
+  }
+});
+
+for (const lateOutcome of ["success", "rejection"])
+  test(`unknown recovery-fence ACK blocks publication and ignores late ${lateOutcome} from the real executor`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const entered = deferred(),
+      late = deferred();
+    const h = await recoveryHarness(t, async (reply) => {
+      entered.resolve();
+      await late.promise; // deliberately ignores AbortSignal after commit
+      if (lateOutcome === "rejection") throw Error("PRIVATE_LATE_FENCE");
+      return reply;
+    });
+    const job = await h.submit();
+    await entered.promise;
+    let outcome;
+    const publication = h.controller.reload(configuration(2)).then(
+      () => {
+        outcome = "published";
+      },
+      (error) => {
+        outcome = error.code;
+      },
+    );
+    try {
+      await turn();
+      t.mock.timers.tick(1999);
+      await turn();
+      assert.equal(outcome, undefined);
+      t.mock.timers.tick(1);
+      await turn();
+      await publication;
+      assert.equal(outcome, "DEPENDENCY_UNAVAILABLE");
+      assert.equal(h.controller.configuration.epoch, 1);
+      assert.equal(h.controller.ready, false);
+      assert.equal(
+        h.store.epoch,
+        2,
+        "only the original recovery fence committed",
+      );
+      assert.equal(h.store.manifests.has(job.jobId), true);
+      const commands = h.requests.length;
+      late.resolve();
+      await turn();
+      await turn();
+      assert.equal(
+        h.requests.length,
+        commands,
+        "late executor has no cache/continuation authority",
+      );
+      await assert.rejects(
+        h.controller.reload(configuration(2)),
+        code("DEPENDENCY_UNAVAILABLE"),
+      );
+      await assert.rejects(h.submit("beta"), code("DEPENDENCY_UNAVAILABLE"));
+      await h.controller.shutdown();
+      assert.equal(
+        h.requests.filter((r) => r.vault === "alpha" && r.op === "start")
+          .length,
+        2,
+      );
+      assert.equal(h.store.calls.filter((op) => op === "append").length, 1);
+      assert.equal(h.workers(), 1);
+    } finally {
+      late.resolve();
+      await publication;
+      await h.controller.shutdown();
+      t.mock.timers.reset();
+    }
+  });
+
+for (const lateOutcome of ["success", "rejection"])
+  test(`ignored-abort raw recovery method is bounded without publishing or accepting late ${lateOutcome}`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const h = await recoveryHarness(t);
+    const entered = deferred(),
+      late = deferred();
+    const start = h.store.startProcess.bind(h.store);
+    let fences = 0;
+    h.store.startProcess = async () => {
+      fences++;
+      if (fences === 1) {
+        entered.resolve();
+        await late.promise; // raw method, OUTSIDE the client's internal timeout
+        if (lateOutcome === "rejection") throw Error("PRIVATE_RAW_FENCE");
+      }
+      return await start();
+    };
+    const job = await h.submit();
+    await entered.promise;
+    let outcome;
+    const publication = h.controller.reload(configuration(2)).then(
+      () => {
+        outcome = "published";
+      },
+      (error) => {
+        outcome = error.code;
+      },
+    );
+    try {
+      await turn();
+      t.mock.timers.tick(2499);
+      await turn();
+      assert.equal(outcome, undefined);
+      t.mock.timers.tick(1);
+      await turn();
+      await publication;
+      assert.equal(outcome, "DEPENDENCY_UNAVAILABLE");
+      assert.equal(h.controller.configuration.epoch, 1);
+      assert.equal(h.controller.ready, false);
+      const shutdown = h.controller.shutdown();
+      await turn();
+      t.mock.timers.tick(2500);
+      await shutdown;
+      late.resolve();
+      await turn();
+      await turn();
+      assert.equal(fences, 1, "no recovery/publication/shutdown replay");
+      assert.equal(
+        h.store.manifests.has(job.jobId),
+        true,
+        "unproved reservation was not released into cleanup",
+      );
+      assert.equal(h.store.calls.includes("cleanup"), false);
+      assert.equal(
+        h.requests.filter((r) => r.vault === "alpha" && r.op === "configure")
+          .length,
+        1,
+        "late raw method cannot configure or retire",
+      );
+      assert.equal(h.controller.ready, false);
+      await assert.rejects(h.submit("beta"), code("DEPENDENCY_UNAVAILABLE"));
+    } finally {
+      late.resolve();
+      await turn();
+      await publication;
+      await h.controller.shutdown();
+      t.mock.timers.reset();
+    }
+  });
 
 test("owned payload sequence waits for S5 and original attachment before sequential concepts/chunks and measured verification", async (t) => {
   const build = deferred(),
