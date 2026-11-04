@@ -1,4 +1,5 @@
 import { performance } from "node:perf_hooks";
+import type { ConceptProjection, ChunkProjection } from "./projection.js";
 import { ownDataFields } from "./closed-data.js";
 import {
   compileSourceDeployments,
@@ -44,6 +45,8 @@ export type ControllerStore = Pick<
   | "claimInput"
   | "beginBuilding"
   | "attachOutput"
+  | "append"
+  | "verifyStoredOutput"
   | "renew"
   | "requestCancel"
   | "acknowledgeCancel"
@@ -68,6 +71,7 @@ function unavailable(): never {
   throw new RebuildControllerError("DEPENDENCY_UNAVAILABLE");
 }
 class BeforeDispatchError extends Error {}
+class PayloadLimitError extends Error {}
 function beforeDispatch(error: unknown): boolean {
   return (
     error instanceof BeforeDispatchError ||
@@ -132,6 +136,9 @@ interface Attempt {
   stopCode?: CandidateFailureCode;
   worker?: Promise<void>;
   finishing?: Promise<void>;
+  /** Retain the original raw fence-method settlement, including rejection. A
+   * controller abort/timeout alone cannot prove its client cache stopped changing. */
+  recoveryFence?: Promise<number>;
   deadline?: ReturnType<typeof setTimeout>;
   renewal?: ReturnType<typeof setTimeout>;
 }
@@ -636,21 +643,14 @@ export class OwnedRebuildController {
   }
   async #drive(attempt: Attempt): Promise<void> {
     if (!attempt.lease || this.#active !== attempt || attempt.launched) return;
-    if (
-      attempt.abort.signal.aborted ||
-      this.#publishing ||
-      this.#closing ||
-      attempt.recipe.configurationEpoch !== this.#configuration.epoch ||
-      performance.now() - attempt.anchor >= SIX_HOURS
-    ) {
-      this.#stop(attempt, "INTERRUPTED");
-      return;
-    }
+    if (!this.#stageCurrent(attempt)) return;
     try {
-      await this.#call((s) =>
-        this.#store(attempt.vault).beginBuilding(attempt.lease!, s),
+      await this.#call(
+        (s) => this.#store(attempt.vault).beginBuilding(attempt.lease!, s),
+        { signal: attempt.abort.signal, until: attempt.anchor + SIX_HOURS },
       );
     } catch {
+      if (!this.#stageCurrent(attempt)) return;
       const observed = await this.#observe(
         attempt,
         (o) =>
@@ -664,24 +664,89 @@ export class OwnedRebuildController {
         return;
       }
     }
-    if (
-      attempt.abort.signal.aborted ||
-      this.#publishing ||
-      this.#closing ||
-      this.#disabled
-    ) {
-      this.#stop(attempt, "INTERRUPTED");
-      return;
-    }
+    if (!this.#stageCurrent(attempt)) return;
     if (attempt.launched) return;
     attempt.launched = true; // BEFORE invoking/spawning the S5 component
     attempt.stopped = false;
     this.#renewLater(attempt);
     attempt.worker = this.#work(attempt);
   }
+  /** Computation teardown and continuation authority are separate. A stopped S5
+   * process does not authorize a late host callback after retirement/publication.
+   * Every storage dispatch and every awaited stage settlement uses this guard. */
+  #stageCurrent(attempt: Attempt): boolean {
+    if (this.#active !== attempt) return false;
+    const expired =
+      Math.floor(attempt.anchor + SIX_HOURS - performance.now()) < 1;
+    if (
+      expired ||
+      attempt.abort.signal.aborted ||
+      attempt.terminal ||
+      attempt.fenced ||
+      this.#closing ||
+      this.#publishing ||
+      this.#disabled ||
+      attempt.recipe.configurationEpoch !== this.#configuration.epoch ||
+      attempt.lease?.ownerEpoch !== this.#epochs.get(attempt.vault)
+    ) {
+      this.#stop(attempt, expired ? "LIMIT_EXCEEDED" : "INTERRUPTED");
+      return false;
+    }
+    return true;
+  }
+  async #writeStream(
+    attempt: Attempt,
+    kind: "concept" | "chunk",
+    records: readonly (ConceptProjection | ChunkProjection)[],
+  ): Promise<void> {
+    let offset = 0;
+    while (offset < records.length) {
+      if (!this.#stageCurrent(attempt)) return;
+      const batch: (ConceptProjection | ChunkProjection)[] = [];
+      let bytes = 0;
+      // Only the current batch and at most one record of lookahead. The store
+      // retains its own validation/serialization; no encoded generation/queue.
+      while (batch.length < 128 && offset + batch.length < records.length) {
+        const record = records[offset + batch.length]!;
+        let encoded: string | undefined;
+        try {
+          encoded = JSON.stringify(record);
+        } catch {
+          throw new TypeError("Controller payload is invalid.");
+        }
+        if (typeof encoded !== "string")
+          throw new TypeError("Controller payload is invalid.");
+        const size = Buffer.byteLength(encoded, "utf8");
+        if (size > 1_048_576) throw new PayloadLimitError();
+        if (bytes + size > 1_048_576) break;
+        bytes += size;
+        batch.push(record);
+      }
+      if (!this.#stageCurrent(attempt)) return;
+      const expected = offset + batch.length;
+      const next = await this.#call(
+        (signal) =>
+          this.#store(attempt.vault).append(
+            attempt.lease!,
+            kind,
+            offset,
+            batch,
+            signal,
+          ),
+        { signal: attempt.abort.signal, until: attempt.anchor + SIX_HOURS },
+      );
+      if (!this.#stageCurrent(attempt)) return;
+      // An unusable reply may follow partial/full commit. NEVER infer a cursor,
+      // replay this batch, or invoke verification as a writing/resume oracle.
+      if (next !== expected)
+        throw new CandidateStoreError("INDEX_UNAVAILABLE", "unknown");
+      offset = next;
+    }
+  }
   async #work(attempt: Attempt): Promise<void> {
+    let result: Awaited<ReturnType<TrustedLexicalBuilder["build"]>>;
     try {
-      const result = await this.#builder.build(attempt.recipe, {
+      result = await this.#builder.build(attempt.recipe, {
         signal: attempt.abort.signal,
       });
       if (!result.ok && result.reason === "ingestion-error") {
@@ -690,34 +755,50 @@ export class OwnedRebuildController {
         return;
       }
       attempt.stopped = true;
-      if (attempt.abort.signal.aborted || this.#closing || this.#publishing) {
-        void this.#finish(attempt);
-        return;
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        attempt.stopped = true;
+        if (this.#active === attempt) this.#stop(attempt, "INTERRUPTED");
+      } else {
+        attempt.teardownUnknown = true;
+        this.#quarantine(attempt);
       }
-      if (!result.ok) {
-        this.#stop(
-          attempt,
-          result.reason === "secret-policy"
-            ? "SECRET_DETECTED"
+      return;
+    }
+    if (!this.#stageCurrent(attempt)) return;
+    if (!result.ok) {
+      this.#stop(
+        attempt,
+        result.reason === "secret-policy"
+          ? "SECRET_DETECTED"
+          : result.reason === "deadline-exceeded"
+            ? "LIMIT_EXCEEDED"
             : result.reason === "configuration-changed"
               ? "INTERRUPTED"
               : "VALIDATION_FAILED",
-        );
-        return;
-      }
-      if (
-        result.output.recipe !== attempt.recipe ||
-        attempt.recipe.configurationEpoch !== this.#configuration.epoch
-      ) {
-        this.#stop(attempt, "INTERNAL");
-        return;
-      }
-      const output = result.output.outputDescriptor;
+      );
+      return;
+    }
+    if (result.output.recipe !== attempt.recipe) {
+      this.#stop(attempt, "INTERNAL");
+      return;
+    }
+    // From here S5 has conclusively stopped. Storage/integrity/batching failure
+    // is not unknown ingestion teardown; retirement still requires ownership proof.
+    const output = result.output;
+    try {
       try {
-        await this.#call((s) =>
-          this.#store(attempt.vault).attachOutput(attempt.lease!, output, s),
+        await this.#call(
+          (signal) =>
+            this.#store(attempt.vault).attachOutput(
+              attempt.lease!,
+              output.outputDescriptor,
+              signal,
+            ),
+          { signal: attempt.abort.signal, until: attempt.anchor + SIX_HOURS },
         );
       } catch (error) {
+        if (!this.#stageCurrent(attempt)) return;
         if (
           error instanceof CandidateStoreError &&
           error.code === "BUILD_CONFLICT"
@@ -730,36 +811,53 @@ export class OwnedRebuildController {
           (o) =>
             o.live &&
             o.manifest?.state === "building" &&
-            o.manifest.outputDescriptor?.serialized === output.serialized,
+            o.manifest.outputDescriptor?.serialized ===
+              output.outputDescriptor.serialized &&
+            o.manifest.outputDescriptor.hash === output.outputDescriptor.hash,
         );
-        if (!observed || attempt.terminal || attempt.cancelConfirmed) {
-          if (attempt.terminal || attempt.fenced || attempt.cancelConfirmed)
-            void this.#finish(attempt);
-          return;
-        }
+        if (!this.#stageCurrent(attempt) || !observed) return;
       }
-      // S8 boundary: NO payload/index/verification/evaluation/complete/activation.
-      // Computation has stopped, but the accepted reservation/lease stays owned
-      // until downstream completion or explicit cancellation/failure/shutdown.
+      if (!this.#stageCurrent(attempt)) return;
+      await this.#writeStream(attempt, "concept", output.concepts);
+      if (!this.#stageCurrent(attempt)) return;
+      await this.#writeStream(attempt, "chunk", output.chunks);
+      if (!this.#stageCurrent(attempt)) return;
+      // This is a whole multi-RPC operation, NOT one controller two-second call.
+      await this.#store(attempt.vault).verifyStoredOutput(
+        attempt.lease!,
+        attempt.recipe,
+        output.outputDescriptor,
+        {
+          signal: attempt.abort.signal,
+          timeoutMs: Math.floor(attempt.anchor + SIX_HOURS - performance.now()),
+        },
+      );
+      if (!this.#stageCurrent(attempt)) return;
+      // Ephemeral observation only: still building, reservation/renewals held.
+      // Output arrays are released with this continuation, not the building hold.
     } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") {
-        attempt.stopped = true;
-        void this.#finish(attempt);
-      } else {
-        attempt.teardownUnknown = true;
-        this.#quarantine(attempt);
-      }
+      if (!this.#stageCurrent(attempt)) return;
+      this.#stop(
+        attempt,
+        error instanceof PayloadLimitError
+          ? "LIMIT_EXCEEDED"
+          : error instanceof TypeError
+            ? "INTERNAL"
+            : "DEPENDENCY_FAILED",
+      );
     }
   }
   #renewLater(attempt: Attempt): void {
     if (this.#active !== attempt || attempt.abort.signal.aborted) return;
     attempt.renewal = setTimeout(() => {
       void (async () => {
+        if (!this.#stageCurrent(attempt)) return;
         try {
-          await this.#call((s) =>
-            this.#store(attempt.vault).renew(attempt.lease!, s),
+          await this.#call(
+            (s) => this.#store(attempt.vault).renew(attempt.lease!, s),
+            { signal: attempt.abort.signal, until: attempt.anchor + SIX_HOURS },
           );
-          this.#renewLater(attempt);
+          if (this.#stageCurrent(attempt)) this.#renewLater(attempt);
         } catch {
           this.#stop(attempt, "INTERRUPTED");
         }
@@ -767,6 +865,7 @@ export class OwnedRebuildController {
     }, 10_000);
   }
   #stop(attempt: Attempt, code: CandidateFailureCode): void {
+    if (this.#active !== attempt) return;
     attempt.stopCode ??= code;
     attempt.abort.abort();
     clearTimeout(attempt.renewal);
@@ -784,8 +883,12 @@ export class OwnedRebuildController {
     }
   }
   async #finishOwned(attempt: Attempt): Promise<void> {
+    // Invalidate host continuations even when S5 teardown is already proved.
+    // Never await this continuation from itself; every late result is guarded.
+    attempt.abort.abort();
     if (!attempt.stopped && attempt.worker)
       await this.#boundedWait(attempt.worker, 2500);
+    if (this.#active !== attempt || this.#publishing) return;
     if (!attempt.stopped || attempt.teardownUnknown) {
       this.#quarantine(attempt);
       return;
@@ -799,6 +902,7 @@ export class OwnedRebuildController {
     // One failure may advance to one distinct cancellation acknowledgement.
     // Re-entry (including shutdown) observes prior dispatches, never replays them.
     for (let transition = 0; transition < 2; transition++) {
+      if (this.#active !== attempt || this.#publishing) return;
       const operation = acknowledging ? "cancellation" : "failure";
       if (!attempt.retirementDispatched.has(operation)) {
         attempt.retirementDispatched.add(operation);
@@ -812,6 +916,7 @@ export class OwnedRebuildController {
                   s,
                 ),
           );
+          if (this.#active !== attempt || this.#publishing) return;
           if (
             !terminal(job) ||
             job.jobId !== attempt.id ||
@@ -851,10 +956,12 @@ export class OwnedRebuildController {
         attempt.retirementDispatched.add("fence");
         try {
           const store = this.#store(attempt.vault);
-          this.#epochs.set(
-            attempt.vault,
-            await this.#call((s) => store.startProcess(s)),
-          );
+          const fencing = this.#call((s) => store.startProcess(s));
+          attempt.recoveryFence = fencing;
+          const epoch = await fencing;
+          if (this.#active !== attempt || this.#publishing || this.#disabled)
+            return;
+          this.#epochs.set(attempt.vault, epoch);
           attempt.fenced = true;
           await this.#call((s) =>
             store.setConfigurationEpoch(this.#configuration.epoch, s),
@@ -871,11 +978,16 @@ export class OwnedRebuildController {
     vault: string,
     id: string,
     duringPublication = false,
+    attempt?: Attempt,
   ): Promise<void> {
     // Full declared ranges, at most 128 ordinals per confirmed operation. This
     // is bounded off the submission path; an uncertain operation is NOT retried.
     for (let n = 0; n < Math.ceil(300_000 / 128) && !this.#closing; n++) {
-      if (this.#publishing && !duringPublication) return;
+      if (
+        (attempt && this.#active !== attempt) ||
+        (this.#publishing && !duringPublication)
+      )
+        return;
       const result = await this.#call((s) => this.#store(vault).cleanup(id, s));
       if (result.done) return;
     }
@@ -897,7 +1009,7 @@ export class OwnedRebuildController {
     if (this.#active !== attempt || this.#publishing) return;
     try {
       if (!this.#disabled && !this.#closing)
-        await this.#drainCleanup(attempt.vault, attempt.id);
+        await this.#drainCleanup(attempt.vault, attempt.id, false, attempt);
       if (!this.#publishing) this.#release(attempt);
     } catch {
       if (!this.#publishing) this.#quarantine(attempt);
@@ -1046,13 +1158,16 @@ export class OwnedRebuildController {
   async #boundedWait(
     task: Promise<unknown>,
     milliseconds: number,
-  ): Promise<void> {
+  ): Promise<boolean> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      await Promise.race([
-        task.catch(() => undefined),
-        new Promise<void>((resolve) => {
-          timer = setTimeout(resolve, milliseconds);
+      return await Promise.race([
+        task.then(
+          () => true,
+          () => false,
+        ),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(false), milliseconds);
         }),
       ]);
     } finally {
@@ -1086,7 +1201,21 @@ export class OwnedRebuildController {
       if (this.#preflightTask)
         await this.#boundedWait(this.#preflightTask, 9000);
       if (this.#claimTask) await this.#boundedWait(this.#claimTask, 2500);
+      const ownershipUntil = performance.now() + 2500;
       if (attempt?.worker) await this.#boundedWait(attempt.worker, 2500);
+      // S5/worker settlement is not retirement settlement. A pending original
+      // startProcess can still assign the store client's cached epoch before our
+      // stale-attempt guards run. Join that RAW method before another start, in
+      // the same ownership window. Rejection/expiry is unproved, never a retry
+      // permission; retain the attempt and close admission for supervised recovery.
+      if (
+        attempt?.recoveryFence &&
+        !(await this.#boundedWait(
+          attempt.recoveryFence,
+          Math.max(0, ownershipUntil - performance.now()),
+        ))
+      )
+        unavailable();
       await this.#initialize(next); // interrupts queued too, never resumes
       if (attempt) {
         attempt.fenced = true;
@@ -1127,7 +1256,8 @@ export class OwnedRebuildController {
     if (this.#claimTask) await this.#boundedWait(this.#claimTask, 2500);
     if (attempt) {
       attempt.stopCode ??= "INTERRUPTED";
-      await this.#finish(attempt);
+      if (!(await this.#boundedWait(this.#finish(attempt), 2500)))
+        this.#quarantine(attempt);
     }
   }
 }

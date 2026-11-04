@@ -1,10 +1,18 @@
 import { createHash } from "node:crypto";
 import { encodeBuildInputRecipe } from "../../dist/build-recipe.js";
-import { encodeOutputDescriptor } from "../../dist/output-descriptor.js";
 import { CandidateStoreError } from "../../dist/redis-candidate-store.js";
+import { parseOutputDescriptor } from "../../dist/output-descriptor.js";
 import { memoryCandidateStore } from "./memory-candidate-store.mjs";
+import {
+  CANONICAL_EXPORT_VERSION,
+  PROJECTION_VERSIONS,
+} from "../../dist/build-input-versions.js";
+import { storedDescriptor } from "./stored-output-fixture.mjs";
 
-export const MemoryCandidateStore = memoryCandidateStore(CandidateStoreError);
+export const MemoryCandidateStore = memoryCandidateStore(
+  CandidateStoreError,
+  parseOutputDescriptor,
+);
 export const secret = "x".repeat(43);
 export const authorization = "Bearer bka_admin_" + secret;
 export const commit = "a".repeat(40);
@@ -57,11 +65,8 @@ export function recipeFor(config, vault = "alpha", sourceCommit = commit) {
         provider: null,
       },
       versions: {
-        canonicalExportVersion: "1",
-        projectionSchemaVersion: "1",
-        parserVersion: "1",
-        chunkerVersion: "1",
-        preprocessingVersion: "1",
+        canonicalExportVersion: CANONICAL_EXPORT_VERSION,
+        ...PROJECTION_VERSIONS,
       },
       maxChunkBytes: 8192,
       runtimeArtifactHash: emptyHash,
@@ -71,18 +76,13 @@ export function recipeFor(config, vault = "alpha", sourceCommit = commit) {
     configurationEpoch: config.epoch,
   });
 }
-export function outputFor(recipe) {
+export function outputFor(recipe, concepts = [], chunks = []) {
   return {
     recipe,
     approvedTip: commit,
-    outputDescriptor: encodeOutputDescriptor({
-      recipeHash: recipe.recipeHash,
-      canonical: { hash: emptyHash, bytes: 0, records: 0 },
-      concepts: { count: 0, hash: emptyHash },
-      chunks: { count: 0, hash: emptyHash },
-    }),
-    concepts: [],
-    chunks: [],
+    outputDescriptor: storedDescriptor(recipe, concepts, chunks),
+    concepts,
+    chunks,
   };
 }
 export function deferred() {

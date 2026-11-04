@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as drivers from "./helpers/trusted-builder-driver.mjs";
+import { controllerStorageDriver } from "./helpers/controller-storage-driver.mjs";
+import { trustedBuilderStages } from "../scripts/qualification-labels.mjs";
 
 const fixture = { config: {}, commit: "a".repeat(40) };
 const invalid = {
@@ -52,6 +54,24 @@ test("fixture modes reject unknown selections and legacy boolean combinations", 
       () => drivers.trustedBuilderDriver(fixture, options),
       invalid,
     );
+});
+
+test("private controller/storage modes reject arbitrary selectors and emit only static allowlisted stages", () => {
+  for (const mode of [null, true, {}, "arbitrary", "positive ", "complete"])
+    assert.throws(() => controllerStorageDriver(fixture, mode), {
+      name: "TypeError",
+      message: "Controller storage fixture mode is invalid.",
+    });
+  for (const mode of ["positive", "tamper"]) {
+    const source = controllerStorageDriver(fixture, mode);
+    const labels = [
+      ...source.matchAll(/QUALIFICATION trusted-builder stage=([a-z-]+)/gu),
+    ].map((m) => m[1]);
+    assert.ok(
+      labels.length > 0 &&
+        labels.every((s) => trustedBuilderStages.includes(s)),
+    );
+  }
 });
 
 test("independent named groups select every adversarial behavior exactly once", () => {

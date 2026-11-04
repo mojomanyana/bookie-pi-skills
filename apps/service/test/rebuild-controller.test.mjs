@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CandidateStoreError } from "../dist/redis-candidate-store.js";
+import {
+  CandidateStoreError,
+  RedisCandidateStore,
+} from "../dist/redis-candidate-store.js";
 import {
   authorization,
   commit,
@@ -12,9 +15,15 @@ import {
   MemoryCandidateStore,
 } from "./helpers/controller-fixture.mjs";
 
+import {
+  conceptFor,
+  chunkFor,
+  stream,
+} from "./helpers/stored-output-fixture.mjs";
+
 const code = (expected) => (error) =>
   error.code === expected && error.message === expected;
-async function harness(t, changes = {}) {
+async function harness(t, changes = {}, prepareStores = () => {}) {
   const { OwnedRebuildController } =
     await import("../dist/rebuild-controller.js");
   const config = configuration();
@@ -43,6 +52,7 @@ async function harness(t, changes = {}) {
     },
     ...changes,
   };
+  prepareStores(stores, config);
   const controller = new OwnedRebuildController({
     configuration: config,
     builder,
@@ -73,6 +83,944 @@ async function harness(t, changes = {}) {
       }),
   };
 }
+
+// Synthetic Redis replies, but the ORIGINAL production client owns its private
+// epoch cache. The model is only server state/payload storage: it cannot stand in
+// for both epochs. Commit start before holding its transport acknowledgement.
+async function recoveryHarness(t, fenceReply = async (value) => value) {
+  const { performance } = await import("node:perf_hooks");
+  t.mock.method(performance, "now", () => 0);
+  const requests = [];
+  let launches = 0;
+  const h = await harness(
+    t,
+    {
+      async build(recipe) {
+        launches++;
+        return {
+          ok: true,
+          output: outputFor(recipe, launches === 1 ? [conceptFor(recipe)] : []),
+        };
+      },
+    },
+    (stores, config) => {
+      for (const source of config.sources) {
+        const server = stores.get(source.handle);
+        const start = server.startProcess.bind(server),
+          configure = server.setConfigurationEpoch.bind(server),
+          current = server.readCurrentJob.bind(server),
+          read = server.readJob.bind(server),
+          renew = server.renew.bind(server);
+        const client = new RedisCandidateStore({
+          vaultUid: source.projection.vaultUid,
+          namespaceKey: new Uint8Array(32).fill(7),
+          execute: async (args, signal) => {
+            const r = JSON.parse(args.at(-1));
+            requests.push({ vault: source.handle, ...r });
+            if (r.op === "start") {
+              const epoch = await start(signal);
+              const reply = JSON.stringify({ ok: true, epoch });
+              return source.handle === "alpha" && epoch === 2
+                ? await fenceReply(reply)
+                : reply;
+            }
+            if (r.epoch !== server.epoch)
+              return JSON.stringify({ ok: false, code: "FENCED" });
+            if (r.op === "configure") {
+              await configure(Number(r.configurationEpoch), signal);
+              return JSON.stringify({ ok: true });
+            }
+            if (r.op === "current")
+              return JSON.stringify({
+                ok: true,
+                job: (await current(signal)) ?? null,
+              });
+            if (r.op === "read")
+              return JSON.stringify({
+                ok: true,
+                job: await read(r.jobId, signal),
+              });
+            if (r.op === "renew") {
+              await renew(
+                {
+                  ...r.lease,
+                  configurationEpoch: Number(r.lease.configurationEpoch),
+                },
+                signal,
+              );
+              return JSON.stringify({ ok: true });
+            }
+            throw Error("Unexpected synthetic Redis operation.");
+          },
+        });
+        server.startProcess = (signal) => client.startProcess(signal);
+        server.setConfigurationEpoch = (epoch, signal) =>
+          client.setConfigurationEpoch(epoch, signal);
+        server.readCurrentJob = (signal) => client.readCurrentJob(signal);
+        server.readJob = (id, signal) => client.readJob(id, signal);
+        server.renew = (owner, signal) => client.renew(owner, signal);
+      }
+    },
+  );
+  const store = h.stores.get("alpha"),
+    append = store.append.bind(store);
+  store.append = async (...args) => {
+    await append(...args);
+    store.manifests.get(args[0].jobId).live = false;
+    throw new CandidateStoreError("INDEX_UNAVAILABLE", "unknown");
+  };
+  return { ...h, store, requests, workers: () => launches };
+}
+
+test("publication joins a committed recovery-fence ACK before replacing the real client's owner", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const entered = deferred(),
+    late = deferred();
+  const h = await recoveryHarness(t, async (reply) => {
+    entered.resolve();
+    await late.promise;
+    return reply;
+  });
+  const job = await h.submit();
+  await entered.promise;
+  let settled = false;
+  const publication = h.controller.reload(configuration(2)).finally(() => {
+    settled = true;
+  });
+  try {
+    await turn();
+    assert.equal(
+      settled,
+      false,
+      "publication cannot overtake the pending raw store method/cache update",
+    );
+    assert.equal(h.store.epoch, 2);
+    assert.equal(h.controller.configuration.epoch, 1);
+    assert.equal(h.controller.ready, false);
+    await assert.rejects(h.submit("beta"), code("DEPENDENCY_UNAVAILABLE"));
+    assert.equal(h.stores.get("beta").calls.includes("claim"), false);
+    late.resolve();
+    await publication;
+    assert.equal(h.store.epoch, 3);
+    assert.equal(h.controller.ready, true);
+    assert.equal((await h.store.readJob(job.jobId)).failureCode, "INTERRUPTED");
+    assert.equal(h.store.manifests.has(job.jobId), false);
+    const replacement = await h.submit();
+    await turn();
+    assert.equal(
+      (await h.controller.status({ authorization, jobId: replacement.jobId }))
+        .job.state,
+      "building",
+    );
+    t.mock.timers.tick(10000);
+    await turn();
+    assert.equal(h.requests.findLast((r) => r.op === "renew").epoch, 3);
+    assert.equal(h.store.calls.filter((op) => op === "renew").length, 1);
+    assert.equal(
+      (await h.controller.status({ authorization, jobId: replacement.jobId }))
+        .job.state,
+      "building",
+    );
+    assert.equal(h.controller.ready, true);
+    assert.equal(h.workers(), 2);
+    await assert.rejects(h.submit("beta"), code("RATE_LIMITED"));
+    assert.equal(h.store.calls.filter((op) => op === "append").length, 1);
+    assert.equal(
+      h.store.calls.filter((op) => op === "fail").length,
+      0,
+      "expired ownership rejected failure before commit",
+    );
+    assert.equal(
+      h.requests.filter((r) => r.vault === "alpha" && r.op === "start").length,
+      3,
+    );
+  } finally {
+    late.resolve();
+    await publication;
+    await h.controller.shutdown();
+    t.mock.timers.reset();
+  }
+});
+
+for (const lateOutcome of ["success", "rejection"])
+  test(`unknown recovery-fence ACK blocks publication and ignores late ${lateOutcome} from the real executor`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const entered = deferred(),
+      late = deferred();
+    const h = await recoveryHarness(t, async (reply) => {
+      entered.resolve();
+      await late.promise; // deliberately ignores AbortSignal after commit
+      if (lateOutcome === "rejection") throw Error("PRIVATE_LATE_FENCE");
+      return reply;
+    });
+    const job = await h.submit();
+    await entered.promise;
+    let outcome;
+    const publication = h.controller.reload(configuration(2)).then(
+      () => {
+        outcome = "published";
+      },
+      (error) => {
+        outcome = error.code;
+      },
+    );
+    try {
+      await turn();
+      t.mock.timers.tick(1999);
+      await turn();
+      assert.equal(outcome, undefined);
+      t.mock.timers.tick(1);
+      await turn();
+      await publication;
+      assert.equal(outcome, "DEPENDENCY_UNAVAILABLE");
+      assert.equal(h.controller.configuration.epoch, 1);
+      assert.equal(h.controller.ready, false);
+      assert.equal(
+        h.store.epoch,
+        2,
+        "only the original recovery fence committed",
+      );
+      assert.equal(h.store.manifests.has(job.jobId), true);
+      const commands = h.requests.length;
+      late.resolve();
+      await turn();
+      await turn();
+      assert.equal(
+        h.requests.length,
+        commands,
+        "late executor has no cache/continuation authority",
+      );
+      await assert.rejects(
+        h.controller.reload(configuration(2)),
+        code("DEPENDENCY_UNAVAILABLE"),
+      );
+      await assert.rejects(h.submit("beta"), code("DEPENDENCY_UNAVAILABLE"));
+      await h.controller.shutdown();
+      assert.equal(
+        h.requests.filter((r) => r.vault === "alpha" && r.op === "start")
+          .length,
+        2,
+      );
+      assert.equal(h.store.calls.filter((op) => op === "append").length, 1);
+      assert.equal(h.workers(), 1);
+    } finally {
+      late.resolve();
+      await publication;
+      await h.controller.shutdown();
+      t.mock.timers.reset();
+    }
+  });
+
+for (const lateOutcome of ["success", "rejection"])
+  test(`ignored-abort raw recovery method is bounded without publishing or accepting late ${lateOutcome}`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const h = await recoveryHarness(t);
+    const entered = deferred(),
+      late = deferred();
+    const start = h.store.startProcess.bind(h.store);
+    let fences = 0;
+    h.store.startProcess = async () => {
+      fences++;
+      if (fences === 1) {
+        entered.resolve();
+        await late.promise; // raw method, OUTSIDE the client's internal timeout
+        if (lateOutcome === "rejection") throw Error("PRIVATE_RAW_FENCE");
+      }
+      return await start();
+    };
+    const job = await h.submit();
+    await entered.promise;
+    let outcome;
+    const publication = h.controller.reload(configuration(2)).then(
+      () => {
+        outcome = "published";
+      },
+      (error) => {
+        outcome = error.code;
+      },
+    );
+    try {
+      await turn();
+      t.mock.timers.tick(2499);
+      await turn();
+      assert.equal(outcome, undefined);
+      t.mock.timers.tick(1);
+      await turn();
+      await publication;
+      assert.equal(outcome, "DEPENDENCY_UNAVAILABLE");
+      assert.equal(h.controller.configuration.epoch, 1);
+      assert.equal(h.controller.ready, false);
+      const shutdown = h.controller.shutdown();
+      await turn();
+      t.mock.timers.tick(2500);
+      await shutdown;
+      late.resolve();
+      await turn();
+      await turn();
+      assert.equal(fences, 1, "no recovery/publication/shutdown replay");
+      assert.equal(
+        h.store.manifests.has(job.jobId),
+        true,
+        "unproved reservation was not released into cleanup",
+      );
+      assert.equal(h.store.calls.includes("cleanup"), false);
+      assert.equal(
+        h.requests.filter((r) => r.vault === "alpha" && r.op === "configure")
+          .length,
+        1,
+        "late raw method cannot configure or retire",
+      );
+      assert.equal(h.controller.ready, false);
+      await assert.rejects(h.submit("beta"), code("DEPENDENCY_UNAVAILABLE"));
+    } finally {
+      late.resolve();
+      await turn();
+      await publication;
+      await h.controller.shutdown();
+      t.mock.timers.reset();
+    }
+  });
+
+test("owned payload sequence waits for S5 and original attachment before sequential concepts/chunks and measured verification", async (t) => {
+  const build = deferred(),
+    built = deferred(),
+    attached = deferred(),
+    attachReply = deferred();
+  let output, acceptedSignal;
+  const h = await harness(t, {
+    async build(recipe, { signal }) {
+      acceptedSignal = signal;
+      output = outputFor(
+        recipe,
+        Array.from({ length: 129 }, (_, i) =>
+          conceptFor(recipe, { title: `Concept ${i}` }),
+        ),
+        [chunkFor(recipe, 0), chunkFor(recipe, 1)],
+      );
+      built.resolve();
+      await build.promise;
+      return { ok: true, output };
+    },
+  });
+  const store = h.stores.get("alpha");
+  const appends = [],
+    verified = deferred();
+  const append = store.append?.bind(store),
+    verify = store.verifyStoredOutput?.bind(store);
+  store.append = async (...args) => {
+    appends.push(args);
+    return await append(...args);
+  };
+  store.verifyStoredOutput = async (...args) => {
+    assert.equal(args[1], output.recipe);
+    assert.equal(args[2], output.outputDescriptor);
+    assert.equal(args[3].signal, acceptedSignal);
+    assert.ok(
+      Number.isInteger(args[3].timeoutMs) &&
+        args[3].timeoutMs > 0 &&
+        args[3].timeoutMs <= 21600000,
+    );
+    const result = await verify(...args);
+    verified.resolve(result);
+    return result;
+  };
+  store.reply = async (op, value) => {
+    if (op === "attach") {
+      attached.resolve();
+      await attachReply.promise;
+    }
+    return value;
+  };
+  const job = await h.submit();
+  await built.promise;
+  assert.equal(appends.length, 0);
+  assert.equal(store.calls.includes("verify"), false);
+  build.resolve();
+  await attached.promise;
+  assert.equal(appends.length, 0);
+  assert.equal(store.calls.includes("verify"), false);
+  attachReply.resolve();
+  await turn();
+  await turn();
+  assert.equal(
+    store.calls.includes("verify"),
+    true,
+    "the owned continuation invokes storage measurement",
+  );
+  const measurement = await verified.promise;
+  assert.deepEqual(
+    appends.map((a) => [a[1], a[2], a[3].length]),
+    [
+      ["concept", 0, 128],
+      ["concept", 128, 1],
+      ["chunk", 0, 2],
+    ],
+  );
+  assert.deepEqual(
+    appends.flatMap((a) => (a[1] === "concept" ? a[3] : [])),
+    output.concepts,
+  );
+  assert.deepEqual(
+    appends.flatMap((a) => (a[1] === "chunk" ? a[3] : [])),
+    output.chunks,
+  );
+  for (const args of appends) assert.equal(args[0], measurement.lease);
+  assert.deepEqual(measurement.concepts, {
+    count: 129,
+    hash: stream(output.concepts),
+  });
+  assert.deepEqual(measurement.chunks, {
+    count: 2,
+    hash: stream(output.chunks),
+  });
+  assert.equal((await store.readJob(job.jobId)).state, "building");
+  assert.equal((await h.submit()).jobId, job.jobId);
+  assert.equal(appends.length, 3);
+  await assert.rejects(h.submit("beta"), code("RATE_LIMITED"));
+});
+
+for (const outcome of [
+  "rejected",
+  "committed-lost",
+  "bad-next",
+  "corrupt-storage",
+])
+  test(`post-S5 ${outcome} retires safely without replay or CPU quarantine`, async (t) => {
+    const h = await harness(t, {
+      async build(recipe) {
+        return {
+          ok: true,
+          output: outputFor(recipe, [conceptFor(recipe)], []),
+        };
+      },
+    });
+    const store = h.stores.get("alpha");
+    let appends = 0,
+      verifies = 0;
+    const append = store.append?.bind(store),
+      verify = store.verifyStoredOutput?.bind(store);
+    store.append = async (...args) => {
+      appends++;
+      if (outcome === "rejected") throw new CandidateStoreError("FENCED");
+      const next = await append(...args);
+      if (outcome === "committed-lost")
+        throw new CandidateStoreError("INDEX_UNAVAILABLE", "unknown");
+      if (outcome === "bad-next") return next + 1;
+      return next;
+    };
+    store.verifyStoredOutput = async (...args) => {
+      verifies++;
+      store.payloads.get(args[0].jobId).concept.set(0, {
+        ...conceptFor(args[1]),
+        title: "STORAGE_ONLY_TAMPER",
+      });
+      return await verify(...args);
+    };
+    const job = await h.submit();
+    await turn();
+    await turn();
+    const status = await store.readJob(job.jobId);
+    assert.equal(status.state, "failed");
+    assert.equal(status.failureCode, "DEPENDENCY_FAILED");
+    assert.equal(appends, 1);
+    assert.equal(verifies, outcome === "corrupt-storage" ? 1 : 0);
+    assert.equal(store.manifests.has(job.jobId), false);
+    assert.equal(store.payloads.has(job.jobId), false);
+    assert.equal(h.controller.ready, true);
+    await h.controller.shutdown();
+    assert.equal(appends, 1);
+  });
+
+for (const [title, expectedSizes] of [
+  ["x".repeat(600000), undefined],
+  ['café 😀 \\"\\\\\\n\\t\\0'.repeat(100), undefined],
+])
+  test("writer uses actual UTF-8 JSON record bytes, not LF/envelope/character counts", async (t) => {
+    let output;
+    const h = await harness(t, {
+      async build(recipe) {
+        const exact = conceptFor(recipe, { title: "" });
+        exact.title = "x".repeat(
+          1048576 - Buffer.byteLength(JSON.stringify(exact)),
+        );
+        output = outputFor(recipe, [exact, conceptFor(recipe, { title })], []);
+        return { ok: true, output };
+      },
+    });
+    const store = h.stores.get("alpha"),
+      batches = [];
+    const append = store.append?.bind(store);
+    store.append = async (...args) => {
+      batches.push(args[3]);
+      return await append(...args);
+    };
+    await h.submit();
+    await turn();
+    await turn();
+    assert.equal(store.calls.includes("verify"), true);
+    assert.equal(
+      Buffer.byteLength(JSON.stringify(output.concepts[0])),
+      1048576,
+    );
+    assert.equal(
+      Buffer.byteLength(JSON.stringify(output.concepts[0]) + "\n"),
+      1048577,
+    );
+    assert.deepEqual(
+      batches.map((rows) => rows.length),
+      expectedSizes ?? [1, 1],
+    );
+  });
+
+for (const position of [0, 128])
+  test(`oversized record at ${position} fails whole attempt and cleans acknowledged ranges`, async (t) => {
+    const h = await harness(t, {
+      async build(recipe) {
+        const large = conceptFor(recipe, { title: "" });
+        large.title = "x".repeat(
+          1048577 - Buffer.byteLength(JSON.stringify(large)),
+        );
+        const rows = Array.from({ length: position }, () => conceptFor(recipe));
+        rows.push(large);
+        return { ok: true, output: outputFor(recipe, rows, []) };
+      },
+    });
+    const store = h.stores.get("alpha");
+    const job = await h.submit();
+    await turn();
+    await turn();
+    assert.equal(
+      (await store.readJob(job.jobId)).failureCode,
+      "LIMIT_EXCEEDED",
+    );
+    assert.equal(store.calls.includes("verify"), false);
+    assert.equal(store.manifests.has(job.jobId), false);
+    assert.equal(h.controller.ready, true);
+  });
+
+for (const phase of [
+  "attach",
+  "concept-batch",
+  "concept-end",
+  "chunk-end",
+  "verify-page",
+  "verify-final",
+])
+  for (const invalidation of [
+    "cancel",
+    "reload",
+    "shutdown",
+    "expiry",
+    "renewal-loss",
+    "restart",
+  ])
+    test(`${invalidation} invalidates ${phase} continuation before any further dispatch`, async (t) => {
+      const { performance } = await import("node:perf_hooks");
+      let now = 0;
+      t.mock.method(performance, "now", () => now);
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      const entered = deferred(),
+        late = deferred();
+      let held = false;
+      const h = await harness(t, {
+        async build(recipe) {
+          return {
+            ok: true,
+            output: outputFor(
+              recipe,
+              Array.from({ length: 129 }, () => conceptFor(recipe)),
+              [chunkFor(recipe)],
+            ),
+          };
+        },
+      });
+      const store = h.stores.get("alpha");
+      if (phase === "verify-page") {
+        store.reply = async (op, value) => {
+          if (op === "verifyPage" && !held) {
+            held = true;
+            entered.resolve();
+            await late.promise;
+          }
+          return value;
+        };
+      } else {
+        const method =
+          phase === "attach"
+            ? "attachOutput"
+            : phase.startsWith("verify")
+              ? "verifyStoredOutput"
+              : "append";
+        const original = store[method].bind(store);
+        store[method] = async (...args) => {
+          const value = await original(...args);
+          const matches =
+            phase === "attach" ||
+            phase === "verify-final" ||
+            (phase === "concept-batch" &&
+              args[1] === "concept" &&
+              args[2] === 0) ||
+            (phase === "concept-end" &&
+              args[1] === "concept" &&
+              args[2] === 128) ||
+            (phase === "chunk-end" && args[1] === "chunk");
+          if (matches && !held) {
+            held = true;
+            entered.resolve();
+            await late.promise;
+            // Exercise stale success AND stale rejection without error leakage.
+            if (invalidation === "reload" || invalidation === "renewal-loss")
+              throw Error("PRIVATE_LATE_STORAGE");
+          }
+          return value;
+        };
+      }
+      const job = await h.submit();
+      await entered.promise;
+      if (invalidation === "cancel")
+        await h.controller.cancel({ authorization, jobId: job.jobId });
+      else if (invalidation === "reload") {
+        const publication = h.controller.reload(configuration(2));
+        await turn();
+        t.mock.timers.tick(2500);
+        await publication;
+      } else if (invalidation === "shutdown") await h.controller.shutdown();
+      else {
+        if (invalidation === "restart") await store.startProcess();
+        if (invalidation !== "expiry")
+          store.manifests.get(job.jobId).live = false;
+        now = invalidation === "expiry" ? 21600000 : 10000;
+        t.mock.timers.tick(now);
+      }
+      await turn();
+      await turn();
+      const appends = store.calls.filter((op) => op === "append").length;
+      const verifies = store.calls.filter(
+        (op) => op === "verify" || op === "verifyPage",
+      ).length;
+      let beta;
+      if (!["shutdown"].includes(invalidation)) {
+        assert.equal(h.controller.ready, true);
+        beta = await h.submit("beta");
+        await turn();
+      }
+      late.resolve();
+      await turn();
+      await turn();
+      assert.equal(store.calls.filter((op) => op === "append").length, appends);
+      assert.equal(
+        store.calls.filter((op) => op === "verify" || op === "verifyPage")
+          .length,
+        verifies,
+      );
+      if (beta) {
+        assert.equal(h.controller.ready, true);
+        assert.equal(
+          (await h.stores.get("beta").readJob(beta.jobId)).state,
+          "building",
+        );
+        await assert.rejects(h.submit("alpha"), code("RATE_LIMITED"));
+      }
+      if (invalidation === "expiry")
+        assert.equal(
+          (await store.readJob(job.jobId)).failureCode,
+          "LIMIT_EXCEEDED",
+        );
+      await h.controller.shutdown();
+      t.mock.timers.reset();
+    });
+
+test("verification exceeds two seconds in total and renewal persists during writes, verification and building hold", async (t) => {
+  const { performance } = await import("node:perf_hooks");
+  let now = 1000;
+  t.mock.method(performance, "now", () => now);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const appended = deferred(),
+    write = deferred(),
+    verifying = deferred(),
+    read = deferred();
+  let options;
+  const h = await harness(t, {
+    async build(recipe) {
+      now += 500;
+      return { ok: true, output: outputFor(recipe, [conceptFor(recipe)], []) };
+    },
+  });
+  const store = h.stores.get("alpha"),
+    append = store.append.bind(store),
+    verify = store.verifyStoredOutput.bind(store);
+  store.append = async (...args) => {
+    const value = await append(...args);
+    appended.resolve();
+    await write.promise;
+    return value;
+  };
+  store.verifyStoredOutput = async (...args) => {
+    options = args[3];
+    verifying.resolve();
+    await read.promise;
+    return await verify(...args);
+  };
+  const job = await h.submit();
+  await appended.promise;
+  now += 10000;
+  t.mock.timers.tick(10000);
+  await turn();
+  assert.equal(store.calls.filter((op) => op === "renew").length, 1);
+  write.resolve();
+  await verifying.promise;
+  assert.ok(options.timeoutMs <= 21600000 - 10500);
+  now += 10000;
+  t.mock.timers.tick(10000);
+  await turn();
+  assert.equal(
+    options.signal.aborted,
+    false,
+    "whole verifier is not a single two-second RPC",
+  );
+  assert.equal(store.calls.filter((op) => op === "renew").length, 2);
+  read.resolve();
+  await turn();
+  now += 10000;
+  t.mock.timers.tick(10000);
+  await turn();
+  assert.equal(store.calls.filter((op) => op === "renew").length, 3);
+  assert.equal((await store.readJob(job.jobId)).state, "building");
+  await h.controller.shutdown();
+  t.mock.timers.reset();
+});
+
+test("batch lookahead remains bounded while acknowledgement is held; aggregate bytes split without cloning", async (t) => {
+  let encoded = 0,
+    output;
+  const held = deferred(),
+    release = deferred();
+  const h = await harness(t, {
+    async build(recipe) {
+      const rows = Array.from({ length: 2000 }, () => conceptFor(recipe));
+      output = outputFor(recipe, rows, []);
+      // Test-only serialization counters are installed AFTER independent evidence.
+      for (const row of rows)
+        Object.defineProperty(row, "toJSON", {
+          enumerable: false,
+          value() {
+            encoded++;
+            return { ...this };
+          },
+        });
+      return { ok: true, output };
+    },
+  });
+  const store = h.stores.get("alpha"),
+    append = store.append.bind(store);
+  let first = true;
+  store.append = async (...args) => {
+    const next = await append(...args);
+    if (first) {
+      first = false;
+      held.resolve();
+      await release.promise;
+    }
+    return next;
+  };
+  await h.submit();
+  await held.promise;
+  assert.equal(store.calls.filter((op) => op === "append").length, 1);
+  // 128 writer encodes + 128 bounded store encodes, not 2000 encoded/queued.
+  assert.equal(encoded, 256);
+  release.resolve();
+  await turn();
+  await turn();
+  assert.equal(store.calls.includes("verify"), true);
+  assert.equal(output.concepts.length, 2000);
+});
+
+for (const scalar of ["é", "😀", '"', "\\", "\n", "\u0000"])
+  test("legal maximum record preserves Unicode/escaping and excludes only its hash LF", async (t) => {
+    const h = await harness(t, {
+      async build(recipe) {
+        const row = conceptFor(recipe, { title: "" });
+        const base = Buffer.byteLength(JSON.stringify(row));
+        const size = Buffer.byteLength(JSON.stringify(scalar)) - 2;
+        row.title =
+          scalar.repeat(Math.floor((1048576 - base) / size)) +
+          "x".repeat((1048576 - base) % size);
+        assert.equal(Buffer.byteLength(JSON.stringify(row)), 1048576);
+        return { ok: true, output: outputFor(recipe, [row], []) };
+      },
+    });
+    await h.submit();
+    await turn();
+    await turn();
+    assert.equal(h.stores.get("alpha").calls.includes("verify"), true);
+  });
+for (const extra of [0, 1])
+  test(`aggregate byte budget at one MiB plus ${extra} splits only when needed`, async (t) => {
+    const h = await harness(t, {
+      async build(recipe) {
+        const rows = [524288, 524288 + extra].map((size) => {
+          const row = conceptFor(recipe, { title: "" });
+          row.title = "x".repeat(size - Buffer.byteLength(JSON.stringify(row)));
+          return row;
+        });
+        return { ok: true, output: outputFor(recipe, rows, []) };
+      },
+    });
+    const store = h.stores.get("alpha"),
+      append = store.append.bind(store),
+      sizes = [];
+    store.append = async (...args) => {
+      sizes.push(args[3].length);
+      return await append(...args);
+    };
+    await h.submit();
+    await turn();
+    await turn();
+    assert.deepEqual(sizes, extra ? [1, 1] : [2]);
+    assert.equal(store.calls.includes("verify"), true);
+  });
+for (const malformed of ["throws", "undefined"])
+  test(`local serialization ${malformed} is a static invariant failure, not CPU uncertainty`, async (t) => {
+    const h = await harness(t, {
+      async build(recipe) {
+        const row = conceptFor(recipe),
+          out = outputFor(recipe, [row], []);
+        Object.defineProperty(row, "toJSON", {
+          value() {
+            if (malformed === "throws") throw Error("PRIVATE_SERIALIZATION");
+          },
+        });
+        return { ok: true, output: out };
+      },
+    });
+    const job = await h.submit();
+    await turn();
+    await turn();
+    assert.equal(
+      (await h.stores.get("alpha").readJob(job.jobId)).failureCode,
+      "INTERNAL",
+    );
+    assert.equal(h.controller.ready, true);
+  });
+test("single append RPC is bounded to two seconds even though whole verification is not", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const entered = deferred(),
+    late = deferred();
+  const h = await harness(t, {
+    async build(recipe) {
+      return { ok: true, output: outputFor(recipe, [conceptFor(recipe)], []) };
+    },
+  });
+  const store = h.stores.get("alpha");
+  store.reply = async (op, value) => {
+    if (op === "append") {
+      entered.resolve();
+      await late.promise;
+    }
+    return value;
+  };
+  const job = await h.submit();
+  await entered.promise;
+  t.mock.timers.tick(1999);
+  await turn();
+  assert.equal((await store.readJob(job.jobId)).state, "building");
+  t.mock.timers.tick(1);
+  await turn();
+  await turn();
+  assert.equal(
+    (await store.readJob(job.jobId)).failureCode,
+    "DEPENDENCY_FAILED",
+  );
+  assert.equal(store.calls.includes("verify"), false);
+  late.resolve();
+  await turn();
+  assert.equal(store.calls.filter((op) => op === "append").length, 1);
+  await h.controller.shutdown();
+  t.mock.timers.reset();
+});
+test("model commits payload before lost replies, verifies actual values and protects immutable attachment/full-range cleanup", async () => {
+  const config = configuration(),
+    store = new MemoryCandidateStore(config.sources[0].projection.vaultUid),
+    recipe = recipeFor(config);
+  await store.startProcess();
+  await store.setConfigurationEpoch(1);
+  const { lease } = await store.claimInput(
+    recipe,
+    "job_00000000000000000000000001",
+  );
+  await store.beginBuilding(lease);
+  const output = outputFor(
+    recipe,
+    Array.from({ length: 129 }, () => conceptFor(recipe)),
+    [],
+  );
+  await store.attachOutput(lease, output.outputDescriptor);
+  const abort = new AbortController();
+  abort.abort();
+  await assert.rejects(
+    store.append(
+      lease,
+      "concept",
+      0,
+      output.concepts.slice(0, 128),
+      abort.signal,
+    ),
+    { name: "AbortError" },
+  );
+  assert.equal(store.payloads.get(lease.jobId).concept.size, 0);
+  store.reply = async (op, value) => {
+    if (op === "append")
+      throw new CandidateStoreError("INDEX_UNAVAILABLE", "unknown");
+    return value;
+  };
+  await assert.rejects(
+    store.append(lease, "concept", 0, output.concepts.slice(0, 128)),
+    code("INDEX_UNAVAILABLE"),
+  );
+  assert.deepEqual(
+    [...store.payloads.get(lease.jobId).concept.values()],
+    output.concepts.slice(0, 128),
+  );
+  await assert.rejects(
+    store.append(lease, "concept", 0, [output.concepts[0]]),
+    code("BUILD_CONFLICT"),
+  );
+  store.reply = async (_op, value) => value;
+  await store.append(lease, "concept", 128, [output.concepts[128]]);
+  assert.equal(
+    (
+      await store.verifyStoredOutput(lease, recipe, output.outputDescriptor, {
+        timeoutMs: 2000,
+      })
+    ).concepts.hash,
+    stream(output.concepts),
+  );
+  store.payloads.get(lease.jobId).concept.get(128).title = "STORED_ONLY_CHANGE";
+  await assert.rejects(
+    store.verifyStoredOutput(lease, recipe, output.outputDescriptor, {
+      timeoutMs: 2000,
+    }),
+    code("INDEX_UNAVAILABLE"),
+  );
+  const conflict = outputFor(recipe, [conceptFor(recipe)], []).outputDescriptor;
+  await assert.rejects(
+    store.attachOutput(lease, conflict),
+    code("BUILD_CONFLICT"),
+  );
+  await store.fail(lease, "DEPENDENCY_FAILED");
+  for (const protection of ["active", "previous", "readers"]) {
+    if (protection === "readers") store.readers.add(lease.buildId);
+    else store[protection] = lease.buildId;
+    await assert.rejects(store.cleanup(lease.jobId), code("BUILD_CONFLICT"));
+    if (protection === "readers") store.readers.clear();
+    else store[protection] = null;
+  }
+  assert.equal((await store.cleanup(lease.jobId)).done, false);
+  assert.equal(store.payloads.get(lease.jobId).concept.has(128), true);
+  assert.equal((await store.cleanup(lease.jobId)).done, true);
+  assert.equal(store.payloads.has(lease.jobId), false);
+  assert.equal((await store.readJob(lease.jobId)).state, "failed");
+});
 
 test("deployment composition passes only the S5 configuration contract and never qualifies an unprotected host", async () => {
   const { createOwnedRebuildController } =
@@ -456,7 +1404,9 @@ for (const phase of ["claimInput", "beginBuilding"])
     store[phase] = async (...args) => {
       entered.resolve();
       return await store.wait(
-        late.promise.then(() => original(...args)),
+        // This wrapper models a command already dispatched, not a new call
+        // with a now-pre-aborted signal. Redis may still commit after timeout.
+        late.promise.then(() => original(...args.slice(0, -1))),
         args.at(-1),
       );
     };
