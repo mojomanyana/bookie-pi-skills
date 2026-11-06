@@ -1,7 +1,7 @@
 import {
   readApprovedSourceManifest,
   resolveApprovedGitCommit,
-} from "@bookie/core";
+} from "pi-bookie-core";
 import {
   prepareLexicalProjection,
   verifyCompleteProjection,

@@ -1,7 +1,7 @@
 {
-  "name": "@bookie/core",
-  "version": "0.0.0",
-  "private": true,
+  "name": "pi-bookie-core",
+  "version": "0.1.0",
+  "private": false,
   "type": "module",
   "engines": {
     "node": ">=24"
@@ -14,7 +14,8 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc -b --force && node scripts/copy-schemas.mjs",
@@ -32,5 +33,9 @@
     "ajv-formats": "^3.0.1",
     "mdast-util-from-markdown": "^2.0.3",
     "yaml": "^2.9.0"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
   }
 }

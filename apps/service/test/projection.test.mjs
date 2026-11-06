@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 
-import { exportCanonicalJsonl } from "@bookie/core";
+import { exportCanonicalJsonl } from "pi-bookie-core";
 import {
   encodeOutputDescriptor,
   parseOutputDescriptor,

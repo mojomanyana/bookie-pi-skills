@@ -1,5 +1,21 @@
+import { registerWorkMapConsumer } from "./work-map-consumer.js";
+import { createBookieContextFilter } from "./context-filter.js";
+import { registerContextConsumers } from "./context-consumers.js";
+import { registerProducerBridge } from "./producer-bridge.js";
+import { createDisclosureAuthority } from "./disclosure-authority.js";
+import {
+  checkpointPreparationFailureMessage,
+  guardBookieTool,
+  retainToolPayload,
+  writeFailureMessage,
+} from "./output-guard.js";
+import {
+  createCaptureAuthority,
+  type VaultAuthority,
+} from "./capture-authority.js";
 import {
   amendConceptWithPolicy,
+  containsDetectedSecret,
   createCheckpointWithPolicy,
   createConceptWithPolicy,
   inspectConcept,
@@ -11,7 +27,7 @@ import {
   type CreateConceptRequest,
   type FilesystemSearchFilters,
   type PreparedCheckpointPublication,
-} from "@bookie/core";
+} from "pi-bookie-core";
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import {
   DEFAULT_MAX_BYTES,
@@ -131,7 +147,10 @@ function boundedResult(
     outputBytes: Buffer.byteLength(text, "utf8"),
     totalBytes: truncation.totalBytes,
   };
-  return { content: [{ type: "text" as const, text }], details };
+  return retainToolPayload(
+    { content: [{ type: "text" as const, text }], details },
+    result,
+  );
 }
 
 interface WriteRequestSnapshot {
@@ -241,25 +260,43 @@ async function readWriteRequest(
 
 async function requireWriteApproval(
   action: "create" | "amend",
-  approval: "explicit" | "confirm",
   sourceHash: `sha256:${string}`,
-  vault: string,
+  vault: VaultAuthority,
   requestPath: string,
+  request: unknown,
   signal: AbortSignal | undefined,
   ctx: ExtensionContext,
 ): Promise<void> {
   checkRequestCancellation(signal);
-  if (approval === "explicit") return;
+  if (!ctx.hasUI)
+    throw new Error(
+      "Bookie write requires trusted approval in non-interactive mode.",
+    );
+  await vault.assertCurrent();
+  const target =
+    request !== null &&
+    typeof request === "object" &&
+    "path" in request &&
+    typeof request.path === "string"
+      ? request.path
+      : "<invalid>";
+  if (target.length > 4096 || containsDetectedSecret(target))
+    throw new Error("Bookie write request file is invalid.");
   const approved = await confirmRequest(
     `Approve Bookie ${action}?`,
-    `${inertJson({ vault, requestPath, sourceHash })}\nThis operation modifies the canonical vault without committing or pushing.`,
+    `${inertJson({ vault: vault.root, target, requestPath, sourceHash })}\nThis operation modifies the canonical vault without committing or pushing.`,
     signal,
     ctx,
   );
   if (!approved) throw new Error("Bookie write was not approved.");
+  await vault.assertCurrent();
 }
 
+type CaptureAuthority = ReturnType<typeof createCaptureAuthority>;
+
 interface PendingCheckpoint {
+  readonly vault: VaultAuthority;
+  readonly input: Parameters<typeof prepareCheckpoint>[1];
   readonly publication: PreparedCheckpointPublication;
   readonly preview: CheckpointPreview;
   readonly approvalHash: `sha256:${string}`;
@@ -267,7 +304,12 @@ interface PendingCheckpoint {
 }
 
 function checkpointConfirmationMessage(pending: PendingCheckpoint): string {
+  const bookie = pending.input.frontmatter.bookie as Readonly<
+    Record<string, unknown>
+  >;
   const message = `${inertJson({
+    vault: pending.vault.root,
+    project: bookie.project,
     targetPath: pending.targetPath,
     approvalHash: pending.approvalHash,
   })}\n--- checkpoint preview (untrusted) ---\n${wrapUntrustedSource(pending.preview.bodyText)}`;
@@ -285,11 +327,16 @@ function checkpointConfirmationMessage(pending: PendingCheckpoint): string {
 async function publishCheckpoint(
   pending: PendingCheckpoint,
   signal: AbortSignal | undefined,
+  assertAuthority: () => Promise<void>,
 ) {
   const result = await createCheckpointWithPolicy(pending.publication, {
+    assertAuthority,
     ...(signal === undefined ? {} : { signal }),
     runExclusive: <T>(absoluteTargetPath: string, mutation: () => Promise<T>) =>
-      withFileMutationQueue(absoluteTargetPath, mutation),
+      withFileMutationQueue(absoluteTargetPath, async () => {
+        await assertAuthority();
+        return mutation();
+      }),
   });
   if (!result.ok) {
     if (result.changedPaths.length > 0) {
@@ -311,46 +358,32 @@ interface CheckpointStaging {
   release(): void;
 }
 
-function createCheckpointTool(staging: CheckpointStaging) {
+function createCheckpointTool(
+  staging: CheckpointStaging,
+  authority: CaptureAuthority,
+) {
   return defineTool({
     name: "bookie_checkpoint",
     label: "Bookie Checkpoint",
     description:
-      "Prepare a policy-filtered untrusted checkpoint preview and either create one Activity after approval or stage it for pre-compaction approval. Validation and output are bounded to Pi's 50KB/2000-line limits.",
+      "Prepare an untrusted checkpoint preview for local trusted UI and create one Activity after approval or stage it for pre-compaction approval. Model output contains bounded status only; validation and saving permission remain separate.",
     parameters: Type.Object(
       {
         vault: Type.String({ minLength: 1 }),
         requestPath: Type.String({ minLength: 1 }),
         timing: StringEnum(["now", "before-compaction"] as const),
-        approval: Type.Optional(StringEnum(["explicit", "confirm"] as const)),
       },
       { additionalProperties: false },
     ),
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      if (
-        params.timing === "now" &&
-        params.approval !== "explicit" &&
-        params.approval !== "confirm"
-      ) {
-        throw new Error("Bookie checkpoint requires an approval mode.");
-      }
-      if (
-        params.timing === "before-compaction" &&
-        params.approval !== undefined
-      ) {
+      if ("approval" in params)
         throw new Error(
-          "Bookie staged checkpoint approval occurs before compaction; omit approval.",
+          "Bookie approval must come from trusted host authority, not tool arguments.",
         );
-      }
-      if (
-        params.timing === "now" &&
-        params.approval === "confirm" &&
-        !ctx.hasUI
-      ) {
+      if (params.timing === "now" && !ctx.hasUI && !authority.hasStanding())
         throw new Error(
-          "Bookie checkpoint requires explicit approval in non-interactive mode.",
+          "Bookie checkpoint requires trusted approval in non-interactive mode.",
         );
-      }
       if (!staging.reserve()) {
         throw new Error("Bookie checkpoint is already staged.");
       }
@@ -361,16 +394,22 @@ function createCheckpointTool(staging: CheckpointStaging) {
           ctx.cwd,
           signal,
         );
-        const root = vaultRoot(params.vault, ctx.cwd);
+        const vault = await authority.bind(
+          vaultRoot(params.vault, ctx.cwd),
+          ctx,
+        );
+        const root = vault.root;
         const prepared = await prepareCheckpoint(
           root,
           snapshot.request as Parameters<typeof prepareCheckpoint>[1],
           signal === undefined ? {} : { signal },
         );
         if (!prepared.ok) {
-          throw new Error(`Bookie checkpoint failed: ${prepared.reason}.`);
+          throw new Error(checkpointPreparationFailureMessage(prepared.reason));
         }
         const pending: PendingCheckpoint = {
+          vault,
+          input: prepared.preparedInput,
           publication: prepared.publication,
           preview: prepared.preview,
           approvalHash: `sha256:${createHash("sha256")
@@ -391,7 +430,15 @@ function createCheckpointTool(staging: CheckpointStaging) {
             true,
           );
         }
-        if (params.approval === "confirm") {
+        const standing = await authority.standingCheckpoint(
+          vault,
+          prepared.preparedInput,
+        );
+        if (standing === undefined) {
+          if (!ctx.hasUI)
+            throw new Error(
+              "Bookie checkpoint requires trusted approval in non-interactive mode.",
+            );
           const approved = await confirmRequest(
             "Approve Bookie checkpoint?",
             confirmationMessage,
@@ -407,7 +454,11 @@ function createCheckpointTool(staging: CheckpointStaging) {
             );
           }
         }
-        const result = await publishCheckpoint(pending, signal);
+        const result = await publishCheckpoint(
+          pending,
+          signal,
+          standing ?? vault.assertCurrent,
+        );
         return boundedResult(
           "bookie_checkpoint",
           result.redacted === true
@@ -505,79 +556,86 @@ const searchTool = defineTool({
   },
 });
 
-const writeTool = defineTool({
-  name: "bookie_write",
-  label: "Bookie Write",
-  description:
-    "Create or amend one canonical Bookie concept from a bounded JSON request file. Requires explicit approval, policy validation, and queued mutation; output is bounded to Pi's 50KB/2000-line limits.",
-  parameters: Type.Object(
-    {
-      vault: Type.String({ minLength: 1 }),
-      action: StringEnum(["create", "amend"] as const),
-      requestPath: Type.String({ minLength: 1 }),
-      approval: StringEnum(["explicit", "confirm"] as const),
-    },
-    { additionalProperties: false },
-  ),
-  async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-    if (params.approval === "confirm" && !ctx.hasUI) {
-      throw new Error(
-        "Bookie write requires explicit approval in non-interactive mode.",
-      );
-    }
-    const snapshot = await readWriteRequest(
-      params.requestPath,
-      ctx.cwd,
-      signal,
-    );
-    await requireWriteApproval(
-      params.action,
-      params.approval,
-      snapshot.sourceHash,
-      params.vault,
-      params.requestPath,
-      signal,
-      ctx,
-    );
-    const options = {
-      ...(signal === undefined ? {} : { signal }),
-      runExclusive: <T>(
-        absoluteTargetPath: string,
-        mutation: () => Promise<T>,
-      ) => withFileMutationQueue(absoluteTargetPath, mutation),
-    };
-    const result =
-      params.action === "create"
-        ? await createConceptWithPolicy(
-            vaultRoot(params.vault, ctx.cwd),
-            snapshot.request as CreateConceptRequest,
-            options,
-          )
-        : await amendConceptWithPolicy(
-            vaultRoot(params.vault, ctx.cwd),
-            snapshot.request as AmendConceptRequest,
-            options,
-          );
-    if (!result.ok) {
-      if (result.changedPaths.length > 0) {
+function createWriteTool(authority: CaptureAuthority) {
+  return defineTool({
+    name: "bookie_write",
+    label: "Bookie Write",
+    description:
+      "Create or amend one canonical Bookie concept from a bounded JSON request file. Requires explicit approval, policy validation, and queued mutation; output is bounded to Pi's 50KB/2000-line limits.",
+    parameters: Type.Object(
+      {
+        vault: Type.String({ minLength: 1 }),
+        action: StringEnum(["create", "amend"] as const),
+        requestPath: Type.String({ minLength: 1 }),
+      },
+      { additionalProperties: false },
+    ),
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      if ("approval" in params)
         throw new Error(
-          "Bookie write may have changed canonical files; reread and validate before retrying.",
+          "Bookie approval must come from trusted host authority, not tool arguments.",
         );
+      if (!ctx.hasUI)
+        throw new Error(
+          "Bookie write requires trusted approval in non-interactive mode.",
+        );
+      const snapshot = await readWriteRequest(
+        params.requestPath,
+        ctx.cwd,
+        signal,
+      );
+      const vault = await authority.bind(vaultRoot(params.vault, ctx.cwd), ctx);
+      await requireWriteApproval(
+        params.action,
+        snapshot.sourceHash,
+        vault,
+        params.requestPath,
+        snapshot.request,
+        signal,
+        ctx,
+      );
+      const options = {
+        assertAuthority: vault.assertCurrent,
+        ...(signal === undefined ? {} : { signal }),
+        runExclusive: <T>(
+          absoluteTargetPath: string,
+          mutation: () => Promise<T>,
+        ) =>
+          withFileMutationQueue(absoluteTargetPath, async () => {
+            await vault.assertCurrent();
+            return mutation();
+          }),
+      };
+      const result =
+        params.action === "create"
+          ? await createConceptWithPolicy(
+              vault.root,
+              snapshot.request as CreateConceptRequest,
+              options,
+            )
+          : await amendConceptWithPolicy(
+              vault.root,
+              snapshot.request as AmendConceptRequest,
+              options,
+            );
+      if (!result.ok) {
+        if (result.changedPaths.length > 0) {
+          throw new Error(
+            "Bookie write may have changed canonical files; reread and validate before retrying.",
+          );
+        }
+        throw new Error(writeFailureMessage(result.diagnostics));
       }
-      const codes = [...new Set(result.diagnostics.map(({ code }) => code))]
-        .sort()
-        .join(",");
-      throw new Error(`Bookie write failed: ${codes || "MUTATION-INPUT"}.`);
-    }
-    return boundedResult("bookie_write", result, "filesystem", true);
-  },
-});
+      return boundedResult("bookie_write", result, "filesystem", true);
+    },
+  });
+}
 
 const validateTool = defineTool({
   name: "bookie_validate",
   label: "Bookie Validate",
   description:
-    "Validate an explicit local Bookie vault, optionally against a local Git base ref. Validation output is bounded to Pi's 50KB/2000-line limits.",
+    "Run local validation on an explicit vault, optionally against a local Git base ref. Model output is a bounded completion notice, not a validity judgment or detailed diagnostics.",
   parameters: Type.Object(
     {
       vault: Type.String({ minLength: 1 }),
@@ -604,6 +662,11 @@ const validateTool = defineTool({
 });
 
 export default function registerBookie(pi: ExtensionAPI): void {
+  const authority = createCaptureAuthority(pi);
+  const disclosure = createDisclosureAuthority(pi, authority.bind);
+  const contextFilter = createBookieContextFilter(pi);
+  registerContextConsumers(pi, disclosure, contextFilter);
+  registerWorkMapConsumer(pi, disclosure, contextFilter);
   type CheckpointState =
     | { readonly status: "preparing" }
     | {
@@ -611,27 +674,46 @@ export default function registerBookie(pi: ExtensionAPI): void {
         readonly pending: PendingCheckpoint;
       };
   let checkpointState: CheckpointState | undefined;
-  const checkpointTool = createCheckpointTool({
-    reserve() {
-      if (checkpointState !== undefined) return false;
-      checkpointState = { status: "preparing" };
-      return true;
+  const checkpointTool = createCheckpointTool(
+    {
+      reserve() {
+        if (checkpointState !== undefined) return false;
+        checkpointState = { status: "preparing" };
+        return true;
+      },
+      commit(pending) {
+        if (checkpointState?.status !== "preparing") return false;
+        checkpointState = { status: "pending", pending };
+        return true;
+      },
+      release() {
+        if (checkpointState?.status === "preparing")
+          checkpointState = undefined;
+      },
     },
-    commit(pending) {
-      if (checkpointState?.status !== "preparing") return false;
-      checkpointState = { status: "pending", pending };
-      return true;
-    },
-    release() {
-      if (checkpointState?.status === "preparing") checkpointState = undefined;
-    },
-  });
+    authority,
+  );
 
-  pi.registerTool(readTool);
-  pi.registerTool(searchTool);
-  pi.registerTool(validateTool);
-  pi.registerTool(writeTool);
-  pi.registerTool(checkpointTool);
+  pi.registerTool(
+    guardBookieTool(readTool, disclosure, boundedResult, contextFilter),
+  );
+  pi.registerTool(
+    guardBookieTool(searchTool, disclosure, boundedResult, contextFilter),
+  );
+  pi.registerTool(
+    guardBookieTool(validateTool, disclosure, boundedResult, contextFilter),
+  );
+  pi.registerTool(
+    guardBookieTool(
+      createWriteTool(authority),
+      disclosure,
+      boundedResult,
+      contextFilter,
+    ),
+  );
+  pi.registerTool(
+    guardBookieTool(checkpointTool, disclosure, boundedResult, contextFilter),
+  );
 
   pi.on("session_before_compact", async (event, ctx) => {
     if (!ctx.hasUI) return;
@@ -660,7 +742,11 @@ export default function registerBookie(pi: ExtensionAPI): void {
         );
         return;
       }
-      await publishCheckpoint(pending, event.signal);
+      await publishCheckpoint(
+        pending,
+        event.signal,
+        pending.vault.assertCurrent,
+      );
       ctx.ui.notify(
         "Bookie checkpoint created; compaction will continue.",
         "info",
@@ -682,7 +768,12 @@ export default function registerBookie(pi: ExtensionAPI): void {
     }
   });
 
-  pi.on("session_shutdown", () => {
+  const resetSession = () => {
+    authority.reset();
+    disclosure.reset();
     checkpointState = undefined;
-  });
+  };
+  pi.on("session_start", resetSession);
+  pi.on("session_shutdown", resetSession);
+  registerProducerBridge(pi, authority);
 }

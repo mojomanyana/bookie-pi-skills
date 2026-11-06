@@ -1,4 +1,4 @@
-import { inspectConcept, searchVault, validateVault } from "@bookie/core";
+import { inspectConcept, searchVault, validateVault } from "pi-bookie-core";
 import type { ReadOperation } from "./operation-process.js";
 
 // One private read-only operation per process. No raw errors or progress cross IPC.

@@ -1,8 +1,10 @@
 import { lstat, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 
 import { Ajv2020 } from "ajv/dist/2020.js";
+import type { SchemaValidateFunction } from "ajv/dist/types/index.js";
 import * as formatsModule from "ajv-formats";
 
 import { throwIfAborted } from "./vault-cancellation.js";
@@ -35,10 +37,60 @@ function isObject(value: unknown): value is Readonly<Record<string, unknown>> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+// These validators receive bounded JSON-compatible values from the strict YAML
+// loader or mutation clone. Ajv's default comparator invokes valueOf/toString;
+// those names are ordinary data here, and mutation mappings have no prototype.
+const uniqueJsonItems: SchemaValidateFunction = (
+  enabled: boolean,
+  items: readonly unknown[],
+): boolean => {
+  uniqueJsonItems.errors = [];
+  if (!enabled || items.length < 2) return true;
+  const duplicate = (i: number, j: number): false => {
+    uniqueJsonItems.errors = [
+      {
+        keyword: "uniqueItems",
+        params: { i, j },
+        message: `must NOT have duplicate items (items ## ${j} and ${i} are identical)`,
+      },
+    ];
+    return false;
+  };
+  // Preserve linear comparison for primitive arrays and JSON's 0 === -0.
+  if (items.every((item) => item === null || typeof item !== "object")) {
+    const indices = new Map<unknown, number>();
+    for (let i = items.length - 1; i >= 0; i -= 1) {
+      const j = indices.get(items[i]);
+      if (j !== undefined) return duplicate(i, j);
+      indices.set(items[i], i);
+    }
+    return true;
+  }
+  // Normalize prototypes and signed zero in a validation-only view. The already
+  // checked input contains no accessors/functions, so no caller method can run.
+  // Keep the original prepared/publication data and all own keys unchanged.
+  const values = JSON.parse(JSON.stringify(items)) as unknown[];
+  for (let i = values.length - 1; i >= 0; i -= 1) {
+    for (let j = i - 1; j >= 0; j -= 1) {
+      if (isDeepStrictEqual(values[i], values[j])) return duplicate(i, j);
+    }
+  }
+  return true;
+};
+
 async function loadSchemaValidators(): Promise<SchemaValidators> {
   const readJson = async (path: string): Promise<Record<string, unknown>> =>
     JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
   const ajv = new Ajv2020({ allErrors: true, strict: true });
+  ajv.removeKeyword("uniqueItems");
+  ajv.addKeyword({
+    keyword: "uniqueItems",
+    type: "array",
+    schemaType: "boolean",
+    $data: true,
+    errors: true,
+    validate: uniqueJsonItems,
+  });
   const addFormats = formatsModule.default as unknown as (
     instance: Ajv2020,
   ) => unknown;

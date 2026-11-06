@@ -23,6 +23,10 @@ import type {
   MutationLimits,
   MutationOperation,
 } from "./concept-mutation-model.js";
+import {
+  VaultMutationLocked,
+  withVaultMutationLock,
+} from "./vault-mutation-lock.js";
 import { throwIfAborted } from "./vault-cancellation.js";
 import { bundlePath, readSafeBoundedFile } from "./vault-filesystem.js";
 import type { PathTracker } from "./vault-filesystem.js";
@@ -694,7 +698,7 @@ export async function withRootMutationQueue<T>(
   await previous;
   try {
     throwIfAborted(signal);
-    return await mutation();
+    return await withVaultMutationLock(root, signal, mutation);
   } finally {
     release();
     if (rootMutationTails.get(root) === tail) rootMutationTails.delete(root);
@@ -707,7 +711,7 @@ export async function runCoordinatedOperation<T extends object>(
   signal: AbortSignal | undefined,
   coordinator: ConceptMutationCoordinator | undefined,
   operation: () => Promise<T>,
-  failureResult: () => T,
+  failureResult: (code?: "MUTATION-LOCKED") => T,
   completedOperation: string,
 ): Promise<T> {
   const runExclusive =
@@ -733,12 +737,11 @@ export async function runCoordinatedOperation<T extends object>(
         throw contractViolation;
       }
       invoked = true;
-      callbackCompletion = withRootMutationQueue(root, signal, operation).then(
-        (result) => {
-          completed = result;
-          return result;
-        },
-      );
+      callbackCompletion = withRootMutationQueue(root, signal, async () => {
+        const result = await operation();
+        completed = result;
+        return result;
+      });
       return callbackCompletion;
     });
     coordinatorSettled = true;
@@ -772,7 +775,9 @@ export async function runCoordinatedOperation<T extends object>(
       );
     }
     if (isAbortError(error)) throw error;
-    return failureResult();
+    return failureResult(
+      error instanceof VaultMutationLocked ? "MUTATION-LOCKED" : undefined,
+    );
   }
 }
 
@@ -787,10 +792,13 @@ export async function runCoordinatedMutation(
     target.root,
     options.signal,
     options.runExclusive,
-    mutation,
-    () =>
+    async () => {
+      await options.assertAuthority?.();
+      return mutation();
+    },
+    (code) =>
       failure(operation, [
-        mutationDiagnostic("MUTATION-IO", target.bundlePath),
+        mutationDiagnostic(code ?? "MUTATION-IO", target.bundlePath),
       ]),
     "the concept mutation",
   );

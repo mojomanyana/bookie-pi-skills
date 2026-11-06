@@ -186,7 +186,7 @@ export async function stageRuntimeArtifact(
       "schemas/service/v1/protocol.schema.json",
     ])
       await copy(join(root, path), join(destination, path));
-    const coreLink = join(root, "node_modules/@bookie/core");
+    const coreLink = join(root, "node_modules/pi-bookie-core");
     if (
       !(await lstat(coreLink)).isSymbolicLink() ||
       (await realpath(coreLink)) !== join(root, "packages/core")
@@ -195,7 +195,7 @@ export async function stageRuntimeArtifact(
     for (const path of ["package.json", "dist"])
       await copy(
         join(root, "packages/core", path),
-        join(destination, "node_modules/@bookie/core", path),
+        join(destination, "node_modules/pi-bookie-core", path),
       );
     const todo: {
       name: string;
@@ -205,7 +205,7 @@ export async function stageRuntimeArtifact(
     }[] = [];
     const enqueue = (deps: Record<string, Dependency>, from: string): void => {
       for (const [name, dependency] of Object.entries(deps)) {
-        if (name !== "@bookie/core") {
+        if (name !== "pi-bookie-core") {
           if (todo.length >= 4096) invalid();
           todo.push({
             name,
@@ -221,7 +221,7 @@ export async function stageRuntimeArtifact(
       join(root, "apps/service"),
     );
     enqueue(
-      await manifest(join(root, "packages/core"), "@bookie/core"),
+      await manifest(join(root, "packages/core"), "pi-bookie-core"),
       join(root, "packages/core"),
     );
     const copied = new Set<string>();

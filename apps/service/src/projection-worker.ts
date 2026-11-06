@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
 import { parentPort } from "node:worker_threads";
 
-import { containsDetectedSecret } from "@bookie/core";
+import { containsDetectedSecret } from "pi-bookie-core";
 import type {
   CanonicalJsonlExportSuccess,
   CanonicalJsonlRecordV1,
-} from "@bookie/core";
+} from "pi-bookie-core";
 import { fromMarkdown } from "mdast-util-from-markdown";
 import type { Nodes, Root } from "mdast";
 

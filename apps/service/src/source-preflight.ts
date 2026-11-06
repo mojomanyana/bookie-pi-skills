@@ -1,5 +1,5 @@
 import { posix } from "node:path";
-import type { ApprovedSourceManifestResult } from "@bookie/core";
+import type { ApprovedSourceManifestResult } from "pi-bookie-core";
 import {
   compileSourceDeployments,
   type SourceDeployment,

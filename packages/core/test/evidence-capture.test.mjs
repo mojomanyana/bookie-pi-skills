@@ -1010,3 +1010,35 @@ test("captureEvidence verifies staged bytes and stable source identity", async (
   );
   await noCaptureTemporaries(root);
 });
+
+test("evidence capture checks trusted authority inside the lock before publication", async (t) => {
+  const { root, parent } = await temporaryVault(t);
+  const source = join(parent, "capture-source.bin");
+  await writeFile(source, "synthetic evidence");
+  for (const capture of [captureEvidence, captureEvidenceWithPolicy]) {
+    let checked = false;
+    const result = await capture(root, await request(source, root), {
+      assertAuthority: async () => {
+        checked = (await readFile(join(root, ".bookie-write.lock"))).length > 0;
+        throw Error("private revocation detail");
+      },
+    });
+    assert.equal(checked, true);
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.changedPaths, []);
+    assert.doesNotMatch(JSON.stringify(result), /private revocation detail/);
+    assert.equal(
+      await readFile(join(root, "references/files/captured.bin")).catch(
+        () => undefined,
+      ),
+      undefined,
+    );
+    assert.equal(
+      await readFile(join(root, "projects/fixture/evidence/captured.md")).catch(
+        () => undefined,
+      ),
+      undefined,
+    );
+    await noCaptureTemporaries(root);
+  }
+});

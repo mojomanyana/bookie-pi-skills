@@ -13,6 +13,7 @@ import {
   createConceptWithPolicy,
   prepareCheckpoint,
 } from "../dist/index.js";
+import { getSchemaValidators } from "../dist/vault-manifest.js";
 
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
 const fixture = resolve(repositoryRoot, "fixtures/valid-vault");
@@ -298,4 +299,101 @@ test("checkpoint preparation enforces required sections, bounds, and cancellatio
     prepareCheckpoint(vault, request(), { signal: controller.signal }),
     (error) => error?.name === "AbortError",
   );
+});
+
+test("checkpoint relations preserve distinct objects and reject duplicate values", async (t) => {
+  const vault = await temporaryVault(t);
+  const input = request();
+  const relations = [
+    { kind: "part_of", target: "/projects/fixture/project.md" },
+    { kind: "depends_on", target: "/projects/fixture/tasks/task.md" },
+  ];
+  input.frontmatter.bookie.relations = relations;
+  const prepared = await prepareCheckpoint(vault, input);
+  assert.equal(prepared.ok, true);
+  assert.deepEqual(
+    JSON.parse(
+      JSON.stringify(prepared.preparedInput.frontmatter.bookie.relations),
+    ),
+    relations,
+  );
+  assert.equal(
+    (await prepareCheckpoint(vault, prepared.preparedInput)).ok,
+    true,
+  );
+  await assert.rejects(readFile(join(vault, input.path)), { code: "ENOENT" });
+
+  input.frontmatter.bookie.relations = [relations[0], { ...relations[0] }];
+  assert.deepEqual(await prepareCheckpoint(vault, input), {
+    ok: false,
+    reason: "input",
+  });
+  const validate = (await getSchemaValidators()).byType.get("Activity");
+  assert.equal(validate(input.frontmatter), false);
+  const error = validate.errors.find(
+    ({ keyword }) => keyword === "uniqueItems",
+  );
+  assert.equal(error.instancePath, "/bookie/relations");
+  assert.deepEqual(error.params, { i: 1, j: 0 });
+  assert.equal(
+    error.message,
+    "must NOT have duplicate items (items ## 0 and 1 are identical)",
+  );
+  assert.ok(error.schemaPath.endsWith("/properties/relations/uniqueItems"));
+  await assert.rejects(readFile(join(vault, input.path)), { code: "ENOENT" });
+});
+
+test("checkpoint relation equality treats prototype-named properties as JSON data", async (t) => {
+  const vault = await temporaryVault(t);
+  for (const key of ["valueOf", "toString", "constructor", "__proto__"]) {
+    const input = request();
+    const first = {
+      kind: "part_of",
+      target: "/projects/fixture/project.md",
+      [key]: { marker: "first", sequence: [1, 2] },
+    };
+    const second = {
+      [key]: { sequence: [2, 1], marker: "first" },
+      target: first.target,
+      kind: first.kind,
+    };
+    input.frontmatter.bookie.relations = [first, second];
+    const before = JSON.stringify(input);
+    const prepared = await prepareCheckpoint(vault, input);
+    assert.equal(prepared.ok, true, key);
+    assert.deepEqual(
+      JSON.parse(
+        JSON.stringify(prepared.preparedInput.frontmatter.bookie.relations),
+      ),
+      [first, second],
+    );
+    assert.equal(
+      (await prepareCheckpoint(vault, prepared.preparedInput)).ok,
+      true,
+    );
+    second[key].sequence = [1, 2];
+    assert.deepEqual(await prepareCheckpoint(vault, input), {
+      ok: false,
+      reason: "input",
+    });
+    second[key].sequence = [2, 1];
+    assert.equal(JSON.stringify(input), before);
+    assert.equal(Object.getPrototypeOf(first), Object.prototype);
+    assert.equal(Object.hasOwn(Object.prototype, "marker"), false);
+  }
+  const input = request();
+  input.frontmatter.bookie.relations = [0, -0].map((value) => ({
+    kind: "part_of",
+    target: "/projects/fixture/project.md",
+    valueOf: { value },
+  }));
+  assert.deepEqual(await prepareCheckpoint(vault, input), {
+    ok: false,
+    reason: "input",
+  });
+  assert.equal(
+    Object.is(input.frontmatter.bookie.relations[1].valueOf.value, -0),
+    true,
+  );
+  await assert.rejects(readFile(join(vault, input.path)), { code: "ENOENT" });
 });

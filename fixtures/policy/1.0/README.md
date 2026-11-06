@@ -7,4 +7,4 @@ These fixtures define base/proposed tree cases for the named rules in [SPEC-001]
 - Each resource descriptor maps a bundle path to exact bytes under `resources/`; `kind` defaults to `regular` and can model a rejected filesystem kind such as `symlink`.
 - Each case supplies the evidence roots and attachment byte limit used by its proposed tree.
 
-`test/policy-contract.test.mjs` materializes every tree, schema-validates every decoded concept, evaluates a small fixture oracle, and checks exact UTF-8, CRLF, and binary digests. SPEC-002 must run the same cases through the production vault and Git-base validators; this fixture oracle is not exported from `@bookie/core`.
+`test/policy-contract.test.mjs` materializes every tree, schema-validates every decoded concept, evaluates a small fixture oracle, and checks exact UTF-8, CRLF, and binary digests. SPEC-002 must run the same cases through the production vault and Git-base validators; this fixture oracle is not exported from `pi-bookie-core`.

@@ -142,7 +142,7 @@ import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {readFile,writeFile} from 'node:fs/promises';
 import {createRequire,syncBuiltinESMExports} from 'node:module';
-import {exportCanonicalJsonl} from '/opt/bookie/node_modules/@bookie/core/dist/index.js';
+import {exportCanonicalJsonl} from '/opt/bookie/node_modules/pi-bookie-core/dist/index.js';
 import {createTrustedLexicalBuilder} from '/opt/bookie/apps/service/dist/trusted-builder.js';
 import {prepareDeploymentLexicalProjection} from '/opt/bookie/apps/service/dist/ingestion.js';
 import {createOwnedRebuildController} from '/opt/bookie/apps/service/dist/rebuild-controller.js';

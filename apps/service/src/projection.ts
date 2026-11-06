@@ -8,7 +8,7 @@ import {
   exportCanonicalJsonl,
   type CanonicalJsonlRecordV1,
   type CanonicalJsonlExportSuccess,
-} from "@bookie/core";
+} from "pi-bookie-core";
 
 /** Deployment-owned input, never a caller's authorization to index a vault. */
 export interface ProjectionConfig {
