@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { spawnSync } from "node:child_process";
 import { cp, mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -761,6 +762,136 @@ test("producer bodies retain registry currentness during the owner read", async 
     (error) => {
       assert.doesNotMatch(error.message, /PRIVATE PRODUCER BODY/);
       assert.match(error.message, /denied|unavailable|withheld/);
+      return true;
+    },
+  );
+});
+
+async function commitExportFixture(f) {
+  // The existing consumer fixture labels only project records; the whole-vault
+  // exporter also correctly requires the unselected Person's classification.
+  const personPath = join(f.vault, "people/owner.md");
+  const source = await readFile(personPath, "utf8"),
+    end = source.indexOf("\n---\n", 4);
+  const fm = JSON.parse(source.slice(4, end));
+  fm.bookie.sensitivity = "public";
+  await writeFile(personPath, "---\n" + JSON.stringify(fm) + source.slice(end));
+  const git = (args) => {
+    const result = spawnSync(
+      "git",
+      [
+        "-c",
+        "user.name=Bookie Export Tests",
+        "-c",
+        "user.email=bookie@example.invalid",
+        "-c",
+        "commit.gpgSign=false",
+        "-C",
+        f.vault,
+        ...args,
+      ],
+      { encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  git(["init", "-q"]);
+  git(["add", "-A"]);
+  git(["commit", "-qm", "synthetic export source"]);
+  return git(["rev-parse", "HEAD"]);
+}
+
+test("bounded Pi export returns real selected JSONL and rechecks disclosure on replay", async (t) => {
+  const f = await fixture(t),
+    commit = await commitExportFixture(f);
+  const args = { selectors: [{ path: task }], commit };
+  const result = await f.call("bookie_export", args),
+    value = parsed(result);
+  assert.equal(value.status, "exported");
+  assert.equal(value.scope, "selected-records");
+  assert.equal(value.complete, true);
+  assert.equal(value.recordCount, 1);
+  assert.equal(JSON.parse(value.jsonl.trim()).path, task);
+  assert.equal(JSON.parse(value.jsonl.trim()).source_commit, commit);
+  assert.equal(value.untrusted, true);
+  assert.equal("sourceManifest" in value, false);
+  const message = {
+    role: "toolResult",
+    toolName: "bookie_export",
+    toolCallId: "call-1",
+    content: result.content,
+  };
+  assert.match(
+    JSON.stringify(await f.emit("context", { messages: [message] })),
+    /Completed alongside/,
+  );
+  await register(f);
+  assert.match(
+    JSON.stringify(await f.emit("context", { messages: [message] })),
+    /Completed alongside/,
+    "metadata-only registration leaves canonical export usable",
+  );
+  await writeFile(
+    join(f.vault, task),
+    (await readFile(join(f.vault, task), "utf8")) +
+      "\nCurrent body amendment\n",
+  );
+  assert.match(
+    JSON.stringify(await f.emit("context", { messages: [message] })),
+    /Completed alongside/,
+    "permitted old committed body survives current body edits",
+  );
+  await f.commands
+    .get("bookie-context")
+    .handler("off", { ...f.ctx, hasUI: true });
+  const replay = await f.emit("context", { messages: [message] });
+  assert.doesNotMatch(JSON.stringify(replay), /Completed alongside/);
+  await assert.rejects(f.call("bookie_export", args), /denied/);
+});
+
+test("bounded Pi export hides unselected preflight diagnostics and refuses replay after reclassification", async (t) => {
+  const f = await fixture(t),
+    commit = await commitExportFixture(f);
+  const result = await f.call("bookie_export", {
+    selectors: [{ path: task }],
+    commit,
+  });
+  const message = {
+    role: "toolResult",
+    toolName: "bookie_export",
+    toolCallId: "call-1",
+    content: result.content,
+  };
+  const path = join(f.vault, task),
+    original = await readFile(path, "utf8");
+  await writeFile(
+    path,
+    original.replace('"sensitivity":"public"', '"sensitivity":"internal"'),
+  );
+  assert.doesNotMatch(
+    JSON.stringify(await f.emit("context", { messages: [message] })),
+    /Completed alongside/,
+  );
+  await writeFile(path, original);
+  const hiddenPath = join(f.vault, "projects/fixture/research/Δ-findings.md");
+  await writeFile(
+    hiddenPath,
+    "---\n" +
+      JSON.stringify({ title: "PRIVATE UNSELECTED DIAGNOSTIC" }) +
+      "\n---\nHidden bad record\n",
+  );
+  const invalidCommit = await commitExportFixture(f);
+  await assert.rejects(
+    f.call("bookie_export", {
+      selectors: [{ path: task }],
+      commit: invalidCommit,
+    }),
+    (error) => {
+      assert.equal(error.message, "Bookie consumer failed: unavailable.");
+      assert.doesNotMatch(
+        JSON.stringify(error),
+        /PRIVATE|Hidden|findings|sourceManifest|recordCount|outputHash/,
+      );
       return true;
     },
   );

@@ -160,7 +160,11 @@ export {
   RECALL_STATE_FILE,
   RECALL_MARKER_FILE,
 } from "./recall-state.js";
-export { prepareContext, revalidateContext } from "./prepared-context.js";
+export {
+  prepareContext,
+  prepareCanonicalExport,
+  revalidateContext,
+} from "./prepared-context.js";
 export type {
   ConceptRevision,
   RecallProject,
@@ -179,6 +183,8 @@ export type {
   ContextBinding,
   ContextOptions,
   PrepareContextRequest,
+  PrepareCanonicalExportRequest,
+  CanonicalSelectionExport,
   ContextInput,
   PreparedContextBundle,
 } from "./recall-model.js";

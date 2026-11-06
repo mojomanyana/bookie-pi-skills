@@ -105,6 +105,29 @@ export interface PrepareContextRequest {
   readonly maxContentBytes?: number;
   readonly maxTotalBytes?: number;
 }
+export interface PrepareCanonicalExportRequest {
+  readonly project: ConceptRevision;
+  readonly selectors: PrepareContextRequest["selectors"];
+  readonly commit: string;
+  readonly maxBytes?: number;
+}
+export interface CanonicalSelectionExport {
+  readonly format: "bookie-canonical-jsonl/v1";
+  readonly scope: "selected-records";
+  readonly sourceCommit: string;
+  readonly records: readonly {
+    readonly path: string;
+    readonly uid: string;
+    readonly sourceHash: ConceptSourceHash;
+    readonly sensitivity: string;
+  }[];
+  readonly recordCount: number;
+  readonly byteLength: number;
+  readonly outputHash: ConceptSourceHash;
+  readonly jsonl: string;
+  readonly complete: true;
+  readonly untrusted: true;
+}
 export interface ContextInput {
   readonly path: string;
   readonly uid: string;

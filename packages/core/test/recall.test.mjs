@@ -762,3 +762,207 @@ test("legacy whole-state bundles become stale without migration and fresh prepar
   );
   assert.deepEqual(await readFile(join(root, "bookie-recall.json")), bytes);
 });
+
+async function exportFixture(t, edit) {
+  const value = await fixture(t);
+  if (edit) await edit(value.root);
+  const git = (args) => {
+    const result = spawnSync(
+      "git",
+      [
+        "-c",
+        "user.name=Bookie Export Tests",
+        "-c",
+        "user.email=bookie@example.invalid",
+        "-c",
+        "commit.gpgSign=false",
+        "-C",
+        value.root,
+        ...args,
+      ],
+      { encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  git(["init", "-q"]);
+  git(["add", "-A"]);
+  git(["commit", "-qm", "synthetic export source"]);
+  const commit = git(["rev-parse", "HEAD"]);
+  await core.initializeRecallState(value.root, authority);
+  return { ...value, commit };
+}
+function exportRequest(f, selectors = [{ path: taskPath }]) {
+  return { project: f.project, selectors, commit: f.commit, maxBytes: 24000 };
+}
+
+test("bounded canonical selection export returns exact full records and preserves permitted history", async (t) => {
+  const f = await exportFixture(t, async (root) => {
+    const path = join(root, taskPath),
+      source = await readFile(path, "utf8"),
+      end = source.indexOf("\n---\n", 4);
+    const fm = JSON.parse(source.slice(4, end));
+    fm.custom_export = {
+      "Unicode café": ["line\nnext", "tab\tvalue", true, 3],
+    };
+    await writeFile(path, "---\n" + JSON.stringify(fm) + source.slice(end));
+  });
+  const lines = [];
+  const full = await core.exportCanonicalJsonl(f.root, {
+    sourceRef: f.commit,
+    write: (bytes) => lines.push(Buffer.from(bytes)),
+  });
+  assert.equal(full.ok, true);
+  const selection = [taskPath, projectPath];
+  const expected = Buffer.concat(
+    lines.filter((line) =>
+      selection.includes(JSON.parse(line.toString()).path),
+    ),
+  ).toString();
+  await writeFile(
+    join(f.root, taskPath),
+    (await readFile(join(f.root, taskPath), "utf8")) +
+      "\nNew current body only\n",
+  );
+  const result = await core.prepareCanonicalExport(
+    f.root,
+    exportRequest(
+      f,
+      selection.map((path) => ({ path })),
+    ),
+    { binding },
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.artifact.jsonl, expected);
+  assert.equal(result.artifact.scope, "selected-records");
+  assert.equal(result.artifact.sourceCommit, f.commit);
+  assert.equal(result.artifact.recordCount, 2);
+  assert.equal(result.artifact.byteLength, Buffer.byteLength(expected));
+  assert.equal(
+    result.artifact.outputHash,
+    core.computeConceptSourceHash(Buffer.from(expected)),
+  );
+  assert.match(result.artifact.jsonl, /custom_export/);
+  assert.doesNotMatch(result.artifact.jsonl, /New current body only/);
+  assert.equal("sourceManifest" in result.artifact, false);
+});
+
+test("bounded canonical selection export refuses partial, wrong and duplicate selections", async (t) => {
+  const f = await exportFixture(t);
+  for (const args of [
+    { ...exportRequest(f), maxBytes: 1 },
+    exportRequest(f, [
+      { path: taskPath, sourceHash: "sha256:" + "f".repeat(64) },
+    ]),
+    exportRequest(f, [{ path: taskPath }, { path: taskPath }]),
+    exportRequest(f, [{ path: "/projects/fixture/missing.md" }]),
+    { ...exportRequest(f), commit: "HEAD" },
+    { ...exportRequest(f), secretPolicy: "allow-unchecked" },
+  ]) {
+    const result = await core.prepareCanonicalExport(f.root, args, { binding });
+    assert.equal(result.ok, false);
+    assert.equal("artifact" in result, false);
+    assert.equal("sourceManifest" in result, false);
+  }
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(
+    core.prepareCanonicalExport(f.root, exportRequest(f), {
+      binding,
+      signal: controller.signal,
+    }),
+    { name: "AbortError" },
+  );
+});
+
+test("bounded canonical selection export protects decoded metadata but permits correction provenance", async (t) => {
+  const replacementPath = "/projects/fixture/research/Δ-findings.md";
+  for (const disposition of ["suppressed", "superseded", "excluded"]) {
+    await t.test(disposition, async (t) => {
+      const f = await exportFixture(t, async (root) => {
+        const path = join(root, replacementPath),
+          source = await readFile(path, "utf8"),
+          end = source.indexOf("\n---\n", 4);
+        const fm = JSON.parse(source.slice(4, end));
+        // Both a decoded metadata key and a nested value mention the predecessor.
+        // The source's escaped T must not hide the identity from the policy check.
+        fm.provenance = { [taskUid]: { path: taskPath } };
+        await writeFile(
+          path,
+          "---\n" +
+            JSON.stringify(fm).replace(taskUid, "\\u0054" + taskUid.slice(1)) +
+            source.slice(end),
+        );
+      });
+      const args = exportRequest(f, [{ path: replacementPath }]);
+      const before = await core.prepareCanonicalExport(f.root, args, {
+        binding,
+      });
+      assert.equal(before.ok, true);
+      assert.equal(
+        JSON.parse(before.artifact.jsonl).frontmatter.provenance[taskUid].path,
+        taskPath,
+      );
+      if (disposition === "excluded") {
+        const path = join(f.root, "bookie.yaml");
+        await writeFile(
+          path,
+          (await readFile(path, "utf8")).replace(
+            "    - exports/**",
+            "    - exports/**\n    - projects/fixture/tasks/**",
+          ),
+        );
+      } else {
+        const state = await core.readRecallState(f.root);
+        const replacement = await core.inspectConcept(f.root, {
+          path: replacementPath,
+        });
+        const updated = await core.updateRecallControl(
+          f.root,
+          {
+            project: f.project,
+            expectedRevision: state.revision,
+            control: {
+              target: { kind: "concept", uid: taskUid },
+              disposition,
+              ...(disposition === "superseded"
+                ? {
+                    replacement: {
+                      path: replacementPath,
+                      uid: replacement.uid,
+                      sourceHash: replacement.source.sourceHash,
+                    },
+                  }
+                : {}),
+            },
+          },
+          authority,
+        );
+        assert.equal(updated.ok, true);
+      }
+      const after = await core.prepareCanonicalExport(f.root, args, {
+        binding,
+      });
+      if (disposition === "superseded") {
+        assert.equal(after.ok, true);
+        assert.equal(after.artifact.jsonl, before.artifact.jsonl);
+        assert.equal(
+          (
+            await core.prepareCanonicalExport(f.root, exportRequest(f), {
+              binding,
+            })
+          ).ok,
+          false,
+          "predecessor content remains refused",
+        );
+      } else {
+        assert.equal(after.ok, false);
+        assert.equal("artifact" in after, false);
+        assert.doesNotMatch(
+          JSON.stringify(after),
+          /TSK-|tasks\/task|provenance/,
+        );
+      }
+    });
+  }
+});

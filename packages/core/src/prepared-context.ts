@@ -28,6 +28,8 @@ import type {
   ContextBinding,
   ContextInput,
   ContextOptions,
+  PrepareCanonicalExportRequest,
+  CanonicalSelectionExport,
   PrepareContextRequest,
   PreparedContextBundle,
   RecallResult,
@@ -36,6 +38,35 @@ import type {
 } from "./recall-model.js";
 
 const MAX_CONTEXT_BUNDLE_BYTES = 262_144;
+type ScopedInput = Omit<ContextInput, "representation"> & {
+  readonly representation:
+    ContextInput["representation"] | "canonical-jsonl-record/v1";
+};
+interface ScopedPreparation {
+  readonly scope: RecallScope;
+  readonly controlRevision: PreparedContextBundle["controlRevision"];
+  readonly binding: ContextBinding;
+  readonly request: PrepareContextRequest;
+  readonly inputs: readonly ScopedInput[];
+}
+function containsPrivateIdentity(
+  value: unknown,
+  identities: ReadonlySet<string>,
+): boolean {
+  if (typeof value === "string") {
+    for (const identity of identities)
+      if (value.includes(identity)) return true;
+  } else if (Array.isArray(value)) {
+    return value.some((item) => containsPrivateIdentity(item, identities));
+  } else if (isObject(value)) {
+    return Object.entries(value).some(
+      ([key, item]) =>
+        containsPrivateIdentity(key, identities) ||
+        containsPrivateIdentity(item, identities),
+    );
+  }
+  return false;
+}
 
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return "[" + value.map(canonical).join(",") + "]";
@@ -204,8 +235,8 @@ function makeInput(
   state: string | null,
   text: string,
   maxBytes: number,
-  representation: ContextInput["representation"],
-): ContextInput {
+  representation: ScopedInput["representation"],
+): ScopedInput {
   const prefix = sourcePrefix(text, maxBytes);
   return {
     path,
@@ -229,11 +260,12 @@ function controlBlocks(
 ): boolean {
   return isRecallSuppressed(state, scope.project.uid, { kind: "concept", uid });
 }
-export async function prepareContext(
+async function prepareInputs(
   root: string | URL,
   request: PrepareContextRequest,
   options: ContextOptions,
-): Promise<RecallResult<{ bundle: PreparedContextBundle }>> {
+  fullRecords: boolean,
+): Promise<RecallResult<{ prepared: ScopedPreparation }>> {
   if (!validRequest(request) || !validBinding(options?.binding))
     return recallFailure("input");
   const captured = structuredClone(request),
@@ -257,7 +289,7 @@ export async function prepareContext(
   );
   const currentMetadata = new Map<string, Metadata>();
   const currentIdentities = new Map<string, Metadata>();
-  const inputs = new Map<string, ContextInput>();
+  const inputs = new Map<string, ScopedInput>();
   const blockedIdentities = new Set<string>();
   const privateIdentities = new Set<string>();
   let issue:
@@ -377,6 +409,26 @@ export async function prepareContext(
             const record = JSON.parse(
               Buffer.from(bytes).toString("utf8"),
             ) as CanonicalJsonlRecordV1;
+            // Excluded paths are intentionally absent from the current filesystem
+            // scan. The already-validated committed stream supplies their historical
+            // identities privately, without returning those records or diagnostics.
+            if (
+              fullRecords &&
+              (matchesExcludedPath(
+                record.path.slice(1),
+                manifest.manifest.policy.exclude,
+              ) ||
+                state.state.controls.some(
+                  (row) =>
+                    row.project.uid === scope.project.uid &&
+                    row.disposition === "suppressed" &&
+                    row.target.kind === "concept" &&
+                    row.target.uid === record.uid,
+                ))
+            ) {
+              privateIdentities.add(record.uid);
+              privateIdentities.add(record.path);
+            }
             if (!selection.has(record.path)) return;
             const bookie = record.frontmatter.bookie;
             if (!isObject(bookie)) {
@@ -412,6 +464,10 @@ export async function prepareContext(
               issue = "source-changed";
               return;
             }
+            if (fullRecords && bytes.byteLength > maxContent) {
+              issue = "bounds";
+              return;
+            }
             inputs.set(
               record.path,
               makeInput(
@@ -422,9 +478,13 @@ export async function prepareContext(
                 record.type,
                 String(record.frontmatter.status),
                 typeof bookie.state === "string" ? bookie.state : null,
-                record.body_markdown,
+                fullRecords
+                  ? Buffer.from(bytes).toString("utf8")
+                  : record.body_markdown,
                 maxContent,
-                "canonical-jsonl-body/v1",
+                fullRecords
+                  ? "canonical-jsonl-record/v1"
+                  : "canonical-jsonl-body/v1",
               ),
             );
           },
@@ -464,8 +524,13 @@ export async function prepareContext(
         controlBlocks(state.state, scope, input.uid)
       )
         return recallFailure("suppressed");
-      for (const identity of privateIdentities)
-        if (input.text.includes(identity)) return recallFailure("policy");
+      if (fullRecords) {
+        if (containsPrivateIdentity(JSON.parse(input.text), privateIdentities))
+          return recallFailure("policy");
+      } else {
+        for (const identity of privateIdentities)
+          if (input.text.includes(identity)) return recallFailure("policy");
+      }
     }
     if (
       ordered.reduce((size, input) => size + Buffer.byteLength(input.text), 0) >
@@ -504,32 +569,116 @@ export async function prepareContext(
     )
       return recallFailure("stale");
     throwIfAborted(signal);
-    const body: Omit<PreparedContextBundle, "digest"> = {
-      schemaVersion: 1,
-      representation: "bookie-context-excerpts/v1",
-      scope,
-      controlRevision: state.controlsRevision,
-      binding,
-      source:
-        captured.source?.mode === "committed"
-          ? { mode: "committed", commit: captured.source.commit }
-          : { mode: "working-tree", commit: null },
-      request: captured,
-      inputs: ordered,
-      untrusted: true,
+    return {
+      ok: true,
+      prepared: {
+        scope,
+        controlRevision: state.controlsRevision,
+        binding,
+        request: captured,
+        inputs: ordered,
+      },
     };
-    const bundle: PreparedContextBundle = {
-      ...body,
-      digest: computeConceptSourceHash(Buffer.from(canonical(body))),
-    };
-    if (Buffer.byteLength(JSON.stringify(bundle)) > MAX_CONTEXT_BUNDLE_BYTES)
-      return recallFailure("bounds");
-    return { ok: true, bundle };
   } catch {
     throwIfAborted(signal);
     return recallFailure("unavailable");
   }
 }
+export async function prepareContext(
+  root: string | URL,
+  request: PrepareContextRequest,
+  options: ContextOptions,
+): Promise<RecallResult<{ bundle: PreparedContextBundle }>> {
+  const result = await prepareInputs(root, request, options, false);
+  if (!result.ok) return result;
+  const { prepared } = result;
+  const inputs: ContextInput[] = [];
+  for (const input of prepared.inputs) {
+    if (input.representation === "canonical-jsonl-record/v1")
+      return recallFailure("unavailable");
+    inputs.push({ ...input, representation: input.representation });
+  }
+  const body: Omit<PreparedContextBundle, "digest"> = {
+    schemaVersion: 1,
+    representation: "bookie-context-excerpts/v1",
+    ...prepared,
+    inputs,
+    source:
+      prepared.request.source?.mode === "committed"
+        ? { mode: "committed", commit: prepared.request.source.commit }
+        : { mode: "working-tree", commit: null },
+    untrusted: true,
+  };
+  const bundle = {
+    ...body,
+    digest: computeConceptSourceHash(Buffer.from(canonical(body))),
+  };
+  if (Buffer.byteLength(JSON.stringify(bundle)) > MAX_CONTEXT_BUNDLE_BYTES)
+    return recallFailure("bounds");
+  return { ok: true, bundle };
+}
+
+/** Exact selected canonical records; never a whole-vault export receipt. */
+export async function prepareCanonicalExport(
+  root: string | URL,
+  request: PrepareCanonicalExportRequest,
+  options: ContextOptions,
+): Promise<RecallResult<{ artifact: CanonicalSelectionExport }>> {
+  if (
+    !isObject(request) ||
+    Object.keys(request).some(
+      (key) => !["project", "selectors", "commit", "maxBytes"].includes(key),
+    ) ||
+    typeof request.commit !== "string" ||
+    !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(request.commit) ||
+    (request.maxBytes !== undefined &&
+      (!Number.isSafeInteger(request.maxBytes) ||
+        request.maxBytes < 1 ||
+        request.maxBytes > 24_000))
+  )
+    return recallFailure("input");
+  const maxBytes = request.maxBytes ?? 24_000;
+  const result = await prepareInputs(
+    root,
+    {
+      project: request.project,
+      selectors: request.selectors,
+      source: { mode: "committed", commit: request.commit },
+      maxContentBytes: maxBytes,
+      maxTotalBytes: maxBytes,
+    },
+    options,
+    true,
+  );
+  if (!result.ok) return result;
+  if (result.prepared.request.source?.mode !== "committed")
+    return recallFailure("unavailable");
+  const ordered = [...result.prepared.inputs].sort((a, b) =>
+    a.uid < b.uid ? -1 : a.uid > b.uid ? 1 : 0,
+  );
+  const jsonl = ordered.map((input) => input.text).join("");
+  return {
+    ok: true,
+    artifact: {
+      format: "bookie-canonical-jsonl/v1",
+      scope: "selected-records",
+      sourceCommit: result.prepared.request.source.commit,
+      records: ordered.map(({ path, uid, sourceHash, sensitivity }) => ({
+        path,
+        uid,
+        sourceHash,
+        sensitivity,
+      })),
+      recordCount: ordered.length,
+      byteLength: Buffer.byteLength(jsonl),
+      outputHash: computeConceptSourceHash(Buffer.from(jsonl)),
+      jsonl,
+      complete: true,
+      untrusted: true,
+    },
+  };
+}
+
 export async function revalidateContext(
   root: string | URL,
   bundle: PreparedContextBundle,

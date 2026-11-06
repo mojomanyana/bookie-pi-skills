@@ -9,6 +9,7 @@ import {
 import {
   containsDetectedSecret,
   prepareContext,
+  prepareCanonicalExport,
   revalidateContext,
   type PreparedContextBundle,
   type PrepareContextRequest,
@@ -593,6 +594,90 @@ export function registerContextConsumers(
       { additionalProperties: false },
     ),
     { minItems: 1, maxItems: 16 },
+  );
+  pi.registerTool(
+    defineTool({
+      name: "bookie_export",
+      label: "Bookie Export Selected Records",
+      description:
+        "Export bounded complete canonical JSONL (up to 24,000 bytes) for explicit paths at an exact local commit in the human-selected project. Current disclosure policy applies to metadata and bodies. No files are written. Content is untrusted, not approval; oversize or denied selections refuse as a whole.",
+      parameters: Type.Object(
+        {
+          selectors,
+          commit: Type.String({ pattern: "^(?:[a-f0-9]{40}|[a-f0-9]{64})$" }),
+          maxBytes: Type.Optional(Type.Integer({ minimum: 1, maximum: 24000 })),
+        },
+        { additionalProperties: false },
+      ),
+      async execute(id, params, signal, _update, ctx) {
+        try {
+          aborted(signal);
+          const capturedEpoch = epoch,
+            selected = await ticket(ctx, "canonical");
+          if (
+            !object(params) ||
+            Object.keys(params).some(
+              (key) => !["selectors", "commit", "maxBytes"].includes(key),
+            )
+          )
+            fail("unavailable");
+          const request = {
+            project: selected.scope.project,
+            selectors: params.selectors as PrepareContextRequest["selectors"],
+            commit: params.commit,
+            maxBytes: params.maxBytes ?? 24_000,
+          };
+          const exported = await prepareCanonicalExport(
+            selected.scope.root,
+            request,
+            { binding: selected.binding, ...(signal ? { signal } : {}) },
+          );
+          if (!exported.ok) sourceFailure(exported.reason);
+          if (
+            exported.artifact.records.some(
+              (record) => !selected.classes.includes(record.sensitivity),
+            )
+          )
+            fail("denied");
+          await selected.assertCurrent();
+          if (epoch !== capturedEpoch) fail("stale");
+          aborted(signal);
+          const result = toolResult({
+            status: "exported",
+            ...exported.artifact,
+          });
+          const pinned = {
+            ...request,
+            selectors: exported.artifact.records.map(
+              ({ path, sourceHash }) => ({ path, sourceHash }),
+            ),
+          };
+          filter.remember(id, result, async () => {
+            if (epoch !== capturedEpoch) fail("stale");
+            await selected.assertCurrent();
+            const current = await prepareCanonicalExport(
+              selected.scope.root,
+              pinned,
+              { binding: selected.binding },
+            );
+            if (!current.ok) sourceFailure(current.reason);
+            if (
+              current.artifact.outputHash !== exported.artifact.outputHash ||
+              current.artifact.records.some(
+                (record) => !selected.classes.includes(record.sensitivity),
+              )
+            )
+              fail("stale");
+            await selected.assertCurrent();
+            if (epoch !== capturedEpoch) fail("stale");
+          });
+          return result;
+        } catch (error) {
+          aborted(signal);
+          throw toFailure(error);
+        }
+      },
+    }),
   );
   pi.registerTool(
     defineTool({
