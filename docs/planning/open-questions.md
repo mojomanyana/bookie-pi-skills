@@ -4,9 +4,10 @@ Open questions are not permission to guess. Resolve them by the listed deadline,
 
 ## OQ-001: Project license
 
-- **State:** Open; not blocking private development.
+- **State:** Resolved 2026-11-05 by the repository owner; see [ADR-0014](../architecture/decisions/0014-mit-project-license.md).
 - **Question:** Which license applies to the Bookie code and Pi package, considering Redis client dependencies and intended distribution?
-- **Current direction:** Evaluate Apache-2.0 and AGPL-3.0 implications before public release; do not add a license by assumption.
+- **Decision:** MIT applies to Bookie-authored code and documentation. Preserve third-party licenses and notices; Redis and other dependencies are not relicensed. Public package naming, namespace access and release qualification remain separate.
+- **Historical direction:** Evaluate Apache-2.0 and AGPL-3.0 implications before public release; do not add a license by assumption.
 - **Decision deadline:** Before first public package or external contribution.
 - **Owner:** Repository owner.
 
@@ -121,3 +122,11 @@ Open questions are not permission to guess. Resolve them by the listed deadline,
 - **Current direction:** Service and evaluation/data owners must agree on representative, approved fixtures, labels, metrics and acceptance criteria, then record the accepted definition before implementing a dependent success transition. No numeric default, provider choice, real-data approval or evaluation success is inferred.
 - **Decision deadline:** Before S8 evaluation/completion or generation cutover relies on retrieval-quality evidence.
 - **Owner:** Repository/service owner and evaluation/data owner.
+
+## OQ-015: Public package identity
+
+- **State:** Resolved 2026-11-06 by the repository owner; see [ADR-0015](../architecture/decisions/0015-public-package-names.md).
+- **Question:** Which public names identify the Pi package and its automatic core dependency without requiring a personal namespace?
+- **Decision:** `pi-bookie` and `pi-bookie-core`, both MIT0.1.0; only these two manifests become public. Root, CLI and service stay private. Registry ownership, exact archive qualification and publication remain separate steps.
+- **Historical direction:** Private candidates used `@bookie/pi-extension` and `@bookie/core`; retain those names in their historical receipts and accepted ADR text.
+- **Owner:** Repository owner.

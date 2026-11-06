@@ -1,8 +1,16 @@
-# `@bookie/core`
+# `pi-bookie-core`
 
 Pure canonical-domain package for Bookie. It implements OKF/Profile lossless parsing, current-tree and Git-base validation, lifecycle/immutability policy, Evidence hashing and capture, conflict-safe atomic concept creation/amendment, bounded local filesystem query, and deterministic exact-commit JSONL export.
 
 It must not depend on Pi, Redis, an HTTP framework, or a concrete embedding provider. Implement against [SPEC-001](../../docs/specs/001-canonical-ledger.md) and [SPEC-002](../../docs/specs/002-core-and-cli.md).
+
+## Package identity
+
+The public core is `pi-bookie-core` version 0.1.0 under MIT. `pi-bookie` installs it
+automatically through an exact dependency; direct Node consumers use
+`import { validateVault } from "pi-bookie-core"`. Earlier private archives used
+`@bookie/core`; their hashes and qualification remain historical. Existing API and vault formats are
+unchanged; see [ADR-0015](../../docs/architecture/decisions/0015-public-package-names.md).
 
 ## Lossless concept loading
 
@@ -76,4 +84,4 @@ Each line contains stable identity, canonical path, exact concept-blob hash, com
 
 Declared excluded records are validated but omitted. Missing/undeclared sensitivity or any included canonical field that exposes an excluded UID or path fails before output with static redaction. Policy also checks decoded Markdown headings and link destinations so entity decoding or inline formatting cannot introduce excluded identities or detected secrets into a later projection; canonical Markdown bytes remain unchanged. Secret detection is optional but defaults to `secretPolicy: "reject-detected"`; fixed local high-confidence signatures fail with static `EXPORT-SECRET` before output. The explicit `"allow-unchecked"` policy skips only that heuristic, is reported in the result, and never weakens sensitivity rules. Invalid, incomplete, or oversized snapshots likewise invoke the sink zero times. Once output starts, cancellation or a sink failure can leave a caller-owned prefix; discard it. File callers must stage privately and publish only after success.
 
-The package declares Node `>=24`; `npm pack` builds code, declarations, and canonical schema assets from a clean source checkout. `npm run benchmark:vault --workspace @bookie/core -- 50000`, `npm run benchmark:query --workspace @bookie/core -- 50000`, and `npm run benchmark:export --workspace @bookie/core -- 50000` reproduce the bounded scale probes. Append `mixed` to the export benchmark to alternate included and excluded records at the same scale.
+The package declares Node `>=24`; `npm pack` builds code, declarations, and canonical schema assets from a clean source checkout. `npm run benchmark:vault --workspace pi-bookie-core -- 50000`, `npm run benchmark:query --workspace pi-bookie-core -- 50000`, and `npm run benchmark:export --workspace pi-bookie-core -- 50000` reproduce the bounded scale probes. Append `mixed` to the export benchmark to alternate included and excluded records at the same scale.

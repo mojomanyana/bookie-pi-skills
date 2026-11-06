@@ -166,7 +166,7 @@ function integrationDriver(fixture, expected, failure) {
   return `
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { exportCanonicalJsonl } from '/opt/bookie/node_modules/@bookie/core/dist/index.js';
+import { exportCanonicalJsonl } from '/opt/bookie/node_modules/pi-bookie-core/dist/index.js';
 import { createBookieService } from '/opt/bookie/apps/service/dist/server.js';
 import { preflightDeploymentSource, prepareDeploymentLexicalProjection } from '/opt/bookie/apps/service/dist/ingestion.js';
 import { qualifyRuntime } from '/opt/bookie/apps/service/dist/runtime-qualification.js';

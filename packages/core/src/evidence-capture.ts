@@ -656,8 +656,9 @@ async function runCoordinatedCapture(
     descriptor.root,
     options.signal,
     options.runExclusive,
-    () =>
-      performCapture(
+    async () => {
+      await options.assertAuthority?.();
+      return performCapture(
         descriptor,
         resource,
         request,
@@ -665,10 +666,11 @@ async function runCoordinatedCapture(
         options.signal,
         enforceWritePolicy,
         classifyExcluded,
-      ),
-    () =>
+      );
+    },
+    (code) =>
       captureFailure([
-        mutationDiagnostic("MUTATION-IO", descriptor.bundlePath),
+        mutationDiagnostic(code ?? "MUTATION-IO", descriptor.bundlePath),
       ]),
     "the evidence capture",
   );

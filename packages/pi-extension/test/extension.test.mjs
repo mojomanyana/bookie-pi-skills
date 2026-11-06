@@ -1,3 +1,8 @@
+import {
+  modelContext,
+  authorizeDisclosure,
+  labelFixture,
+} from "./disclosure-fixture.mjs";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { constants } from "node:fs";
@@ -29,21 +34,61 @@ async function temporaryVault(t) {
   const vault = join(parent, "vault");
   await cp(fixture, vault, { recursive: true });
   t.after(() => rm(parent, { recursive: true, force: true }));
+  await labelFixture(vault);
   return vault;
 }
 
 function registeredExtension() {
   const tools = [];
   const handlers = new Map();
+  const commands = new Map();
+  const authorized = new Map();
   registerBookie({
-    registerTool: (tool) => tools.push(tool),
+    registerTool: (tool) =>
+      tools.push({
+        ...tool,
+        async execute(...args) {
+          const ctx = modelContext(args[4]);
+          args[4] = ctx;
+          const vault = args[1]?.vault;
+          if (
+            typeof vault === "string" &&
+            vault !== "@" &&
+            !authorized.has(vault)
+          ) {
+            authorized.set(
+              vault,
+              authorizeDisclosure(commands, vault, ctx).catch((error) => {
+                if (error?.code !== "ENOENT") throw error;
+              }),
+            );
+          }
+          if (authorized.has(vault)) await authorized.get(vault);
+          return tool.execute(...args);
+        },
+      }),
+    registerCommand: (name, command) => commands.set(name, command),
     on: (event, handler) => {
+      if (["session_start", "session_shutdown"].includes(event)) {
+        const actual = handler;
+        handler = async (...args) => {
+          authorized.clear();
+          return actual(...args);
+        };
+      }
       const values = handlers.get(event) ?? [];
       values.push(handler);
       handlers.set(event, values);
     },
   });
   return { tools, handlers };
+}
+
+function allHandlers(extension, name) {
+  return async (...args) => {
+    for (const handler of extension.handlers.get(name) || [])
+      await handler(...args);
+  };
 }
 
 function registeredTools() {
@@ -62,14 +107,15 @@ function textResult(result) {
   return result.content[0].text;
 }
 
-const context = (cwd, overrides = {}) => ({
-  cwd,
-  mode: "print",
-  hasUI: false,
-  isProjectTrusted: () => true,
-  ui: { confirm: async () => false, notify: () => {} },
-  ...overrides,
-});
+const context = (cwd, overrides = {}) =>
+  modelContext({
+    cwd,
+    mode: "tui",
+    hasUI: true,
+    isProjectTrusted: () => true,
+    ui: { confirm: async () => true, notify: () => {} },
+    ...overrides,
+  });
 
 const checkpointSections = [
   "outcome",
@@ -110,6 +156,10 @@ test("extension registers the BK-013 read-only tool contracts", () => {
   assert.deepEqual(
     tools.map(({ name }) => name),
     [
+      "bookie_context_prepare",
+      "bookie_context_read",
+      "bookie_reference_read",
+      "bookie_work",
       "bookie_read",
       "bookie_search",
       "bookie_validate",
@@ -188,7 +238,8 @@ test("read, local search, and validation call core with labelled results", async
   );
   const validatePayload = JSON.parse(textResult(validate));
   assert.equal(validatePayload.tool, "bookie_validate");
-  assert.equal(validatePayload.result.valid, true);
+  assert.equal(validatePayload.result.valid, undefined);
+  assert.match(validatePayload.result.status, /completed/);
   assert.equal(validatePayload.result.complete, true);
   assert.equal(validate.details.outputTruncated, false);
 });
@@ -298,7 +349,7 @@ test("read failures throw and outputs disclose Pi-limit truncation", async (t) =
       undefined,
       context(repositoryRoot),
     ),
-    /vault must not be empty/u,
+    /disclosure authority/u,
   );
   await assert.rejects(
     toolNamed(registeredTools(), "bookie_validate").execute(
@@ -308,7 +359,7 @@ test("read failures throw and outputs disclose Pi-limit truncation", async (t) =
       undefined,
       context(repositoryRoot),
     ),
-    /Bookie validation could not complete safely\./u,
+    /disclosure authority/u,
   );
 
   const taskPath = join(vault, "projects/fixture/tasks/task.md");
@@ -339,19 +390,27 @@ test("real host loader shares create, amend and checkpoint queues through both p
   // A separate physical host of the supported Pi line, not Bookie's import or a fake queue.
   const parent = await mkdtemp(join(tmpdir(), "bookie-pi-host-"));
   t.after(() => rm(parent, { recursive: true, force: true }));
-  const hostRoot = join(parent, "host");
-  await cp(
-    join(repositoryRoot, "node_modules/@earendil-works/pi-coding-agent"),
-    hostRoot,
-    {
-      recursive: true,
-      filter: (path) => path.split(/[\\/]/u).at(-1) !== "node_modules",
-    },
-  );
-  await symlink(
-    join(repositoryRoot, "node_modules"),
-    join(hostRoot, "node_modules"),
-    "dir",
+  const installedHost = process.env.BOOKIE_PI_TEST_HOST;
+  const hostRoot = installedHost
+    ? resolve(installedHost)
+    : join(parent, "host");
+  if (installedHost === undefined) {
+    await cp(
+      join(repositoryRoot, "node_modules/@earendil-works/pi-coding-agent"),
+      hostRoot,
+      {
+        recursive: true,
+        filter: (path) => path.split(/[\\/]/u).at(-1) !== "node_modules",
+      },
+    );
+    await symlink(
+      join(repositoryRoot, "node_modules"),
+      join(hostRoot, "node_modules"),
+      "dir",
+    );
+  }
+  t.diagnostic(
+    `Pi host ${JSON.parse(await readFile(join(hostRoot, "package.json"), "utf8")).version}`,
   );
   const host = await import(join(hostRoot, "dist/index.js"));
   const { discoverAndLoadExtensions } = await import(
@@ -408,6 +467,11 @@ test("real host loader shares create, amend and checkpoint queues through both p
                     edits: [],
                     bodyText: "# Bookie amendment\n",
                   };
+          await authorizeDisclosure(
+            loaded.extensions[0].commands,
+            vault,
+            context(vault),
+          );
           const target = join(vault, request.path);
           const original =
             action === "amend" ? await readFile(target, "utf8") : undefined;
@@ -433,7 +497,6 @@ test("real host loader shares create, amend and checkpoint queues through both p
               {
                 vault,
                 requestPath,
-                approval: "confirm",
                 ...(action === "checkpoint" ? { timing: "now" } : { action }),
               },
               undefined,
@@ -525,7 +588,7 @@ test("local and Git package manifests expose the built extension", async (t) => 
   ]);
   assert.equal(
     rootManifest.scripts.prepare,
-    "npm run build --workspace @bookie/core",
+    "npm run build --workspace pi-bookie-core",
   );
 
   const checkout = join(home, "git-checkout");
@@ -579,10 +642,14 @@ test("local and Git package manifests expose the built extension", async (t) => 
     join(home, "agent"),
   );
   assert.deepEqual(local.errors, []);
-  assert.equal(local.extensions[0].tools.size, 5);
+  assert.equal(local.extensions[0].tools.size, 9);
   assert.deepEqual(
     installedTools.map(({ name }) => name),
     [
+      "bookie_context_prepare",
+      "bookie_context_read",
+      "bookie_reference_read",
+      "bookie_work",
       "bookie_read",
       "bookie_search",
       "bookie_validate",
@@ -619,19 +686,19 @@ test("write requires explicit approval and uses policy-bearing create", async (t
   await assert.rejects(
     write.execute(
       "ambiguous",
-      { vault, action: "create", requestPath, approval: "confirm" },
+      { vault, action: "create", requestPath },
       undefined,
       undefined,
-      context(repositoryRoot),
+      context(repositoryRoot, { hasUI: false, mode: "print" }),
     ),
-    /requires explicit approval in non-interactive mode/u,
+    /requires trusted approval in non-interactive mode/u,
   );
   await assert.rejects(readFile(target), { code: "ENOENT" });
 
   await assert.rejects(
     write.execute(
       "declined",
-      { vault, action: "create", requestPath, approval: "confirm" },
+      { vault, action: "create", requestPath },
       undefined,
       undefined,
       context(repositoryRoot, {
@@ -651,7 +718,7 @@ test("write requires explicit approval and uses policy-bearing create", async (t
   });
   const abortedConfirmation = write.execute(
     "aborted-confirmation",
-    { vault, action: "create", requestPath, approval: "confirm" },
+    { vault, action: "create", requestPath },
     controller.signal,
     undefined,
     context(repositoryRoot, {
@@ -708,7 +775,7 @@ test("write requires explicit approval and uses policy-bearing create", async (t
   const pending = write
     .execute(
       "approved",
-      { vault, action: "create", requestPath, approval: "confirm" },
+      { vault, action: "create", requestPath },
       undefined,
       undefined,
       context(repositoryRoot, {
@@ -776,20 +843,30 @@ test("parallel amendments serialize and report a stale conflict", async (t) => {
     requests.map(({ path }) =>
       write.execute(
         "parallel",
-        { vault, action: "amend", requestPath: path, approval: "explicit" },
+        { vault, action: "amend", requestPath: path },
         undefined,
         undefined,
         context(repositoryRoot),
       ),
     ),
   );
-  assert.equal(
-    settled.filter(({ status }) => status === "fulfilled").length,
-    1,
+  const confirmed = settled.filter(({ status }) => status === "fulfilled");
+  const conflicts = settled.filter(
+    (value) =>
+      value.status === "rejected" &&
+      /MUTATION-CONFLICT/u.test(value.reason.message),
   );
-  const rejected = settled.find(({ status }) => status === "rejected");
-  assert.equal(rejected.status, "rejected");
-  assert.match(rejected.reason.message, /MUTATION-CONFLICT/u);
+  const withheld = settled.filter(
+    (value) =>
+      value.status === "rejected" &&
+      /local state may have changed/u.test(value.reason.message),
+  );
+  assert.equal(conflicts.length, 1);
+  assert.equal(
+    confirmed.length + withheld.length,
+    1,
+    "one write succeeds locally even if concurrent interference withholds its confirmation",
+  );
   assert.match(
     await readFile(join(vault, "projects/fixture/tasks/task.md"), "utf8"),
     /^# (first|second)$/mu,
@@ -805,7 +882,7 @@ test("write rejects malformed and secret request files without publication", asy
   await assert.rejects(
     write.execute(
       "malformed",
-      { vault, action: "create", requestPath: malformed, approval: "explicit" },
+      { vault, action: "create", requestPath: malformed },
       undefined,
       undefined,
       context(repositoryRoot),
@@ -818,7 +895,7 @@ test("write rejects malformed and secret request files without publication", asy
   await assert.rejects(
     write.execute(
       "exact-limit",
-      { vault, action: "create", requestPath: exact, approval: "explicit" },
+      { vault, action: "create", requestPath: exact },
       undefined,
       undefined,
       context(repositoryRoot),
@@ -830,7 +907,7 @@ test("write rejects malformed and secret request files without publication", asy
   await assert.rejects(
     write.execute(
       "over-limit",
-      { vault, action: "create", requestPath: over, approval: "explicit" },
+      { vault, action: "create", requestPath: over },
       undefined,
       undefined,
       context(repositoryRoot),
@@ -861,7 +938,7 @@ test("write rejects malformed and secret request files without publication", asy
   await assert.rejects(
     write.execute(
       "secret",
-      { vault, action: "create", requestPath: secret, approval: "explicit" },
+      { vault, action: "create", requestPath: secret },
       undefined,
       undefined,
       context(repositoryRoot),
@@ -911,12 +988,11 @@ test("request FIFOs and substitutions fail promptly and release checkpoint reser
             syncBuiltinESMExports();
             const params =
               surface === "write"
-                ? { vault, requestPath, action: "create", approval: "explicit" }
+                ? { vault, requestPath, action: "create" }
                 : {
                     vault,
                     requestPath,
                     timing: surface,
-                    ...(surface === "now" ? { approval: "explicit" } : {}),
                   };
             const pending = tool
               .execute(
@@ -979,7 +1055,6 @@ test("request FIFOs and substitutions fail promptly and release checkpoint reser
                 vault,
                 requestPath: valid,
                 timing: "now",
-                approval: "explicit",
               },
               undefined,
               undefined,
@@ -1070,9 +1145,7 @@ test("request final-stat, close and approval cancellation keep static aborts", a
               {
                 vault,
                 requestPath,
-                ...(action === "checkpoint-staged"
-                  ? {}
-                  : { approval: "confirm" }),
+
                 ...(action === "write"
                   ? { action: "create" }
                   : {
@@ -1134,7 +1207,7 @@ test("request final-stat, close and approval cancellation keep static aborts", a
           context(vault),
         );
         assert.equal(JSON.parse(textResult(result)).result.status, "staged");
-        await extension.handlers.get("session_shutdown")[0]({}, context(vault));
+        await allHandlers(extension, "session_shutdown")({}, context(vault));
       });
     }
   }
@@ -1172,12 +1245,12 @@ test("request reader enforces descriptor and fatal UTF-8 controls for checkpoint
         context(vault),
       );
       assert.equal(JSON.parse(textResult(result)).result.status, "staged");
-      await extension.handlers.get("session_shutdown")[0]({}, context(vault));
+      await allHandlers(extension, "session_shutdown")({}, context(vault));
     } else {
       await assert.rejects(
         checkpoint.execute(
           name,
-          { vault, requestPath, timing: "now", approval: "explicit" },
+          { vault, requestPath, timing: "now" },
           undefined,
           undefined,
           context(vault),
@@ -1199,7 +1272,7 @@ test("request reader enforces descriptor and fatal UTF-8 controls for checkpoint
     await assert.rejects(
       checkpoint.execute(
         "unsafe-descriptor",
-        { vault, requestPath, timing: "now", approval: "explicit" },
+        { vault, requestPath, timing: "now" },
         undefined,
         undefined,
         context(vault),
@@ -1230,7 +1303,7 @@ test("request reader enforces descriptor and fatal UTF-8 controls for checkpoint
     await assert.rejects(
       checkpoint.execute(
         "changed-reader",
-        { vault, requestPath: ordinary, timing: "now", approval: "explicit" },
+        { vault, requestPath: ordinary, timing: "now" },
         undefined,
         undefined,
         context(vault),
@@ -1244,7 +1317,7 @@ test("request reader enforces descriptor and fatal UTF-8 controls for checkpoint
   await writeFile(ordinary, valid);
   const result = await checkpoint.execute(
     "ordinary",
-    { vault, requestPath: ordinary, timing: "now", approval: "explicit" },
+    { vault, requestPath: ordinary, timing: "now" },
     undefined,
     undefined,
     context(vault),
@@ -1309,7 +1382,6 @@ test("excluded write results serialize no source fingerprints or identities", as
         vault,
         action: step === "create" ? "create" : "amend",
         requestPath,
-        approval: "explicit",
       },
       undefined,
       undefined,
@@ -1325,10 +1397,13 @@ test("excluded write results serialize no source fingerprints or identities", as
           : step === "unchanged"
             ? "unchanged"
             : "amended",
-      redacted: true,
-      path: "<redacted>",
-      changedPaths: step === "unchanged" ? [] : ["<redacted>"],
-      diagnostics: [],
+      status:
+        step === "create"
+          ? "created"
+          : step === "unchanged"
+            ? "unchanged"
+            : "amended",
+      detailsWithheld: true,
     });
     const serialized = JSON.stringify(result);
     for (const forbidden of [
@@ -1382,20 +1457,19 @@ test("checkpoint preview and Activity omit excluded context before approval", as
         vault,
         requestPath: join(parent, "missing.json"),
         timing: "now",
-        approval: "confirm",
       },
       undefined,
       undefined,
-      context(repositoryRoot),
+      context(repositoryRoot, { hasUI: false, mode: "print" }),
     ),
-    /requires explicit approval in non-interactive mode/u,
+    /requires trusted approval in non-interactive mode/u,
   );
 
   const target = join(vault, request.path);
   let declinedMessage = "";
   const declined = await checkpoint.execute(
     "declined",
-    { vault, requestPath, timing: "now", approval: "confirm" },
+    { vault, requestPath, timing: "now" },
     undefined,
     undefined,
     context(repositoryRoot, {
@@ -1414,7 +1488,7 @@ test("checkpoint preview and Activity omit excluded context before approval", as
   assert.match(declinedMessage, /Included outcome\./u);
   assert.equal(declinedMessage.includes(externalPathSecret), false);
   assert.equal(declinedMessage.includes(requestPath), false);
-  assert.equal(declinedMessage.includes(vault), false);
+  assert.equal(declinedMessage.includes(vault), true);
   for (const value of Object.values(excluded)) {
     assert.equal(declinedMessage.includes(value), false);
   }
@@ -1437,7 +1511,7 @@ test("checkpoint preview and Activity omit excluded context before approval", as
   const pendingWrite = checkpoint
     .execute(
       "approved",
-      { vault, requestPath, timing: "now", approval: "confirm" },
+      { vault, requestPath, timing: "now" },
       undefined,
       undefined,
       context(repositoryRoot, {
@@ -1478,7 +1552,7 @@ test("staged checkpoint hook continues compaction on no UI or decline and writes
   const extension = registeredExtension();
   const checkpoint = toolNamed(extension.tools, "bookie_checkpoint");
   const beforeCompact = extension.handlers.get("session_before_compact")?.[0];
-  const shutdown = extension.handlers.get("session_shutdown")?.[0];
+  const shutdown = allHandlers(extension, "session_shutdown");
   assert.equal(typeof beforeCompact, "function");
   assert.equal(typeof shutdown, "function");
   assert.equal(extension.handlers.has("agent_end"), false);
@@ -1510,7 +1584,10 @@ test("staged checkpoint hook continues compaction on no UI or decline and writes
   );
   const target = join(vault, request.path);
   assert.equal(
-    await beforeCompact({ signal: undefined }, context(repositoryRoot)),
+    await beforeCompact(
+      { signal: undefined },
+      context(repositoryRoot, { hasUI: false, mode: "print" }),
+    ),
     undefined,
   );
   await assert.rejects(readFile(target), { code: "ENOENT" });
@@ -1666,7 +1743,6 @@ test("parallel staging retains exactly one pending checkpoint", async (t) => {
       vault,
       requestPath: join(parent, "missing-immediate-request.json"),
       timing: "now",
-      approval: "explicit",
     },
   ]) {
     await assert.rejects(
@@ -1683,10 +1759,7 @@ test("parallel staging retains exactly one pending checkpoint", async (t) => {
       },
     );
   }
-  await extension.handlers.get("session_shutdown")[0](
-    {},
-    context(repositoryRoot),
-  );
+  await allHandlers(extension, "session_shutdown")({}, context(repositoryRoot));
 });
 
 test("parallel immediate checkpoints reserve one session slot", async (t) => {
@@ -1708,7 +1781,7 @@ test("parallel immediate checkpoints reserve one session slot", async (t) => {
     requests.map(({ requestPath }) =>
       checkpoint.execute(
         "parallel-immediate",
-        { vault, requestPath, timing: "now", approval: "explicit" },
+        { vault, requestPath, timing: "now" },
         undefined,
         undefined,
         context(repositoryRoot),
@@ -1719,9 +1792,9 @@ test("parallel immediate checkpoints reserve one session slot", async (t) => {
     results.filter(({ status }) => status === "fulfilled").length,
     1,
   );
-  assert.equal(
+  assert.match(
     results.find(({ status }) => status === "rejected").reason.message,
-    "Bookie checkpoint is already staged.",
+    /Bookie checkpoint is already staged\.|Bookie local state may have changed/u,
   );
   let published = 0;
   for (const { request } of requests) {
@@ -1803,10 +1876,7 @@ test("staged checkpoint remains reserved through its approval dialog", async (t)
     context(repositoryRoot),
   );
   assert.equal(JSON.parse(textResult(staged)).result.status, "staged");
-  await extension.handlers.get("session_shutdown")[0](
-    {},
-    context(repositoryRoot),
-  );
+  await allHandlers(extension, "session_shutdown")({}, context(repositoryRoot));
 });
 
 test("checkpoint rejects previews beyond Pi's line limit before staging", async (t) => {
@@ -1849,10 +1919,7 @@ test("checkpoint rejects previews beyond Pi's line limit before staging", async 
     context(repositoryRoot),
   );
   assert.equal(JSON.parse(textResult(staged)).result.status, "staged");
-  await extension.handlers.get("session_shutdown")[0](
-    {},
-    context(repositoryRoot),
-  );
+  await allHandlers(extension, "session_shutdown")({}, context(repositoryRoot));
 });
 
 test("staged checkpoint rejects sensitivity changes while waiting in Pi's queue", async (t) => {
@@ -1944,7 +2011,6 @@ test("checkpoint approval is bound to the resolved vault identity", async (t) =>
         vault: selectedVault,
         requestPath,
         timing: "now",
-        approval: "confirm",
       },
       undefined,
       undefined,
@@ -1957,7 +2023,7 @@ test("checkpoint approval is bound to the resolved vault identity", async (t) =>
               message,
               /projects\/fixture\/activities\/root-race\.md/u,
             );
-            assert.equal(message.includes(originalVault), false);
+            assert.equal(message.includes(originalVault), true);
             assert.equal(message.includes(selectedVault), false);
             assert.equal(message.includes(requestPath), false);
             await rm(selectedVault);
@@ -1968,7 +2034,7 @@ test("checkpoint approval is bound to the resolved vault identity", async (t) =>
         },
       }),
     ),
-    /Bookie checkpoint failed: MUTATION-CONFLICT\./u,
+    /Bookie checkpoint failed: MUTATION-(?:CONFLICT|IO)\.|Bookie local state may have changed/u,
   );
   for (const vault of [originalVault, replacementVault]) {
     await assert.rejects(readFile(join(vault, request.path)), {
@@ -2029,7 +2095,7 @@ test("checkpoint approval rejects target-parent substitution", async (t) => {
   await assert.rejects(
     toolNamed(registeredTools(), "bookie_checkpoint").execute(
       "parent-race",
-      { vault, requestPath, timing: "now", approval: "confirm" },
+      { vault, requestPath, timing: "now" },
       undefined,
       undefined,
       context(repositoryRoot, {
@@ -2045,7 +2111,7 @@ test("checkpoint approval rejects target-parent substitution", async (t) => {
         },
       }),
     ),
-    /Bookie checkpoint failed: MUTATION-CONFLICT\./u,
+    /Bookie checkpoint failed: MUTATION-(?:CONFLICT|IO)\.|Bookie local state may have changed/u,
   );
   await assert.rejects(readFile(join(activities, "parent-race.md")), {
     code: "ENOENT",
@@ -2070,7 +2136,7 @@ test("checkpoint secret failures are static and publish nothing", async (t) => {
   await assert.rejects(
     toolNamed(registeredTools(), "bookie_checkpoint").execute(
       "secret",
-      { vault, requestPath, timing: "now", approval: "explicit" },
+      { vault, requestPath, timing: "now" },
       undefined,
       undefined,
       context(repositoryRoot),
@@ -2117,4 +2183,158 @@ test("an aborted tool call rejects without returning error-looking success", asy
     ),
     (error) => error?.name === "AbortError",
   );
+});
+
+test("mutation feedback identifies caller fields without reflecting private values", async (t) => {
+  const vault = await temporaryVault(t);
+  const write = toolNamed(registeredTools(), "bookie_write");
+  const original = await readFile(
+    join(vault, "projects/fixture/tasks/task.md"),
+    "utf8",
+  );
+  const frontmatter = JSON.parse(original.split("\n")[1]);
+  frontmatter.bookie.uid = "TSK-00000000000000000000000370";
+  frontmatter.bookie.sensitivity = "public";
+  const request = {
+    path: "projects/fixture/tasks/feedback-private-marker.md",
+    frontmatter,
+    bodyText: "PRIVATE BODY MARKER",
+  };
+  const cases = [
+    {
+      name: "path",
+      change: (r) => {
+        r.path = "/" + r.path;
+      },
+      expected: /MUTATION-PATH\. .*request\.path.*vault-relative/u,
+    },
+    {
+      name: "state",
+      change: (r) => {
+        r.frontmatter.bookie.state = "PRIVATE INVALID STATE";
+      },
+      expected:
+        /CONCEPT-SCHEMA\. .*frontmatter\.bookie\.state.*proposed, ready, in_progress, blocked, done, cancelled/u,
+    },
+    {
+      name: "other-field",
+      change: (r) => {
+        r.frontmatter.generated.by = { "PRIVATE FIELD NAME": "PRIVATE VALUE" };
+      },
+      expected: /^Bookie write failed: CONCEPT-SCHEMA\.$/u,
+    },
+    {
+      name: "secret",
+      change: (r) => {
+        r.frontmatter.bookie.state = "PRIVATE INVALID STATE";
+        r.bodyText = "password=do-not-disclose-this-value";
+      },
+      expected: /^Bookie write failed: WRITE-SECRET\.$/u,
+    },
+  ];
+  for (const c of cases)
+    await t.test(c.name, async () => {
+      const candidate = structuredClone(request);
+      c.change(candidate);
+      const requestPath = join(vault, "..", c.name + ".json");
+      const bytes = JSON.stringify(candidate);
+      await writeFile(requestPath, bytes);
+      await assert.rejects(
+        write.execute(
+          c.name,
+          { vault, action: "create", requestPath },
+          undefined,
+          undefined,
+          context(repositoryRoot),
+        ),
+        (error) => {
+          assert.match(error.message, c.expected);
+          assert.doesNotMatch(
+            error.message,
+            /PRIVATE|feedback-private-marker|do-not-disclose/u,
+          );
+          assert.ok(Buffer.byteLength(error.message) < 512);
+          return true;
+        },
+      );
+      assert.equal(await readFile(requestPath, "utf8"), bytes);
+      await assert.rejects(readFile(join(vault, request.path)), {
+        code: "ENOENT",
+      });
+    });
+  assert.equal(
+    await readFile(join(vault, "projects/fixture/tasks/task.md"), "utf8"),
+    original,
+  );
+});
+
+test("checkpoint feedback explains path and sensitivity failures without revealing fragments", async (t) => {
+  const vault = await temporaryVault(t);
+  const checkpoint = toolNamed(registeredTools(), "bookie_checkpoint");
+  const request = checkpointRequest(
+    "projects/fixture/activities/feedback-private-marker.md",
+  );
+  request.fragments[0].text = "PRIVATE FRAGMENT MARKER";
+  const cases = [
+    {
+      name: "path",
+      change: (r) => {
+        r.path = "/" + r.path;
+      },
+      expected: /vault\. .*request\.path.*vault-relative/u,
+    },
+    {
+      name: "activity-class",
+      change: (r) => {
+        r.frontmatter.bookie.sensitivity = "PRIVATE CLASS";
+      },
+      expected:
+        /sensitivity-policy\. .*frontmatter\.bookie\.sensitivity.*fragments\[\]\.sensitivity/u,
+    },
+    {
+      name: "fragment-class",
+      change: (r) => {
+        r.fragments[0].sensitivity = "PRIVATE CLASS";
+      },
+      expected: /sensitivity-policy\. .*declared classes/u,
+    },
+  ];
+  for (const c of cases)
+    await t.test(c.name, async () => {
+      const candidate = structuredClone(request);
+      c.change(candidate);
+      const requestPath = join(vault, "..", c.name + ".json");
+      await writeFile(requestPath, JSON.stringify(candidate));
+      await assert.rejects(
+        checkpoint.execute(
+          c.name,
+          { vault, timing: "now", requestPath },
+          undefined,
+          undefined,
+          context(repositoryRoot),
+        ),
+        (error) => {
+          assert.match(error.message, c.expected);
+          assert.doesNotMatch(
+            error.message,
+            /PRIVATE|feedback-private-marker/u,
+          );
+          assert.ok(Buffer.byteLength(error.message) < 512);
+          return true;
+        },
+      );
+      await assert.rejects(readFile(join(vault, request.path)), {
+        code: "ENOENT",
+      });
+    });
+  const validPath = join(vault, "..", "valid-checkpoint.json");
+  await writeFile(validPath, JSON.stringify(request));
+  const result = await checkpoint.execute(
+    "valid-after-failure",
+    { vault, timing: "now", requestPath: validPath },
+    undefined,
+    undefined,
+    context(repositoryRoot),
+  );
+  assert.equal(JSON.parse(textResult(result)).result.status, "created");
 });

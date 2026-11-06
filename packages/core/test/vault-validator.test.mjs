@@ -886,7 +886,7 @@ test("a clean relocated package carries canonical schemas and supported runtime 
   const parsedReport = JSON.parse(packed.stdout);
   const report = Array.isArray(parsedReport)
     ? parsedReport[0]
-    : (parsedReport["@bookie/core"] ?? Object.values(parsedReport)[0]);
+    : (parsedReport["pi-bookie-core"] ?? Object.values(parsedReport)[0]);
   assert.ok(report);
   const files = new Set(report.files.map((file) => file.path));
   for (const required of [
@@ -944,7 +944,7 @@ test("a clean relocated package carries canonical schemas and supported runtime 
   );
   assert.equal(installed.status, 0, installed.stderr || installed.stdout);
   const relocated = await import(
-    `${pathToFileURL(join(installRoot, "node_modules/@bookie/core/dist/index.js")).href}?packed`
+    `${pathToFileURL(join(installRoot, "node_modules/pi-bookie-core/dist/index.js")).href}?packed`
   );
   assert.equal(typeof relocated.exportCanonicalJsonl, "function");
   const result = await relocated.validateVault(validVault);

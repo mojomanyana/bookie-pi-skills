@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { OperationError, runReadOperation } from "./operation-process.js";
-import type { VaultDiagnostic } from "@bookie/core";
+import type { VaultDiagnostic } from "pi-bookie-core";
 
 const invocationMessage = "CLI-INVOCATION: Invalid command invocation.\n";
 const cancelledMessage = "CLI-CANCELLED: Operation cancelled.\n";

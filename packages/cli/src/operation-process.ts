@@ -7,7 +7,7 @@ import type {
   InspectConceptSelector,
   SearchVaultResult,
   ValidateVaultResult,
-} from "@bookie/core";
+} from "pi-bookie-core";
 
 export type ReadOperation =
   | {

@@ -8,6 +8,10 @@ Owner: unassigned
 Target release: 0.1  
 Depends on: SPEC-001, ADR-0004, ADR-0005, ADR-0007, ADR-0008
 
+## Package distribution
+
+[ADR-0015](../architecture/decisions/0015-public-package-names.md) names the public core `pi-bookie-core` at MIT0.1.0. The private CLI and service retain their names and depend on exactly `pi-bookie-core: 0.1.0`; public versions need not equal the private root version. This changes package identity only, not the canonical APIs or release-0.1 CLI scope. Historical scoped names remain in their original evidence.
+
 ## Goal
 
 Implement one deterministic core for loading, validating, mutating, hashing, searching, and exporting a Bookie vault, then expose it through a non-interactive CLI suitable for humans, CI, the Pi extension, and the indexing service.
@@ -542,3 +546,11 @@ The merged `readApprovedSourceManifest` core API is specified in [SPEC-004](004-
 ## Delivery notes
 
 Implement thinly in this order: load one concept, validate one concept, validate a vault, safe mutation, evidence and Git-base policy, inspect/search, deterministic export. Add no provider or persistence abstraction until there is a second accepted caller behavior to isolate.
+
+## BK-031 local recall contract — implementation candidate
+
+[ADR-0013](../architecture/decisions/0013-local-recall-and-producer-references.md) adds exact extractive context and a versioned `bookie-recall.json` control sidecar without changing canonical profile 1.0. Core exposes explicit initialization/read/update, trusted-authority mutation callbacks, exact-context preparation/revalidation and metadata-only producer registration. Missing state is not initialized by read/import. Mutations serialize under BK-030 and compare expected revisions; exact repeated registration may reuse its existing receipt after current suppression, scope and source validation. Existing local query and canonical-export semantics remain separate; no service index or automatic canonical identity is introduced. See BK-031 evidence for actual qualification, not this intended contract.
+
+### BK-035 canonical recall observation refinement
+
+`readRecallState` success additionally returns `controlsRevision`, a derived hash of the full ordered control history and vault/schema identity. The exact whole-file `revision` remains unchanged for mutation concurrency and producer registry checks. Canonical prepared bundles use the derived history identity, so settled producer metadata registration alone does not stale canonical content. Every observation still validates the entire store; missing, corrupt, unsupported or suppressed state refuses. Legacy bundles require fresh preparation with current authority; no store migration or automatic bundle conversion occurs. See ADR-0013 and [local evidence](../planning/evidence/BK-035.md).

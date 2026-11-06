@@ -149,3 +149,50 @@ export type {
   MutationDiagnostic,
   MutationDiagnosticCode,
 } from "./concept-mutation.js";
+
+export { inspectRecallScope } from "./recall-scope.js";
+export {
+  initializeRecallState,
+  readRecallState,
+  updateRecallControl,
+  registerProducerReference,
+  producerReferenceId,
+  RECALL_STATE_FILE,
+  RECALL_MARKER_FILE,
+} from "./recall-state.js";
+export { prepareContext, revalidateContext } from "./prepared-context.js";
+export type {
+  ConceptRevision,
+  RecallProject,
+  RecallScope,
+  ProducerReference,
+  RecallTarget,
+  RecallControl,
+  StoredRecallControl,
+  ProducerRegistration,
+  RecallState,
+  RecallFailureReason,
+  RecallResult,
+  RecallReadOptions,
+  RecallMutationOptions,
+  RegisterProducerOptions,
+  ContextBinding,
+  ContextOptions,
+  PrepareContextRequest,
+  ContextInput,
+  PreparedContextBundle,
+} from "./recall-model.js";
+
+export * from "./work-map-model.js";
+export {
+  describeWorkMap,
+  validateWorkMap,
+  renderWorkMapBody,
+  parseWorkMapBody,
+  workTaskRevision,
+  readWorkMap,
+  projectWorkMap,
+  isWorkOwnerReference,
+  isWorkEffectTarget,
+  effectTargetReference,
+} from "./work-map.js";

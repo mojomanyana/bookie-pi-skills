@@ -348,6 +348,14 @@ test("toolchain, workspaces, and lockfile versions stay aligned", () => {
     "Toolchain npm version drifted",
   );
   assert.equal(lockfile.packages[""].version, rootPackage.version);
+  assert.equal(rootPackage.name, "bookie-pi-skills");
+  assert.equal(rootPackage.private, true);
+  assert.equal(rootPackage.version, "0.0.0");
+  assert.equal(lockfile.packages["node_modules/@bookie/core"], undefined);
+  assert.equal(
+    lockfile.packages["node_modules/@bookie/pi-extension"],
+    undefined,
+  );
 
   const names = [];
   for (const workspacePath of workspacePaths) {
@@ -355,16 +363,38 @@ test("toolchain, workspaces, and lockfile versions stay aligned", () => {
       readFileSync(resolve(root, workspacePath, "package.json"), "utf8"),
     );
     names.push(manifest.name);
-    assert.equal(
-      manifest.private,
-      true,
-      `${manifest.name} must remain private pre-release`,
+    const release = {
+      "packages/core": { name: "pi-bookie-core", public: true },
+      "packages/pi-extension": { name: "pi-bookie", public: true },
+      "packages/cli": { name: "@bookie/cli", public: false },
+      "apps/service": { name: "@bookie/service", public: false },
+    }[workspacePath];
+    assert.equal(manifest.name, release.name);
+    assert.equal(manifest.private, !release.public);
+    assert.equal(manifest.version, release.public ? "0.1.0" : "0.0.0");
+    assert.equal(manifest.license, "MIT");
+    assert.equal(lockfile.packages[workspacePath]?.name, manifest.name);
+    assert.equal(lockfile.packages[workspacePath]?.license, manifest.license);
+    assert.deepEqual(
+      lockfile.packages[workspacePath]?.dependencies,
+      manifest.dependencies,
     );
-    assert.equal(
-      manifest.version,
-      rootPackage.version,
-      `${manifest.name} version drifted`,
-    );
+    assert.deepEqual(lockfile.packages[`node_modules/${manifest.name}`], {
+      resolved: workspacePath,
+      link: true,
+    });
+    if (workspacePath !== "packages/core") {
+      assert.equal(manifest.dependencies["pi-bookie-core"], "0.1.0");
+      assert.equal(manifest.dependencies["@bookie/core"], undefined);
+    }
+    if (release.public) {
+      assert.deepEqual(manifest.publishConfig, { access: "public" });
+      assert.ok(manifest.files.includes("LICENSE"));
+      assert.equal(
+        readFileSync(resolve(root, workspacePath, "LICENSE"), "utf8"),
+        readFileSync(resolve(root, "LICENSE"), "utf8"),
+      );
+    }
     assert.equal(
       lockfile.packages[workspacePath]?.version,
       manifest.version,

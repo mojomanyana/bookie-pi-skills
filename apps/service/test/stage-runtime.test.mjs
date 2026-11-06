@@ -34,15 +34,15 @@ async function fixture(t) {
   await write("package-lock.json", '{"lockfileVersion":3}');
   await write(
     "apps/service/package.json",
-    pkg("@bookie/service", { "@bookie/core": "0.0.0", dep: "1.0.0" }),
+    pkg("@bookie/service", { "pi-bookie-core": "0.0.0", dep: "1.0.0" }),
   );
   await write(
     "packages/core/package.json",
-    pkg("@bookie/core", {}, { exports: { ".": "./dist/index.js" } }),
+    pkg("pi-bookie-core", {}, { exports: { ".": "./dist/index.js" } }),
   );
   await write(
     "apps/service/dist/server.js",
-    "import { core } from '@bookie/core'; import { dep } from 'dep'; import { readFileSync } from 'node:fs'; const schema = readFileSync(new URL('../../../schemas/service/v1/protocol.schema.json', import.meta.url), 'utf8'); export default `${core}:${dep}:${schema.length}`;",
+    "import { core } from 'pi-bookie-core'; import { dep } from 'dep'; import { readFileSync } from 'node:fs'; const schema = readFileSync(new URL('../../../schemas/service/v1/protocol.schema.json', import.meta.url), 'utf8'); export default `${core}:${dep}:${schema.length}`;",
   );
   await write("packages/core/dist/index.js", "export const core = 'core';");
   await writeRuntimeSchemas(write);
@@ -63,10 +63,10 @@ async function fixture(t) {
     "export const trans = 'nested';",
   );
   await write("node_modules/unused/secret.js", "PRIVATE_UNRELATED");
-  await mkdir(join(source, "node_modules/@bookie"), { recursive: true });
+  await mkdir(join(source, "node_modules"), { recursive: true });
   await symlink(
-    "../../packages/core",
-    join(source, "node_modules/@bookie/core"),
+    "../packages/core",
+    join(source, "node_modules/pi-bookie-core"),
   );
   return { source, dest, write };
 }
@@ -92,7 +92,7 @@ test("staging a dependency closure produces a relocatable, hashable, bootable tr
   );
   assert.equal(
     (
-      await stat(join(dest("first"), "node_modules/@bookie/core"))
+      await stat(join(dest("first"), "node_modules/pi-bookie-core"))
     ).isDirectory(),
     true,
   );
@@ -161,7 +161,7 @@ test("an npm alias retains its import path but checks the installed package iden
   await write(
     "apps/service/package.json",
     pkg("@bookie/service", {
-      "@bookie/core": "0.0.0",
+      "pi-bookie-core": "0.0.0",
       alias: "npm:real-dep@1.0.0",
     }),
   );
@@ -213,7 +213,7 @@ test("optional declarations override dependencies before independent peer requir
       "apps/service/package.json",
       pkg(
         "@bookie/service",
-        { "@bookie/core": "0.0.0", absent: "1.0.0" },
+        { "pi-bookie-core": "0.0.0", absent: "1.0.0" },
         {
           optionalDependencies: { absent: "2.0.0" },
           peerDependencies: peers,
@@ -260,7 +260,7 @@ test("an overriding optional npm alias stages its effective identity and rejects
       pkg(
         "@bookie/service",
         {
-          "@bookie/core": "0.0.0",
+          "pi-bookie-core": "0.0.0",
           alias: "npm:superseded-dep@1.0.0",
         },
         {
@@ -321,13 +321,13 @@ test("missing schemas, external dependency links and existing targets fail witho
   assert.equal((await stat(dest("exists"))).isDirectory(), true);
   await write(
     "apps/service/package.json",
-    '{"name":"@bookie/service","dependencies":{"dep":"1.0.0","@bookie/core":"0.0.0","__proto__":"1.0.0"}}',
+    '{"name":"@bookie/service","dependencies":{"dep":"1.0.0","pi-bookie-core":"0.0.0","__proto__":"1.0.0"}}',
   );
   await assert.rejects(stageRuntimeArtifact(source, dest("prototype")), bad);
   await assert.rejects(stat(dest("prototype")), { code: "ENOENT" });
   await write(
     "apps/service/package.json",
-    pkg("@bookie/service", { "@bookie/core": "0.0.0", missing: "1.0.0" }),
+    pkg("@bookie/service", { "pi-bookie-core": "0.0.0", missing: "1.0.0" }),
   );
   await assert.rejects(
     stageRuntimeArtifact(source, dest("missing-dependency")),

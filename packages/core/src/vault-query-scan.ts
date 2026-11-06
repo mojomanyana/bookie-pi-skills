@@ -26,6 +26,7 @@ import type { Manifest, ValidationLimits } from "./vault-model.js";
 export interface ScannedQueryConcept {
   readonly sourcePath: string;
   readonly sourceBytes: Uint8Array;
+  readonly frontmatter: Readonly<Record<string, unknown>>;
   readonly bodyText: string;
   readonly type: string;
   readonly title: string;
@@ -561,6 +562,7 @@ export async function scanVaultForQuery(
     const concept: ScannedQueryConcept = {
       sourcePath,
       sourceBytes: read.bytes,
+      frontmatter,
       bodyText: loaded.concept.bodyText,
       type,
       title: frontmatter.title as string,

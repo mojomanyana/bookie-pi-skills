@@ -23,7 +23,7 @@ COPY apps/service/package.json ./apps/service/
 COPY packages/core/package.json ./packages/core/
 COPY packages/cli/package.json ./packages/cli/
 COPY packages/pi-extension/package.json ./packages/pi-extension/
-RUN npm ci --omit=dev --ignore-scripts --workspace @bookie/service --workspace @bookie/core --include-workspace-root=false --no-audit --no-fund
+RUN npm ci --omit=dev --ignore-scripts --workspace @bookie/service --workspace pi-bookie-core --include-workspace-root=false --no-audit --no-fund
 COPY --from=compile /build/apps/service/dist ./apps/service/dist
 COPY --from=compile /build/packages/core/dist ./packages/core/dist
 COPY schemas ./schemas

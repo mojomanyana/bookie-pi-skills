@@ -1,7 +1,7 @@
 {
-  "name": "@bookie/pi-extension",
-  "version": "0.0.0",
-  "private": true,
+  "name": "pi-bookie",
+  "version": "0.1.0",
+  "private": false,
   "type": "module",
   "keywords": [
     "pi-package"
@@ -9,7 +9,8 @@
   "files": [
     "dist",
     "src",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "pi": {
     "extensions": [
@@ -25,10 +26,14 @@
     "test:built": "node --test test/*.test.mjs"
   },
   "dependencies": {
-    "@bookie/core": "0.0.0"
+    "pi-bookie-core": "0.1.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
   }
 }

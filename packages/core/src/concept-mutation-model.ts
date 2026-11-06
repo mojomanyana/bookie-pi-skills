@@ -52,6 +52,8 @@ export interface ConceptMutationOptions {
   readonly maxYamlDepth?: number;
   readonly signal?: AbortSignal;
   readonly runExclusive?: ConceptMutationCoordinator;
+  /** Trusted caller revalidation, executed inside the cooperating vault lock. */
+  readonly assertAuthority?: () => Promise<void>;
 }
 
 export type MutationDiagnosticCode =
@@ -71,6 +73,7 @@ export type MutationDiagnosticCode =
   | "MUTATION-CONFLICT"
   | "MUTATION-BOUNDS"
   | "MUTATION-IO"
+  | "MUTATION-LOCKED"
   | "WRITE-SECRET";
 
 export interface MutationDiagnostic {
@@ -161,6 +164,11 @@ const mutationMessages: Record<
     message: "Concept mutation reached a configured safety bound.",
     remediation:
       "Reduce the candidate or vault size before retrying the mutation.",
+  },
+  "MUTATION-LOCKED": {
+    message: "Another or interrupted Bookie writer owns the vault lock.",
+    remediation:
+      "Stop writers and inspect the retained vault lock before explicit recovery; do not reclaim it by age.",
   },
   "MUTATION-IO": {
     message: "Concept mutation could not complete filesystem I/O safely.",

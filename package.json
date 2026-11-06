@@ -18,7 +18,7 @@
   },
   "scripts": {
     "build": "tsc -b --force && node packages/core/scripts/copy-schemas.mjs",
-    "prepare": "npm run build --workspace @bookie/core",
+    "prepare": "npm run build --workspace pi-bookie-core",
     "format:check": "prettier --check \"**/*.{js,mjs,ts,json,yaml,yml}\"",
     "lint": "eslint .",
     "test": "npm run build && npm run test:repo && npm run test:built --workspaces --if-present",
@@ -46,5 +46,6 @@
     "typescript-eslint": "^8.48.0",
     "yaml": "^2.9.0"
   },
-  "packageManager": "npm@11.9.0"
+  "packageManager": "npm@11.9.0",
+  "license": "MIT"
 }
