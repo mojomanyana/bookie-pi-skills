@@ -14,7 +14,7 @@ Excluded write successes serialize an explicit `redacted: true` variant without 
 
 Every tool requires an explicit `vault` path, propagates cancellation, throws on operational failure, and bounds output to Pi's 50KB/2,000-line limits. Retrieved text is labelled untrusted. Excluded reads fail with static redaction. Write and checkpoint arguments cannot assert approval. Ordinary writes require trusted Pi UI confirmation of the canonical vault, target and exact request snapshot. Non-interactive calls fail closed unless a structured checkpoint matches the human-selected session permission below. Checkpoint preparation accepts complete caller-supplied metadata, never raw transcripts, and generates no canonical identity or timestamp. Declined, cancelled, failed, and no-UI pre-compaction capture never blocks compaction. The package starts no background resource and performs no network, commit, or push operation.
 
-In this BK-030 implementation candidate, run `/bookie-capture` in Pi to select an existing canonical vault and Project and approve routine Activity capture for this session. Matching checkpoints may retain vault-declared, non-excluded `public` or `internal` summaries and evidence references without another dialog. Other writes still ask. Run `/bookie-capture off` to revoke; reload, session replacement, fork and shutdown also revoke, and children inherit nothing. Labels are assertions, not semantic detection of personal data; this local storage permission grants no disclosure, sharing or training authority.
+Run `/bookie-capture` in Pi to select an existing canonical vault and Project and approve routine Activity capture for this session. Matching checkpoints may retain vault-declared, non-excluded `public` or `internal` summaries and evidence references without another dialog. Other writes still ask. Run `/bookie-capture off` to revoke; reload, session replacement, fork and shutdown also revoke, and children inherit nothing. Labels are assertions, not semantic detection of personal data; this local storage permission grants no disclosure, sharing or training authority.
 
 Cooperating Bookie writers hold `.bookie-write.lock` over revision checks and publication. Contention waits at most five seconds and supports cancellation. A terminated owner can leave a lock; it is never stolen automatically. Before manual recovery, stop all writers and establish that the recorded owner is no longer running, then remove only the selected vault's retained lock. General filesystem editors remain outside this cooperation guarantee.
 
@@ -43,7 +43,7 @@ Both the root Git manifest and local subpackage load `src/index.ts` through Pi's
 
 Git `prepare` builds core JavaScript, declarations and schema assets only; Pi loads the extension TypeScript itself. This works with production installs that suppress host peer installation (`npm install --omit=dev --legacy-peer-deps`). Development builds still compile/typecheck the complete extension and retain `dist` declarations. Clean relocated root/local installation and independent real-host-loader create/amend/checkpoint interlocks are default tests. See [BK-026 evidence](../../docs/planning/evidence/BK-026.md).
 
-BK-030 has local required-check evidence on the Pi 0.85.1 development baseline and seven additional model-free real-loader cases on an existing Pi 1.4.0 host. These qualify package loading and shared create/amend/checkpoint queues, not a full interactive/provider run. See [BK-030 evidence](../../docs/planning/evidence/BK-030.md); implementation remains unmerged.
+BK-030 has local required-check evidence on the Pi 0.85.1 development baseline and seven additional model-free real-loader cases on an existing Pi 1.4.0 host. These qualify package loading and shared create/amend/checkpoint queues, not a full interactive/provider run. See [BK-030 evidence](../../docs/planning/evidence/BK-030.md). The implementation subsequently shipped in public 0.1.0 through PR #42; those historical checks retain their original scope.
 
 
 ### Session disclosure and optional producer references
@@ -60,7 +60,7 @@ The trusted bridge now supports bounded exact historical reads through `bookie_r
 
 Concurrent cooperating writes can conservatively invalidate a disclosure snapshot even when the selected Project did not change. A successful local mutation may therefore have its confirmation withheld; this is not a no-effect proof and never triggers an automatic mutation retry.
 
-### Bounded context consumers (BK-032 local candidate)
+### Bounded context consumers (released BK-032)
 
 After `/bookie-context` selects a project and actual model destination, `bookie_context_prepare` accepts up to 16 exact paths in that project and returns an opaque `bundleId` plus source references. `bookie_context_read` reads or revalidates that handle; optional `inputIds` select required inputs. It refuses changed sources, current suppression, changed controls, or changed destination. Working-tree and explicitly pinned committed source modes preserve their distinct representations. These are untrusted excerpts, not permission, approval or a guarantee that a derived conclusion is correct.
 
@@ -78,7 +78,7 @@ Legacy `bookie_read`/`bookie_search` results already sent during the same live s
 
 Mutation request.path is a vault-relative Markdown path such as projects/demo/task.md; Bookie read selectors and frontmatter project/relation references retain their separate /projects/... form. Keep the existing validators and use the returned fixed guidance to correct the request explicitly. For a Task, bookie.state is one of proposed, ready, in_progress, blocked, done or cancelled; lifecycle status is a separate field. Checkpoint Activity and fragment sensitivity labels must be declared by the selected vault, and the Activity class cannot be excluded. Do not relabel content merely to make a write pass.
 
-Selected path, state and checkpoint-sensitivity failures now return bounded static hints. Other schema errors remain code-only; protected values, arbitrary validator messages and private source bodies are withheld. A changed disclosure grant still withholds feedback, and a possibly completed mutation still warns against blind retry. This local source repair is not installed-package or publication qualification.
+Selected path, state and checkpoint-sensitivity failures now return bounded static hints. Other schema errors remain code-only; protected values, arbitrary validator messages and private source bodies are withheld. A changed disclosure grant still withholds feedback, and a possibly completed mutation still warns against blind retry. This repair is included in public 0.1.0; source-level tests alone are not installed-package or publication qualification.
 
 
 ## Selected canonical export
@@ -99,3 +99,19 @@ unselected diagnostics and whole-vault receipts are not disclosed. This does not
 claim arbitrary-secret detection. Context replay rechecks current authority and
 source eligibility; session changes never restore an export body automatically.
 Exported content is untrusted data, not engineering approval or execution authority.
+
+## Compact task continuity
+
+The optional [bookie-continuity skill](skills/bookie-continuity/SKILL.md) helps any
+Pi role keep the requested outcome, non-goals, current phase, scoped user
+decisions, accepted verification alternatives and exact evidence references
+together. It reuses existing Activity checkpoints and prepared-context tools
+inside an already selected project. Without Bookie access it uses the current
+session or an already-authorized local note; it does not require setup before
+ordinary work continues. Stored summaries never supply permissions.
+
+Both the root Git/local manifest and this 0.1.1 Pi maintenance candidate advertise
+this skill. The candidate is not yet published; the released 0.1.0 package does
+not include it. Its [fragment recipe](skills/bookie-continuity/references/checkpoint-recipe.md)
+ships with the package. This is instruction guidance, not a new automatic hook,
+schema, approval engine or claim of measured model quality.

@@ -4,6 +4,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, extname, join, normalize, resolve } from "node:path";
 import test from "node:test";
 import { ESLint } from "eslint";
+import { loadSkillsFromDir } from "@earendil-works/pi-coding-agent";
 
 const root = resolve(import.meta.dirname, "..");
 
@@ -364,14 +365,26 @@ test("toolchain, workspaces, and lockfile versions stay aligned", () => {
     );
     names.push(manifest.name);
     const release = {
-      "packages/core": { name: "pi-bookie-core", public: true },
-      "packages/pi-extension": { name: "pi-bookie", public: true },
-      "packages/cli": { name: "@bookie/cli", public: false },
-      "apps/service": { name: "@bookie/service", public: false },
+      "packages/core": {
+        name: "pi-bookie-core",
+        public: true,
+        version: "0.1.0",
+      },
+      "packages/pi-extension": {
+        name: "pi-bookie",
+        public: true,
+        version: "0.1.1",
+      },
+      "packages/cli": { name: "@bookie/cli", public: false, version: "0.0.0" },
+      "apps/service": {
+        name: "@bookie/service",
+        public: false,
+        version: "0.0.0",
+      },
     }[workspacePath];
     assert.equal(manifest.name, release.name);
     assert.equal(manifest.private, !release.public);
-    assert.equal(manifest.version, release.public ? "0.1.0" : "0.0.0");
+    assert.equal(manifest.version, release.version);
     assert.equal(manifest.license, "MIT");
     assert.equal(lockfile.packages[workspacePath]?.name, manifest.name);
     assert.equal(lockfile.packages[workspacePath]?.license, manifest.license);
@@ -646,4 +659,37 @@ test("numbered requirements, specifications, and ADRs have no gaps", () => {
   assertSequential(requirementIds, "Requirement");
   assertSequential(specificationIds, "Specification");
   assertSequential(adrIds, "ADR");
+});
+
+test("root and npm packages expose the same portable continuity skill", () => {
+  const rootManifest = JSON.parse(
+    readFileSync(join(root, "package.json"), "utf8"),
+  );
+  const packageRoot = join(root, "packages/pi-extension");
+  const manifest = JSON.parse(
+    readFileSync(join(packageRoot, "package.json"), "utf8"),
+  );
+  assert.ok(
+    manifest.files.includes("skills"),
+    "npm package must retain skill resources",
+  );
+  const discover = (base, paths) =>
+    paths.flatMap((path) => {
+      const result = loadSkillsFromDir({
+        dir: resolve(base, path),
+        source: "test",
+      });
+      assert.deepEqual(result.diagnostics, []);
+      return result.skills;
+    });
+  const fromRoot = discover(root, rootManifest.pi.skills ?? []).filter(
+    (skill) => skill.name === "bookie-continuity",
+  );
+  const fromPackage = discover(packageRoot, manifest.pi.skills ?? []).filter(
+    (skill) => skill.name === "bookie-continuity",
+  );
+  assert.equal(fromRoot.length, 1);
+  assert.equal(fromPackage.length, 1);
+  assert.equal(fromRoot[0].name, "bookie-continuity");
+  assert.equal(fromPackage[0].filePath, fromRoot[0].filePath);
 });

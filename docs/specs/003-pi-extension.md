@@ -2,7 +2,7 @@
 
 ## Status
 
-In progress — packaged read, filesystem-search, validation, approved create/amend and structured checkpoint/pre-compaction workflows through BK-015 are merged. Subsequent BK-026/027/028 queue/result/request safety corrections merged in [PR #30](https://github.com/mojomanyana/bookie-pi-skills/pull/30) with successful matching PR and [merged-main CI](https://github.com/mojomanyana/bookie-pi-skills/actions/runs/40872106782); all three are Done. Earlier verification did not establish these repaired boundaries. BK-030 is implemented and locally verified on its unmerged branch: trusted host authority, session-scoped routine capture and cooperating vault locks. Its evidence does not mark delivery. Service retrieval and the remaining human/configuration commands remain later work. BK-037 implements bounded selected-record Pi export in a separate local increment; its verification and delivery state are recorded below.
+In progress — packaged read, filesystem-search, validation, approved create/amend and structured checkpoint/pre-compaction workflows through BK-015 are merged. Subsequent BK-026/027/028 queue/result/request safety corrections merged in [PR #30](https://github.com/mojomanyana/bookie-pi-skills/pull/30) with successful matching PR and [merged-main CI](https://github.com/mojomanyana/bookie-pi-skills/actions/runs/40872106782); all three are Done. Earlier verification did not establish these repaired boundaries. BK-030–037 are delivered in the public 0.1.0 local-ledger packages through PR #42, with matching CI, tag and archive verification recorded in [delivery evidence](../planning/evidence/public-delivery-0.1.0.md). Service retrieval and remaining human/configuration commands remain later work. BK-038 is the local 0.1.1 instruction-only maintenance candidate; it is not yet delivered.
 
 Owner: unassigned  
 Target release: 0.1  
@@ -10,7 +10,7 @@ Depends on: SPEC-002, [ADR-0009](../architecture/decisions/0009-structured-check
 
 ## Package distribution
 
-[ADR-0015](../architecture/decisions/0015-public-package-names.md) names the public Pi package `pi-bookie` at MIT0.1.0, with the exact automatic runtime dependency `pi-bookie-core: 0.1.0`. Keep `pi.extensions: ["./src/index.ts"]`, host Pi peer dependencies and existing tool/event names. Public npm installation is `pi install npm:pi-bookie@0.1.0` after publication; current local/Git installation remains supported. The root, CLI and service remain private. Renaming does not deliver unfinished service work or import earlier archive qualification.
+[ADR-0015](../architecture/decisions/0015-public-package-names.md) names the public Pi package `pi-bookie` at MIT0.1.0, with the exact automatic runtime dependency `pi-bookie-core: 0.1.0`. Keep `pi.extensions: ["./src/index.ts"]`, host Pi peer dependencies and existing tool/event names. The released baseline installs with `pi install npm:pi-bookie@0.1.0`; current local/Git installation remains supported. ADR-0015's dated maintenance clarification permits the local Pi 0.1.1 candidate with core 0.1.0 unchanged; it still requires exact paired package qualification and separate publication. The root, CLI and service remain private. Renaming does not deliver unfinished service work or import earlier archive qualification.
 
 ## Goal
 
@@ -101,7 +101,7 @@ Both root-Git and local-subpackage manifests select the TypeScript `src/index.ts
 
 Begin with read, local search, validate, and explicit create. Add checkpoint only after the Activity schema and session-context redaction policy are verified. Keep initial rendering compact and use default Pi rendering unless a proven usability problem requires customization.
 
-## BK-031 returning-output integration — implementation candidate
+## BK-031 returning-output integration (released in 0.1.0)
 
 The Pi adapter owns trusted destination/policy selection independently of save permission. Guard read/search, validation metadata, write results and checkpoint previews before model-visible return. The actual current Pi provider/model/endpoint, selected vault/Project and allowed declared classes come from trusted host/UI state, never tool parameters. Core scope/context metadata helps enforce this boundary but is not authority. Static withheld results must not imply that mutation failed after it succeeded. Optional producer-reference synchronization uses trusted producer lookup and exact scoped references; it never reruns original work. No history-confined provider guarantee, new live disclosure choice or child inheritance is inferred.
 
@@ -114,13 +114,13 @@ Retained producer body permission is separate from reference registration and or
 BK-032 restoration keeps only opaque SHA-shaped bundle/registration handles and fixed part labels in old Bookie tool results; paths and bodies are withheld. The manifest remains in a bounded custom session entry, and reprepare requires its presence on the active branch plus fresh current disclosure. When composing several retained outputs, a generation change or failed aggregate recheck withholds all Bookie bodies in that context. A context with only one successfully validated result performs its complete currentness check once; every new context request validates again. Multiple successful results retain aggregate replay after asynchronous collection. A later failed validator or lifecycle change still withholds all Bookie bodies, including earlier successful results. Legacy same-session read/search observations are historical and scope/control/destination-checked rather than content-rescanned; exact current-source assurance belongs to prepared-context consumers. External edits are not frozen atomically, and assistant prose/compaction copies remain outside this filter boundary.
 
 
-## BK-033: scoped work-map consumer (authorized local dependent candidate)
+## BK-033: scoped work-map consumer (released in 0.1.0)
 
 `/bookie-work` selects one included work-map Document and plan from the current `/bookie-context` scope using trusted UI. The selection is session-local and resets on session/tree/model changes. `/bookie-work off` clears it. Selection grants no write, execution or acceptance authority. `bookie_work` returns a bounded projection for selected Task UIDs and their prerequisite closure, with current exact references and separate alignment, output, judgment and runtime dimensions. Unknown/missing owners remain explicit; no runtime observation comes from model tool arguments. Host adapters connect through a bounded optional event, and successful observations include an in-process currentness callback.
 
 Writes remain ordinary approved Document create/amend operations; a core validator/renderer checks the versioned work-map body before it is persisted. Existing selected exact context references provide the lesson input for Harness improvement proposals. No new background task, automatic skill deployment, canonical type, provider call or global index is introduced.
 
-Acceptance covers shared tasks across plans, acyclic hard prerequisites, selective task revision reuse, current output/judgment matching, absent owner behavior, blocked continuation, source/control/destination revocation and expected-revision write conflicts. Delivery remains blocked on the unmerged BK-032 dependency. The operator has explicitly authorized this local dependent implementation, not a merge or release.
+Acceptance covers shared tasks across plans, acyclic hard prerequisites, selective task revision reuse, current output/judgment matching, absent owner behavior, blocked continuation, source/control/destination revocation and expected-revision write conflicts. BK-032 and this dependent increment were delivered together in PR #42 and public 0.1.0. Original local implementation evidence retains its historical scope; current delivery is recorded separately.
 
 ### BK-033 operational use and boundaries
 
@@ -145,7 +145,7 @@ Version 1 bounds are 32 KiB canonical map JSON, 32 tasks, eight plans, 64 prereq
 Bookie optionally publishes the current guarded projection through Daddy's existing terminal-only dashboard source channel. The bounded view shows selected task dependencies, output/review status, declared repository labels and external-effect state; an omitted-task count is explicit. Registry publication remains unknown unless separately established—Git identity is not release proof. Sequence/freshness and owner-generation checks remain Daddy-owned; source/authority/lifecycle invalidation closes Bookie's publisher. An absent or failed dashboard cannot grant access or prevent a guarded model read.
 
 
-C09/C12 target outcomes use the existing work selection and reconciliation commands: select one owner-issued target per Task, confirm the exact original attempt/canonical receipt/outcome in trusted UI, and expose each current target separately in the projection and dashboard. Operator attestation is labelled distinctly from responsible-owner verification; unknown delivery blocks completion and remains unresolved. A missing owner cannot supply pending or published facts. This follow-up remains unmerged and requires its focused/composed evidence before qualification.
+C09/C12 target outcomes use the existing work selection and reconciliation commands: select one owner-issued target per Task, confirm the exact original attempt/canonical receipt/outcome in trusted UI, and expose each current target separately in the projection and dashboard. Operator attestation is labelled distinctly from responsible-owner verification; unknown delivery blocks completion and remains unresolved. A missing owner cannot supply pending or published facts. This follow-up is included in the public 0.1.0 delivery; its focused and composed evidence retains its original qualification scope. See [delivery evidence](../planning/evidence/public-delivery-0.1.0.md).
 
 For package-release targets, `principal_workflow` action `resource` with `packageRelease` returns the exact owner-issued target from the selected manifest and Git candidate; copy that target unchanged into the Task. This is target identity, not registry verification. Historical reconciliation uses the original target retained on the attempt even after the current package/goal changes; the current target is independently revalidated and does not inherit that old outcome. Dashboard details put outcome and provenance before bounded package/registry labels, with exact full target references available in the guarded work projection.
 
@@ -167,7 +167,7 @@ Work projections must direct an already applied exact effect toward required out
 
 Existing mutation validators and checkpoint preparation remain authoritative. When a write fails before publication, the adapter may add only fixed public-contract guidance selected by an existing diagnostic: MUTATION-PATH explains the vault-relative request.path contract; CONCEPT-SCHEMA with exact instancePath /bookie/state and keyword enum explains the concept-specific state contract and names the public Task states. Other schema diagnostics remain code-only. No arbitrary diagnostic pointer, file, message, submitted value or protected source is echoed.
 
-Checkpoint preparation's existing vault reason receives a fixed reminder to check the relative target and safe existing parent; it does not claim every vault failure is a path-format failure. Existing sensitivity-policy receives fixed guidance for Activity and fragment labels, without returning the manifest's class list or suggesting misclassification. The guard admits only exact catalog messages after its unchanged final disclosure/currentness check. Secret rejection, revoked authority and any possibly changed canonical state keep their existing protected outcomes. No input correction, retry, new permission, generated metadata, or weaker validation is introduced. See [BK-034 evidence](../planning/evidence/BK-034.md); this is an unmerged local candidate.
+Checkpoint preparation's existing vault reason receives a fixed reminder to check the relative target and safe existing parent; it does not claim every vault failure is a path-format failure. Existing sensitivity-policy receives fixed guidance for Activity and fragment labels, without returning the manifest's class list or suggesting misclassification. The guard admits only exact catalog messages after its unchanged final disclosure/currentness check. Secret rejection, revoked authority and any possibly changed canonical state keep their existing protected outcomes. No input correction, retry, new permission, generated metadata, or weaker validation is introduced. See [BK-034 implementation evidence](../planning/evidence/BK-034.md) and the separate [0.1.0 delivery record](../planning/evidence/public-delivery-0.1.0.md). The release does not expand the original verification scope.
 
 ### BK-035 canonical disclosure and recovery refinement
 
@@ -180,3 +180,22 @@ A failed remembered context validator still withholds the current request's comp
 Expose `bookie_export` as a read-only exact-commit operation under the existing human-selected context scope and destination. Explicit selectors identify 1–16 concept paths and optional expected source hashes. Return the complete canonical JSONL lines for that selection, with selected-record scope, resolved commit, exact source hashes, byte/count/hash metadata and untrusted content. Do not call a selected subset the complete vault export. No output path, working-tree substitute, unchecked-secret policy or model-selected authority is supported. Missing/denied/oversized selection refuses the complete result rather than truncating a JSONL record.
 
 Reuse core's validated canonical exporter and existing current historical-disclosure rules. Current UID/project/sensitivity, suppression, supported corrections, manifest exclusions and destination remain authoritative; a mere working-body edit does not replace pinned historical bytes. Full decoded frontmatter/title/body are checked against private suppression/exclusion identities; ordinary correction provenance links are preserved. Core's default high-confidence secret detector remains enabled, without claiming complete arbitrary-secret detection. Final and later context delivery revalidate current dependencies. No new artifact store, service, CLI file export or durable schema is introduced. Implementation/check evidence is tracked in BK-037; the sealed prior release remains separate.
+
+## BK-038: portable task-continuity guidance
+
+The operator-approved ecosystem improvement batch adds one discoverable
+`bookie-continuity` skill and its bounded checkpoint recipe. It guides existing
+Activity capture and exact prepared-context reads, retaining outcome, non-goals,
+phase, accepted verification routes, scoped user decision source references,
+open questions and evidence handles. It introduces no runtime changes or new
+canonical format. Applicable trusted conversation authority remains separate
+from untrusted remembered prose; no saved record grants permissions.
+
+The skill applies only when continuity helps the current task. It uses an
+already selected trusted Project and existing save/disclosure permissions, or a
+concise session/already-authorized local note when Bookie is unavailable. No
+global search, mandatory setup, background save, provider call, repeated retry
+or automatic authority restoration is introduced. Root Git/local and npm
+subpackage discovery must expose the same instruction resource, and the
+supporting recipe must survive package inclusion. Offline packaging checks
+establish availability only; fresh model behavior remains separately evaluated.

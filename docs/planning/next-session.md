@@ -1,3 +1,29 @@
+# Next-session handoff — 2026-11-07 UTC
+
+## Current local-ledger delivery and maintenance candidate
+
+BK-030–037 shipped in `pi-bookie`/`pi-bookie-core` 0.1.0 through
+[PR #42](https://github.com/mojomanyana/bookie-pi-skills/pull/42), merged at
+`9e51c892310506927570a8589479bb72d5cc7a17`, with successful exact-main CI and
+verified public archives. See [delivery evidence](evidence/public-delivery-0.1.0.md).
+Earlier unmerged/blocked snapshots below are historical, not the current package state.
+
+BK-038 adds optional task-continuity guidance and its checkpoint recipe using
+existing local capture/context APIs. Its implementation has the required check
+and independent review; release preparation targets `pi-bookie` 0.1.1 with exact
+`pi-bookie-core: 0.1.0`, without runtime or vault changes. This maintenance candidate
+is not committed or published. Final package/install verification and delivery
+remain separate from local implementation evidence. The current worktree contains
+the preserved operator-flow changes plus release metadata/status reconciliation.
+
+The shared retrieval service BK-017 remains partial. Its completion/serving,
+evaluation/cutover, production deployment and scale gates are not closed by the
+local-ledger release. OQ-014 still requires a representative accepted retrieval
+corpus/threshold before dependent evaluation. No new provider calls, real-vault
+operation, Docker service qualification or production claim is part of BK-038.
+
+## Previous dated handoffs (historical)
+
 # Next-session handoff — 2026-11-04 UTC
 
 ## Latest delivery — owned payload writer/verifier delivered in PR #40
