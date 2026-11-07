@@ -2,7 +2,7 @@
 
 ## Status
 
-In progress — packaged read, filesystem-search, validation, approved create/amend and structured checkpoint/pre-compaction workflows through BK-015 are merged. Subsequent BK-026/027/028 queue/result/request safety corrections merged in [PR #30](https://github.com/mojomanyana/bookie-pi-skills/pull/30) with successful matching PR and [merged-main CI](https://github.com/mojomanyana/bookie-pi-skills/actions/runs/40872106782); all three are Done. Earlier verification did not establish these repaired boundaries. BK-030–037 are delivered in the public 0.1.0 local-ledger packages through PR #42, with matching CI, tag and archive verification recorded in [delivery evidence](../planning/evidence/public-delivery-0.1.0.md). Service retrieval and remaining human/configuration commands remain later work. BK-038 is the local 0.1.1 instruction-only maintenance candidate; it is not yet delivered.
+In progress — packaged read, filesystem-search, validation, approved create/amend and structured checkpoint/pre-compaction workflows through BK-015 are merged. Subsequent BK-026/027/028 queue/result/request safety corrections merged in [PR #30](https://github.com/mojomanyana/bookie-pi-skills/pull/30) with successful matching PR and [merged-main CI](https://github.com/mojomanyana/bookie-pi-skills/actions/runs/40872106782); all three are Done. Earlier verification did not establish these repaired boundaries. BK-030–037 are delivered in the public 0.1.0 local-ledger packages through PR #42, with matching CI, tag and archive verification recorded in [delivery evidence](../planning/evidence/public-delivery-0.1.0.md). Service retrieval and remaining human/configuration commands remain later work. BK-038 is delivered in the 0.1.1 instruction-only Pi maintenance release through PR #43, with matching CI and exact archive verification recorded in [0.1.1 delivery](../planning/evidence/public-delivery-0.1.1.md).
 
 Owner: unassigned  
 Target release: 0.1  
@@ -10,7 +10,7 @@ Depends on: SPEC-002, [ADR-0009](../architecture/decisions/0009-structured-check
 
 ## Package distribution
 
-[ADR-0015](../architecture/decisions/0015-public-package-names.md) names the public Pi package `pi-bookie` at MIT0.1.0, with the exact automatic runtime dependency `pi-bookie-core: 0.1.0`. Keep `pi.extensions: ["./src/index.ts"]`, host Pi peer dependencies and existing tool/event names. The released baseline installs with `pi install npm:pi-bookie@0.1.0`; current local/Git installation remains supported. ADR-0015's dated maintenance clarification permits the local Pi 0.1.1 candidate with core 0.1.0 unchanged; it still requires exact paired package qualification and separate publication. The root, CLI and service remain private. Renaming does not deliver unfinished service work or import earlier archive qualification.
+[ADR-0015](../architecture/decisions/0015-public-package-names.md) names the public Pi package `pi-bookie` at MIT0.1.0, with the exact automatic runtime dependency `pi-bookie-core: 0.1.0`. Keep `pi.extensions: ["./src/index.ts"]`, host Pi peer dependencies and existing tool/event names. The current Pi release installs with `pi install npm:pi-bookie@0.1.1`; local/Git installation remains supported. ADR-0015's dated maintenance clarification permits Pi 0.1.1 with core 0.1.0 unchanged; exact paired package qualification and publication are recorded in the 0.1.1 delivery evidence. The root, CLI and service remain private. Renaming does not deliver unfinished service work or import earlier archive qualification.
 
 ## Goal
 

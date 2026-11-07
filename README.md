@@ -2,7 +2,7 @@
 
 Bookie is a local-first, Git-native project ledger for people and agents. It keeps tasks, documents, research, decisions, activity checkpoints, files, and evidence in an [Open Knowledge Format (OKF) v0.2](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)-compatible bundle and exposes disciplined workflows through a Pi extension.
 
-The local ledger foundation, BK-030–037, is released in `pi-bookie` and `pi-bookie-core` 0.1.0 under MIT. [PR #42](https://github.com/mojomanyana/bookie-pi-skills/pull/42), matching CI, immutable tag and exact npm archives are recorded in [delivery evidence](docs/planning/evidence/public-delivery-0.1.0.md). The 0.1.1 Pi maintenance candidate adds optional task-continuity guidance (BK-038); it is prepared locally, not yet published. Core remains 0.1.0.
+The local ledger foundation, BK-030–037, is released in `pi-bookie` and `pi-bookie-core` 0.1.0 under MIT. [PR #42](https://github.com/mojomanyana/bookie-pi-skills/pull/42), matching CI, immutable tag and exact npm archives are recorded in [delivery evidence](docs/planning/evidence/public-delivery-0.1.0.md). The released Pi maintenance version 0.1.1 adds optional task-continuity guidance (BK-038), delivered through [PR #43](https://github.com/mojomanyana/bookie-pi-skills/pull/43), matching CI and verified npm bytes; see [0.1.1 delivery](docs/planning/evidence/public-delivery-0.1.1.md). Core remains 0.1.0.
 
 [BK-032](docs/planning/evidence/BK-032.md) adds the local model-facing consumers: prepare/read/revalidate exact context handles, resolve registered producer references without a shell, and restore only opaque references after session changes. Trusted project/destination permission remains mandatory; producer text requires a separate explicit body choice. Missing components return unavailable rather than launching replacement work. These consumers are included in the 0.1.0 release; package delivery does not establish general live-provider or memory-quality guarantees.
 
@@ -46,14 +46,14 @@ These optional local features do not enable the unfinished retrieval service. Ex
 ## Package installation
 
 The released public package names are **pi-bookie** and its automatic dependency
-**pi-bookie-core**, both version 0.1.0 under MIT ([ADR-0015](docs/architecture/decisions/0015-public-package-names.md)). Install the Pi package with:
+**pi-bookie-core**, at versions 0.1.1 and 0.1.0 respectively under MIT ([ADR-0015](docs/architecture/decisions/0015-public-package-names.md)). Install the Pi package with:
 
 ```bash
-pi install npm:pi-bookie@0.1.0
+pi install npm:pi-bookie@0.1.1
 ```
 
-The local 0.1.1 Pi candidate adds the `bookie-continuity` skill and recipe while
-retaining core 0.1.0; use its new npm pin only after publication.
+The 0.1.1 Pi maintenance release adds the `bookie-continuity` skill and recipe
+while retaining the exact unchanged core 0.1.0 dependency.
 
 Core installs automatically; users do not need a second Pi package. Direct Node
 consumers import `pi-bookie-core`. Root, CLI and service remain private. Local/Git
