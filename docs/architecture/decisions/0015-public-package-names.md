@@ -52,3 +52,15 @@ dependencies, unchanged Pi entry/peers and the three private package boundaries.
 Run the existing required check and exact paired archive/install/loader checks.
 Rollback selects the preserved old private artifacts; do not rewrite historical
 receipts or transfer their hashes/acceptance to renamed artifacts.
+
+## Maintenance clarification — 2026-11-07
+
+The 0.1.0 versions above record the first public release, delivered in PR #42 and
+tag v0.1.0; they are not a permanent version lock. The authorized continuity
+instruction maintenance candidate is `pi-bookie` 0.1.1, retaining the exact
+automatic dependency `pi-bookie-core: 0.1.0`. Core runtime and its package remain
+unchanged. Private root/CLI/service boundaries, package names, tool identifiers,
+permission contracts, MIT notices and paired archive/install/host-loading gates
+remain unchanged. This patch does not advance the shared-retrieval milestone.
+Preparing a new version is not publication; [delivery evidence](../../planning/evidence/public-delivery-0.1.0.md)
+distinguishes the released baseline from this local candidate.
