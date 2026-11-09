@@ -1,0 +1,248 @@
+import { createRequire } from "node:module";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
+import {
+  inspectConcept,
+  inspectRecallScope,
+  type RecallScope,
+} from "pi-bookie-core";
+import { openManagedVault } from "./managed-vault.js";
+import type { VaultAuthority } from "./capture-authority.js";
+
+export interface ManagedSelection {
+  readonly vault: VaultAuthority;
+  readonly scope: RecallScope;
+}
+type Owner = {
+  version: 1;
+  sessionId: string;
+  cwd: string;
+  isCurrent(): boolean;
+};
+const object = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null;
+function ownerMatches(value: unknown, ctx: ExtensionContext): value is Owner {
+  return (
+    object(value) &&
+    value.version === 1 &&
+    value.cwd === ctx.cwd &&
+    value.sessionId === ctx.sessionManager?.getSessionId?.() &&
+    typeof value.isCurrent === "function" &&
+    value.isCurrent() === true
+  );
+}
+const inactive = () => Error("Automatic Bookie project memory is unavailable.");
+export function createManagedMemory(pi: ExtensionAPI) {
+  let active: ExtensionContext | undefined;
+  let slot: { owner: Owner; selection: Promise<ManagedSelection> } | undefined;
+  let publisher:
+    | { publish(payload: unknown): boolean; close(): void; sequence: number }
+    | undefined;
+  let displayEpoch = 0;
+  function hide() {
+    displayEpoch++;
+    const old = publisher;
+    publisher = undefined;
+    try {
+      old?.close();
+    } catch {
+      /* The dashboard is optional. */
+    }
+  }
+  function reset() {
+    slot = undefined;
+    active = undefined;
+    hide();
+  }
+  async function get(
+    ctx: ExtensionContext,
+  ): Promise<ManagedSelection | undefined> {
+    if (
+      !active ||
+      !ctx?.hasUI ||
+      !ctx.isProjectTrusted?.() ||
+      active.cwd !== ctx.cwd ||
+      !ctx.sessionManager?.getSessionId?.() ||
+      active.sessionManager?.getSessionId?.() !==
+        ctx.sessionManager.getSessionId()
+    )
+      return;
+    if (slot && !ownerMatches(slot.owner, ctx)) {
+      slot = undefined;
+      hide();
+    }
+    if (!slot) {
+      let lease: Owner | undefined;
+      pi.events?.emit?.("pi-daddy:request-project-memory-owner-v1", {
+        version: 1,
+        cwd: ctx.cwd,
+        sessionId: ctx.sessionManager.getSessionId(),
+        reply(value: unknown) {
+          if (ownerMatches(value, ctx)) lease = value;
+        },
+      });
+      if (!lease) return;
+      const owner = lease;
+      const session = active;
+      const assertOwner = async () => {
+        if (
+          active !== session ||
+          !ctx.isProjectTrusted() ||
+          !ownerMatches(owner, ctx)
+        )
+          throw inactive();
+      };
+      const initialize = async () => {
+        const managed = await openManagedVault(ctx.cwd, assertOwner);
+        const vault: VaultAuthority = {
+          root: managed.root,
+          async assertCurrent() {
+            await assertOwner();
+            await managed.assertCurrent();
+            await assertOwner();
+          },
+        };
+        await vault.assertCurrent();
+        const project = await inspectConcept(
+          vault.root,
+          { path: managed.project },
+          { maxContentBytes: 1 },
+        );
+        if (
+          !project.ok ||
+          project.type !== "Project" ||
+          project.handling === "excluded"
+        )
+          throw inactive();
+        const scoped = await inspectRecallScope(vault.root, project.source);
+        if (
+          !scoped.ok ||
+          !scoped.scope.sensitivityClasses.includes("internal") ||
+          scoped.scope.excludedClasses.includes("internal")
+        )
+          throw inactive();
+        await vault.assertCurrent();
+        return { vault, scope: scoped.scope };
+      };
+      slot = { owner, selection: initialize() };
+    }
+    const selected = slot;
+    try {
+      const result = await selected.selection;
+      await result.vault.assertCurrent();
+      return result;
+    } catch (error) {
+      if (slot === selected) {
+        slot = undefined;
+        hide();
+      }
+      throw error;
+    }
+  }
+  function show(ctx: ExtensionContext) {
+    const selected = slot;
+    if (!selected || !ownerMatches(selected.owner, ctx)) {
+      hide();
+      return;
+    }
+    const items = [
+      {
+        id: "project-memory",
+        kind: "work",
+        state: "observed",
+        label: "Current workspace memory",
+        details: ["Ready to save and recall routine project notes."],
+      },
+    ];
+    const publish = () => {
+      if (
+        publisher &&
+        !publisher.publish({ sequence: ++publisher.sequence, items })
+      )
+        hide();
+    };
+    try {
+      if (publisher) {
+        publish();
+        return;
+      }
+      const generation = ++displayEpoch;
+      pi.events?.emit?.("pi-daddy:dashboard-source:v1", {
+        version: 1,
+        sessionId: selected.owner.sessionId,
+        cwd: ctx.cwd,
+        producer: "bookie-memory",
+        producerVersion: (
+          createRequire(import.meta.url)("../package.json") as {
+            version: string;
+          }
+        ).version,
+        reply(value: unknown) {
+          if (
+            !object(value) ||
+            value.version !== 1 ||
+            value.ok !== true ||
+            typeof value.publish !== "function" ||
+            typeof value.close !== "function"
+          )
+            return;
+          if (
+            displayEpoch !== generation ||
+            slot !== selected ||
+            !ownerMatches(selected.owner, ctx)
+          ) {
+            value.close();
+            return;
+          }
+          publisher = {
+            publish: value.publish as (payload: unknown) => boolean,
+            close: value.close as () => void,
+            sequence: 0,
+          };
+          publish();
+        },
+      });
+    } catch {
+      hide();
+    }
+  }
+  function install(warm: (ctx: ExtensionContext) => Promise<boolean>) {
+    const refresh = async (ctx: ExtensionContext) => {
+      try {
+        if (await warm(ctx)) {
+          show(ctx);
+          return true;
+        }
+      } catch {
+        /* Recheck on use; startup continues. */
+      }
+      hide();
+      return false;
+    };
+    pi.on("session_start", async (_event, ctx) => {
+      reset();
+      active = ctx;
+      if (ctx) await refresh(ctx);
+    });
+    pi.on("session_shutdown", reset);
+    pi.on("model_select", hide);
+    pi.on("before_agent_start", async (event, ctx) => {
+      if (await refresh(ctx))
+        return {
+          systemPrompt:
+            event.systemPrompt +
+            "\nBookie project memory is ready in this workspace. Use bookie_remember for a routine project choice or short handoff on request or at a meaningful boundary. Use bookie_search without a vault to recall it. Keep personal and sensitive details out.",
+        };
+    });
+    pi.events?.on?.("pi-daddy:project-memory-owner-v1", () => {
+      if (slot && active && !ownerMatches(slot.owner, active)) {
+        slot = undefined;
+        hide();
+      }
+      if (active) void refresh(active);
+    });
+  }
+  return { get, install, hide };
+}

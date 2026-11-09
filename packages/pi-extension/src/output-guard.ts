@@ -51,12 +51,14 @@ export function guardBookieTool<P extends TSchema, D, S>(
       let entered = false;
       let ticket: Awaited<ReturnType<typeof authority.capture>> | undefined;
       try {
-        const root = resolve(
-          ctx.cwd,
+        const root =
           object(values) && typeof values.vault === "string"
-            ? values.vault.replace(/^@/, "")
-            : "",
-        );
+            ? resolve(ctx.cwd, values.vault.replace(/^@/, ""))
+            : await authority.selectedRoot(ctx);
+        const input =
+          object(values) && values.vault === undefined
+            ? { ...params, vault: root }
+            : params;
         const canonical =
           tool.name === "bookie_read" ||
           tool.name === "bookie_search" ||
@@ -69,7 +71,7 @@ export function guardBookieTool<P extends TSchema, D, S>(
         entered = true;
         const result = await tool.execute(
           callId,
-          params,
+          input,
           signal,
           undefined,
           ctx,
@@ -208,6 +210,9 @@ export function checkpointPreparationFailureMessage(
 
 const SAFE_ERRORS = new Set([
   ...Object.values(AUTHORING_FEEDBACK),
+  "Bookie needs a short non-sensitive project title and summary.",
+  "Bookie could not confirm the save. Recall this note before retrying.",
+  "Routine memory is unavailable. This workspace needs current Pi Daddy Auto and Bookie capture and disclosure authority.",
   "Bookie read failed: not-found.",
   "Bookie read failed: invalid-selector.",
   "Bookie read failed: incomplete.",

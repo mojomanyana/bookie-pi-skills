@@ -166,6 +166,7 @@ test("extension registers the BK-013 read-only tool contracts", () => {
       "bookie_validate",
       "bookie_write",
       "bookie_checkpoint",
+      "bookie_remember",
     ],
   );
   for (const tool of tools) {

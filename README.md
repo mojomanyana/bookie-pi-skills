@@ -6,6 +6,10 @@ The local ledger foundation, BK-030–037, is released in `pi-bookie` and `pi-bo
 
 [BK-032](docs/planning/evidence/BK-032.md) adds the local model-facing consumers: prepare/read/revalidate exact context handles, resolve registered producer references without a shell, and restore only opaque references after session changes. Trusted project/destination permission remains mandatory; producer text requires a separate explicit body choice. Missing components return unavailable rather than launching replacement work. These consumers are included in the 0.1.0 release; package delivery does not establish general live-provider or memory-quality guarantees.
 
+### Project memory with Pi Daddy Auto
+
+Start Pi in the folder for your project and describe a choice to remember. In a trusted parent session with Auto enabled, Bookie creates its private workspace memory on first use, saves short project notes, and can retrieve them in a later session opened in that folder. The extension keeps these records in Pi's user directory. Standalone Bookie retains manual vault and destination selection. See [automatic project memory](docs/architecture/decisions/0016-managed-project-auto.md).
+
 ## Current status
 
 | Area | Available now | Remaining work |
@@ -46,10 +50,10 @@ These optional local features do not enable the unfinished retrieval service. Ex
 ## Package installation
 
 The released public package names are **pi-bookie** and its automatic dependency
-**pi-bookie-core**, at versions 0.1.3 and 0.1.0 respectively under MIT ([ADR-0015](docs/architecture/decisions/0015-public-package-names.md)). Install the Pi package with:
+**pi-bookie-core**, licensed under MIT ([ADR-0015](docs/architecture/decisions/0015-public-package-names.md)). Install the Pi package with:
 
 ```bash
-pi install npm:pi-bookie@0.1.3
+pi install npm:pi-bookie
 ```
 
 The 0.1.1 Pi maintenance release adds the `bookie-continuity` skill and recipe

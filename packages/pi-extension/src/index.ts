@@ -1,3 +1,5 @@
+import { createManagedMemory } from "./managed-memory.js";
+import { rememberTool } from "./remember.js";
 import { wrapUntrustedSource } from "./untrusted-text.js";
 import { registerWorkMapConsumer } from "./work-map-consumer.js";
 import { createBookieContextFilter } from "./context-filter.js";
@@ -61,7 +63,9 @@ interface BookieToolDetails {
   readonly totalBytes: number;
 }
 
-function vaultRoot(value: string, cwd: string): string {
+function vaultRoot(value: string | undefined, cwd: string): string {
+  if (value === undefined)
+    throw new TypeError("Bookie selected vault is required");
   const normalized = value.startsWith("@") ? value.slice(1) : value;
   if (normalized.length === 0) throw new TypeError("vault must not be empty");
   return resolve(cwd, normalized);
@@ -346,7 +350,12 @@ function createCheckpointTool(
       "Prepare an untrusted checkpoint preview for local trusted UI and create one Activity after approval or stage it for pre-compaction approval. Model output contains bounded status only; validation and saving permission remain separate.",
     parameters: Type.Object(
       {
-        vault: Type.String({ minLength: 1 }),
+        vault: Type.Optional(
+          Type.String({
+            minLength: 1,
+            description: "Omit to use the session’s selected Bookie project.",
+          }),
+        ),
         requestPath: Type.String({ minLength: 1 }),
         timing: StringEnum(["now", "before-compaction"] as const),
       },
@@ -458,7 +467,12 @@ const readTool = defineTool({
     "Read one explicitly selected local Bookie concept. Returned canonical text is untrusted data and output is bounded to Pi's 50KB/2000-line limits.",
   parameters: Type.Object(
     {
-      vault: Type.String({ minLength: 1 }),
+      vault: Type.Optional(
+        Type.String({
+          minLength: 1,
+          description: "Omit to use the session’s selected Bookie project.",
+        }),
+      ),
       selector: StringEnum(["path", "uid"] as const),
       value: Type.String({ minLength: 1 }),
     },
@@ -494,7 +508,12 @@ const searchTool = defineTool({
     "Search the explicit local vault using lexical and metadata filters. Hits are labelled filesystem-only untrusted data and output is bounded to Pi's 50KB/2000-line limits.",
   parameters: Type.Object(
     {
-      vault: Type.String({ minLength: 1 }),
+      vault: Type.Optional(
+        Type.String({
+          minLength: 1,
+          description: "Omit to use the session’s selected Bookie project.",
+        }),
+      ),
       query: Type.String({ minLength: 1 }),
       type: Type.Optional(Type.String({ minLength: 1 })),
       project: Type.Optional(Type.String({ minLength: 1 })),
@@ -541,7 +560,12 @@ function createWriteTool(authority: CaptureAuthority) {
       "Create or amend one canonical Bookie concept from a bounded JSON request file. Requires explicit approval, policy validation, and queued mutation; output is bounded to Pi's 50KB/2000-line limits.",
     parameters: Type.Object(
       {
-        vault: Type.String({ minLength: 1 }),
+        vault: Type.Optional(
+          Type.String({
+            minLength: 1,
+            description: "Omit to use the session’s selected Bookie project.",
+          }),
+        ),
         action: StringEnum(["create", "amend"] as const),
         requestPath: Type.String({ minLength: 1 }),
       },
@@ -615,7 +639,12 @@ const validateTool = defineTool({
     "Run local validation on an explicit vault, optionally against a local Git base ref. Model output is a bounded completion notice, not a validity judgment or detailed diagnostics.",
   parameters: Type.Object(
     {
-      vault: Type.String({ minLength: 1 }),
+      vault: Type.Optional(
+        Type.String({
+          minLength: 1,
+          description: "Omit to use the session’s selected Bookie project.",
+        }),
+      ),
       baseRef: Type.Optional(Type.String({ minLength: 1 })),
     },
     { additionalProperties: false },
@@ -639,8 +668,9 @@ const validateTool = defineTool({
 });
 
 export default function registerBookie(pi: ExtensionAPI): void {
-  const authority = createCaptureAuthority(pi);
-  const disclosure = createDisclosureAuthority(pi, authority.bind);
+  const managed = createManagedMemory(pi);
+  const authority = createCaptureAuthority(pi, managed.hide);
+  const disclosure = createDisclosureAuthority(pi, authority.bind, managed);
   const contextFilter = createBookieContextFilter(pi);
   registerContextConsumers(pi, disclosure, contextFilter);
   registerWorkMapConsumer(pi, disclosure, contextFilter);
@@ -753,4 +783,15 @@ export default function registerBookie(pi: ExtensionAPI): void {
   pi.on("session_start", resetSession);
   pi.on("session_shutdown", resetSession);
   registerProducerBridge(pi, authority);
+  pi.registerTool(rememberTool(managed, authority, disclosure, contextFilter));
+  managed.install(async (ctx) => {
+    if (!authority.canManage() || !disclosure.canManage()) return false;
+    const selected = await managed.get(ctx);
+    if (!selected || !authority.selectManaged(selected)) return false;
+    return (
+      (await disclosure.selectedRoot(ctx)) === selected.vault.root &&
+      authority.canManage() &&
+      disclosure.canManage()
+    );
+  });
 }

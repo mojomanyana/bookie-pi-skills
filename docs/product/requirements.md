@@ -26,7 +26,7 @@ These requirements are authoritative. Specifications may refine them but may not
 
 | ID | Requirement |
 |---|---|
-| REQ-011 | Durable writes shall occur only after an explicit user request or approval. |
+| REQ-011 | Durable writes shall occur only after an explicit user request or approval. Pi Daddy Auto is standing approval for Bookie-managed routine memory in its trusted parent workspace (ADR-0016). |
 | REQ-012 | Checkpoints shall summarize outcomes, changed artifacts, decisions, evidence, validation, unresolved work, next action, and source session identity when available, using structured sensitivity-labelled fragments rather than full transcript storage. |
 | REQ-013 | Bookie tools and hooks shall never commit or push automatically. |
 | REQ-014 | Pi shall expose stable read, search, write, checkpoint, validate, and export capabilities through a custom extension. |
