@@ -122,3 +122,5 @@ shows how to persist that request and resume it with the selected project's
 capture and disclosure permissions.
 
 With a compatible Pi Daddy coordinator, `/bookie-work` lets you link finished task handoffs into the selected plan. When the dashboard shows **Ready for review**, use `/bookie-work review` to open the saved output. Closing it leaves the independent review pending. Select the work scope again when resuming a session.
+
+When Pi shares a public learning resource or other public reference, a managed project can remember the delivery as a separate Activity. Pi can stage an exact HTTPS URL using `bookie_remember` with `deliveryUrl`. A completed Scout result can supply cited URLs directly. Bookie matches the URL against the finished reply before saving it. Project recall can then distinguish a planned action from a resource actually shared. This records the shared reference, not an independent verification of the page. Plain publisher URLs are supported; private, credential-bearing and query URLs are outside this capture path.

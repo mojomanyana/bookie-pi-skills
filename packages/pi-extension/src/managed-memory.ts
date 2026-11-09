@@ -233,7 +233,7 @@ export function createManagedMemory(pi: ExtensionAPI) {
         return {
           systemPrompt:
             event.systemPrompt +
-            "\nBookie project memory is ready in this workspace. Use bookie_remember for a routine project choice or short handoff on request or at a meaningful boundary. Use bookie_search without a vault to recall it. Keep personal and sensitive details out.",
+            "\nBookie project memory is ready in this workspace. Save project decisions at meaningful boundaries. When newly delivering a public resource, use bookie_remember with its exact deliveryUrl, a task-specific title and short summary before giving the link, even if you already saved the decision. Bookie records the link once it appears in the completed reply. For a project recap, use bookie_search for the topic and for shared resources, read matching notes, and distinguish what was decided, delivered and still open. For a recap, reuse existing receipts without writing or researching again. Keep personal and sensitive details out.",
         };
     });
     pi.events?.on?.("pi-daddy:project-memory-owner-v1", () => {

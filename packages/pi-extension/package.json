@@ -1,6 +1,6 @@
 {
   "name": "pi-bookie",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": false,
   "type": "module",
   "keywords": [
@@ -30,6 +30,7 @@
     "test:built": "node --test test/*.test.mjs"
   },
   "dependencies": {
+    "mdast-util-from-markdown": "^2.0.3",
     "pi-bookie-core": "0.1.0"
   },
   "peerDependencies": {

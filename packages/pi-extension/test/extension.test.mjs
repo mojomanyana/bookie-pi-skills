@@ -1562,7 +1562,6 @@ test("staged checkpoint hook continues compaction on no UI or decline and writes
   const shutdown = allHandlers(extension, "session_shutdown");
   assert.equal(typeof beforeCompact, "function");
   assert.equal(typeof shutdown, "function");
-  assert.equal(extension.handlers.has("agent_end"), false);
   assert.equal(extension.handlers.has("agent_settled"), false);
 
   const staged = await checkpoint.execute(
@@ -1573,6 +1572,24 @@ test("staged checkpoint hook continues compaction on no UI or decline and writes
     context(repositoryRoot),
   );
   assert.equal(JSON.parse(textResult(staged)).result.status, "staged");
+  // Receiving a finished reply must never publish an ordinary pending checkpoint.
+  const closingContext = context(repositoryRoot, {
+    sessionManager: { getSessionId: () => "manual-checkpoint" },
+  });
+  await allHandlers(extension, "agent_start")({}, closingContext);
+  await allHandlers(extension, "agent_end")(
+    {
+      messages: [
+        {
+          role: "assistant",
+          stopReason: "stop",
+          content: [{ type: "text", text: "Here is https://web.dev/learn." }],
+        },
+      ],
+    },
+    closingContext,
+  );
+  await assert.rejects(readFile(join(vault, request.path)), { code: "ENOENT" });
   const secondRequestPath = join(parent, "second-staged.json");
   const secondRequest = checkpointRequest(
     "projects/fixture/activities/second-staged.md",
