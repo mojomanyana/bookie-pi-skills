@@ -24,6 +24,7 @@ This page is the stable entry point for product and engineering context.
 ## Delivery
 
 - [Public local-ledger delivery 0.1.0](planning/evidence/public-delivery-0.1.0.md) — PR #42, matching CI, immutable release and exact npm archive qualification for BK-030–037.
+- [Selected handoff review 0.1.3](planning/evidence/BK-041.md) — engineering and customer-update handoffs, review after resume, and changed-input handling.
 - [Checkpoint recovery delivery 0.1.2](planning/evidence/public-delivery-0.1.2.md) — BK-040 public release, live save and resume, and clean installation.
 - [Public continuity delivery 0.1.1](planning/evidence/public-delivery-0.1.1.md) — BK-038 delivered through PR #43, matching CI, immutable tag and exact npm archive; core 0.1.0 and the unfinished shared service are unchanged.
 
