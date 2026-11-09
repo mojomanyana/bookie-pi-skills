@@ -10,7 +10,7 @@ Depends on: SPEC-002, [ADR-0009](../architecture/decisions/0009-structured-check
 
 ## Package distribution
 
-[ADR-0015](../architecture/decisions/0015-public-package-names.md) names the public Pi package `pi-bookie` at MIT0.1.0, with the exact automatic runtime dependency `pi-bookie-core: 0.1.0`. Keep `pi.extensions: ["./src/index.ts"]`, host Pi peer dependencies and existing tool/event names. The current Pi release installs with `pi install npm:pi-bookie@0.1.1`; local/Git installation remains supported. ADR-0015's dated maintenance clarification permits Pi 0.1.1 with core 0.1.0 unchanged; exact paired package qualification and publication are recorded in the 0.1.1 delivery evidence. The root, CLI and service remain private. Renaming does not deliver unfinished service work or import earlier archive qualification.
+[ADR-0015](../architecture/decisions/0015-public-package-names.md) names the public Pi package `pi-bookie` at MIT0.1.0, with the exact automatic runtime dependency `pi-bookie-core: 0.1.0`. Keep `pi.extensions: ["./src/index.ts"]`, host Pi peer dependencies and existing tool/event names. The current Pi release installs with `pi install npm:pi-bookie@0.1.2`; local/Git installation remains supported. ADR-0015's dated maintenance clarification permits Pi 0.1.1 with core 0.1.0 unchanged; exact paired package qualification and publication are recorded in the 0.1.1 delivery evidence. The root, CLI and service remain private. Renaming does not deliver unfinished service work or import earlier archive qualification.
 
 ## Goal
 
@@ -201,7 +201,7 @@ supporting recipe must survive package inclusion. Offline packaging checks
 establish availability only; fresh model behavior remains separately evaluated.
 
 
-### Checkpoint feedback and explicit host metadata (BK-040, local reliability candidate)
+### Checkpoint feedback and explicit host metadata (BK-040, [0.1.2 delivery](../planning/evidence/public-delivery-0.1.2.md))
 
 An invalid checkpoint input fails before publication with fixed actionable guidance for complete Activity metadata, valid actor syntax and ACT-ULID identity. No private input value, fragment, path or validator detail is echoed. Exact static Bookie error messages remain failed historical status through context filtering, including reload or disclosure loss; their details and every unrecognized error remain withheld. This neither restores permissions nor current data. Existing uncertain-write warnings remain uncertain and prohibit blind retry. Dynamic diagnostic text is not admitted to history by a broad error regex.
 
