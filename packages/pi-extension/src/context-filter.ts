@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isStaticBookieErrorMessage } from "./output-guard.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 const digest = (value: unknown) =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -52,6 +53,15 @@ function referenceNotice(content: unknown) {
       .map((value) => JSON.parse(value) as object),
   });
 }
+function publicFailure(message: { isError?: boolean; content: unknown }) {
+  return (
+    message.isError === true &&
+    Array.isArray(message.content) &&
+    message.content.length === 1 &&
+    message.content[0]?.type === "text" &&
+    isStaticBookieErrorMessage(message.content[0].text)
+  );
+}
 /** Filters only Bookie-owned tool results; quotations in other messages are outside this boundary. */
 export function createBookieContextFilter(pi: ExtensionAPI) {
   const live = new Map<
@@ -88,6 +98,14 @@ export function createBookieContextFilter(pi: ExtensionAPI) {
         !message.toolName.startsWith("bookie_")
       ) {
         messages.push(message);
+        continue;
+      }
+      // A fixed failure is historical status, not a returned body or permission.
+      // It must remain intelligible after reset/revocation without restoring data.
+      if (publicFailure(message)) {
+        const { details: _details, ...rest } = message;
+        void _details;
+        messages.push(rest);
         continue;
       }
       const entry = live.get(message.toolCallId);
@@ -143,7 +161,8 @@ export function createBookieContextFilter(pi: ExtensionAPI) {
         messages: messages.map((message) => {
           if (
             message.role !== "toolResult" ||
-            !message.toolName.startsWith("bookie_")
+            !message.toolName.startsWith("bookie_") ||
+            publicFailure(message)
           )
             return message;
           return {

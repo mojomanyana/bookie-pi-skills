@@ -55,3 +55,10 @@ Tests must capture the prepared preview, canonical Activity bytes, thrown errors
 ## Rollback and revisit trigger
 
 Rollback removes the checkpoint tool/hook and core preparation API; no migration is needed because created Activities already conform to the canonical profile. Revisit when users need deterministic metadata generation, durable drafts across sessions, or measured workflows cannot provide structured sensitivity labels. Any transcript-derived summarization requires a new decision covering provider trust, classification, prompt injection, and preview redaction.
+
+
+## Explicit host metadata helper (BK-040, 2026-11-09)
+
+The operator-authorized reliability repair addresses the measured checkpoint failure caused by model-invented actor/UID syntax. A separate Pi-package helper, `createCheckpointMetadata`, explicitly constructs an Activity ULID, process actor and UTC timestamp from the real trusted host session identifier and cryptographic entropy. Callers may inject time/entropy for deterministic tests. It performs no I/O, vault/project selection, classification, approval or publication. The complete request must be persisted once and reused after interruption; unknown outcomes do not authorize new identities or resubmission. It never invents a human author.
+
+This is the narrowly accepted shared host constructor contemplated by OQ-010/OQ-012. Core `prepareCheckpoint` remains deterministic over complete caller-supplied metadata and keeps every validator unchanged. The tool still accepts the same request file. No transcript extraction, implicit generation inside preparation, automatic save or CLI write surface is introduced. Removing the optional helper leaves existing explicit requests and canonical records valid.

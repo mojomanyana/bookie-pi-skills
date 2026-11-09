@@ -110,8 +110,9 @@ inside an already selected project. Without Bookie access it uses the current
 session or an already-authorized local note; it does not require setup before
 ordinary work continues. Stored summaries never supply permissions.
 
-Both the root Git/local manifest and this 0.1.1 Pi maintenance candidate advertise
-this skill. The candidate is not yet published; the released 0.1.0 package does
-not include it. Its [fragment recipe](skills/bookie-continuity/references/checkpoint-recipe.md)
-ships with the package. This is instruction guidance, not a new automatic hook,
-schema, approval engine or claim of measured model quality.
+Both the Git/local and npm package manifests advertise the continuity skill.
+A trusted Pi caller can use `createCheckpointMetadata` from
+`pi-bookie/dist/checkpoint-metadata.js` to construct a checkpoint once from the
+current session identity. The [checkpoint recipe](skills/bookie-continuity/references/checkpoint-recipe.md)
+shows how to persist that request and resume it with the selected project's
+capture and disclosure permissions.

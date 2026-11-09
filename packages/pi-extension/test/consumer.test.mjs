@@ -896,3 +896,122 @@ test("bounded Pi export hides unselected preflight diagnostics and refuses repla
     },
   );
 });
+
+test("host metadata saves one checkpoint and resume retrieves its exact current Activity without restoring grants", async (t) => {
+  const f = await fixture(t);
+  const { createCheckpointMetadata } =
+    await import("pi-bookie/dist/checkpoint-metadata.js");
+  const metadata = createCheckpointMetadata({
+    sessionId: f.ctx.sessionManager.getSessionId(),
+  });
+  const target = "projects/fixture/activities/host-checkpoint.md";
+  const sections = [
+    "outcome",
+    "changed-artifacts",
+    "decisions",
+    "evidence",
+    "validation",
+    "unresolved-work",
+    "next-action",
+  ];
+  const request = {
+    path: target,
+    frontmatter: {
+      type: "Activity",
+      title: "Resume checkpoint",
+      status: "stable",
+      generated: metadata.generated,
+      bookie: {
+        profile: "1.0",
+        uid: metadata.uid,
+        project: "/projects/fixture/project.md",
+        occurred_at: metadata.occurred_at,
+        sensitivity: "public",
+      },
+    },
+    fragments: sections.map((section) => ({
+      section,
+      sensitivity: "public",
+      text:
+        section === "next-action"
+          ? "Continue from the already verified draft; do not rebuild it."
+          : "None.",
+    })),
+  };
+  const requestPath = join(f.dir, "checkpoint.json");
+  const requestBytes = JSON.stringify(request);
+  await writeFile(requestPath, requestBytes, { flag: "wx" });
+  const inputs = [f.vault, "/projects/fixture/project.md"];
+  await f.commands.get("bookie-capture").handler("", {
+    ...f.ctx,
+    hasUI: true,
+    ui: {
+      ...f.ctx.ui,
+      input: async () => inputs.shift(),
+      select: async () => "Structured summaries",
+    },
+  });
+  const saved = parsed(
+    await f.call("bookie_checkpoint", {
+      vault: f.vault,
+      requestPath,
+      timing: "now",
+    }),
+  );
+  assert.equal(saved.result.status, "created");
+  const activityBytes = await readFile(join(f.vault, target));
+  const read = parsed(
+    await f.call("bookie_read", {
+      vault: f.vault,
+      selector: "path",
+      value: "/" + target,
+    }),
+  );
+  const source = read.result.source;
+  const first = parsed(
+    await f.call("bookie_context_prepare", {
+      selectors: [{ path: "/" + target, sourceHash: source.sourceHash }],
+    }),
+  );
+  await f.emit("session_shutdown");
+  await f.emit("session_start", { reason: "resume" });
+  await assert.rejects(
+    f.call("bookie_context_read", { bundleId: first.bundleId, action: "read" }),
+    /denied|stale/,
+  );
+  await authorizeDisclosure(f.commands, f.vault, f.ctx);
+  await assert.rejects(
+    f.call("bookie_context_read", { bundleId: first.bundleId, action: "read" }),
+    /stale/,
+  );
+  const rebuilt = parsed(
+    await f.call("bookie_context_prepare", { fromBundleId: first.bundleId }),
+  );
+  const current = parsed(
+    await f.call("bookie_context_read", {
+      bundleId: rebuilt.bundleId,
+      action: "read",
+    }),
+  );
+  assert.equal(current.status, "resolved");
+  assert.match(current.excerpt, /Continue from the already verified draft/);
+  assert.match(current.excerpt, new RegExp(metadata.uid));
+  assert.match(current.excerpt, new RegExp(source.sourceHash));
+  await assert.rejects(
+    f.call("bookie_checkpoint", { vault: f.vault, requestPath, timing: "now" }),
+    /trusted approval/,
+  );
+  assert.deepEqual(await readFile(join(f.vault, target)), activityBytes);
+  assert.equal(await readFile(requestPath, "utf8"), requestBytes);
+  await writeFile(
+    join(f.vault, target),
+    Buffer.concat([activityBytes, Buffer.from("\nChanged source.\n")]),
+  );
+  await assert.rejects(
+    f.call("bookie_context_read", {
+      bundleId: rebuilt.bundleId,
+      action: "read",
+    }),
+    /stale/,
+  );
+});

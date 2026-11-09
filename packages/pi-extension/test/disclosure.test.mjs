@@ -381,3 +381,187 @@ test("capture and currentness refuse grant revocation during the final recall re
     });
   }
 });
+
+test("invalid checkpoint metadata stays a visible pre-write failure through context and reload", async (t) => {
+  const f = await setup(t);
+  await f.grant();
+  const { createHash } = await import("node:crypto");
+  const { readdir } = await import("node:fs/promises");
+  async function inventory() {
+    const files = await readdir(f.vault, {
+      recursive: true,
+      withFileTypes: true,
+    });
+    return Promise.all(
+      files
+        .filter((entry) => entry.isFile())
+        .map(async (entry) => {
+          const path = join(entry.parentPath, entry.name);
+          return [
+            path,
+            createHash("sha256")
+              .update(await readFile(path))
+              .digest("hex"),
+          ];
+        }),
+    );
+  }
+  const before = await inventory();
+  const sections = [
+    "outcome",
+    "changed-artifacts",
+    "decisions",
+    "evidence",
+    "validation",
+    "unresolved-work",
+    "next-action",
+  ];
+  const original = {
+    path: "projects/fixture/activities/feedback.md",
+    frontmatter: {
+      type: "Activity",
+      title: "Private title must not be returned",
+      status: "stable",
+      generated: { by: "process:pi:session", at: "2026-11-09T00:00:00.000Z" },
+      bookie: {
+        profile: "1.0",
+        uid: "ACT-00000000000000000000000160",
+        project: "/projects/fixture/project.md",
+        occurred_at: "2026-11-09T00:00:00.000Z",
+        sensitivity: "public",
+      },
+    },
+    fragments: sections.map((section) => ({
+      section,
+      sensitivity: "public",
+      text: "PRIVATE FRAGMENT",
+    })),
+  };
+  assert.equal((await core.prepareCheckpoint(f.vault, original)).ok, true);
+  const messages = [];
+  for (const name of ["actor", "uid", "both"]) {
+    const request = structuredClone(original);
+    if (name !== "uid")
+      request.frontmatter.generated.by = "pi-session:PRIVATE-ACTOR";
+    if (name !== "actor")
+      request.frontmatter.bookie.uid =
+        "ACT-40EE6F50-F831-4B23-AE92-C5FCD30EB2A1";
+    const requestPath = join(f.vault, "..", name + ".json");
+    const bytes = JSON.stringify(request);
+    await writeFile(requestPath, bytes);
+    let failure;
+    await assert.rejects(
+      f.tools
+        .get("bookie_checkpoint")
+        .execute(
+          name,
+          { vault: f.vault, requestPath, timing: "now" },
+          undefined,
+          undefined,
+          f.ctx,
+        ),
+      (error) => {
+        failure = error.message;
+        assert.match(
+          failure,
+          /^Bookie checkpoint failed: input\. No checkpoint was written\./,
+        );
+        assert.match(failure, /generated\.by/);
+        assert.match(failure, /bookie\.uid/);
+        assert.doesNotMatch(failure, /PRIVATE|40EE6F50|may have changed/);
+        return true;
+      },
+    );
+    assert.equal(await readFile(requestPath, "utf8"), bytes);
+    assert.deepEqual(await inventory(), before);
+    messages.push({
+      role: "toolResult",
+      toolCallId: name,
+      toolName: "bookie_checkpoint",
+      isError: true,
+      timestamp: 1,
+      content: [{ type: "text", text: failure }],
+      details: { private: "PRIVATE DETAILS" },
+    });
+  }
+  const filter = async () => {
+    let result = { messages };
+    for (const handler of f.handlers.get("context") || [])
+      result = await handler(result, f.ctx);
+    for (let i = 0; i < messages.length; i++) {
+      assert.deepEqual(result.messages[i].content, messages[i].content);
+      assert.equal(result.messages[i].isError, true);
+      assert.equal(result.messages[i].details, undefined);
+    }
+  };
+  await filter();
+  await f.commands.get("bookie-context").handler("off", f.ctx);
+  await filter();
+  for (const handler of f.handlers.get("session_start") || [])
+    await handler({ reason: "resume" }, f.ctx);
+  await filter();
+  await assert.rejects(f.read(), /disclosure authority|withheld/);
+});
+
+test("context preserves fixed uncertain-write warnings but never arbitrary exception text or success bodies", async () => {
+  const { createBookieContextFilter } =
+    await import("../dist/context-filter.js");
+  const handlers = new Map();
+  createBookieContextFilter({
+    on: (name, handler) => handlers.set(name, handler),
+  });
+  const warning =
+    "Bookie local state may have changed; protected output withheld. Inspect locally before retrying.";
+  const values = [
+    { isError: true, text: warning },
+    { isError: true, text: "PRIVATE exception /home/private/token" },
+    { isError: false, text: warning },
+  ];
+  const messages = values.map((value, i) => ({
+    role: "toolResult",
+    toolCallId: String(i),
+    toolName: "bookie_checkpoint",
+    isError: value.isError,
+    timestamp: 1,
+    content: [{ type: "text", text: value.text }],
+    details: { secret: "PRIVATE" },
+  }));
+  const { messages: filtered } = await handlers.get("context")({ messages });
+  assert.equal(filtered[0].content[0].text, warning);
+  assert.match(filtered[1].content[0].text, /reference-only history/);
+  assert.match(filtered[2].content[0].text, /reference-only history/);
+  assert.doesNotMatch(JSON.stringify(filtered), /PRIVATE/);
+});
+
+test("safe failure remains when a different remembered result loses authority", async () => {
+  const { createBookieContextFilter } =
+    await import("../dist/context-filter.js");
+  const { checkpointPreparationFailureMessage } =
+    await import("../dist/output-guard.js");
+  const handlers = new Map();
+  const filter = createBookieContextFilter({
+    on: (name, handler) => handlers.set(name, handler),
+  });
+  const message = (toolCallId, isError, text) => ({
+    role: "toolResult",
+    toolName: "bookie_checkpoint",
+    toolCallId,
+    isError,
+    timestamp: 1,
+    content: [{ type: "text", text }],
+  });
+  const safe = message(
+    "safe",
+    true,
+    checkpointPreparationFailureMessage("input"),
+  );
+  const privateBody = message("private", false, "PRIVATE BODY");
+  filter.remember("private", privateBody, async () => {
+    throw Error("revoked");
+  });
+  const result = await handlers.get("context")({
+    messages: [safe, privateBody],
+  });
+  assert.deepEqual(result.messages[0].content, safe.content);
+  assert.doesNotMatch(JSON.stringify(result), /PRIVATE BODY/);
+});

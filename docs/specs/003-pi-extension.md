@@ -199,3 +199,12 @@ or automatic authority restoration is introduced. Root Git/local and npm
 subpackage discovery must expose the same instruction resource, and the
 supporting recipe must survive package inclusion. Offline packaging checks
 establish availability only; fresh model behavior remains separately evaluated.
+
+
+### Checkpoint feedback and explicit host metadata (BK-040, local reliability candidate)
+
+An invalid checkpoint input fails before publication with fixed actionable guidance for complete Activity metadata, valid actor syntax and ACT-ULID identity. No private input value, fragment, path or validator detail is echoed. Exact static Bookie error messages remain failed historical status through context filtering, including reload or disclosure loss; their details and every unrecognized error remain withheld. This neither restores permissions nor current data. Existing uncertain-write warnings remain uncertain and prohibit blind retry. Dynamic diagnostic text is not admitted to history by a broad error regex.
+
+The separately exported `pi-bookie/dist/checkpoint-metadata.js` helper accepts an actual host session ID, default current time and cryptographic entropy; bounded explicit overrides permit deterministic tests. It returns only schema-compatible identity/actor/time fields. It does not choose a Project/path/class, read history, authorize capture or save. The complete persisted request remains the unit of preparation, confirmation and recovery. Core preparation and schemas are unchanged; see ADR-0009's dated host-helper clarification.
+
+Acceptance includes actor-only, UID-only and combined invalid input with unchanged vault/request and absent target; fixed failures survive context and reset without recovering protected bodies; true post-mutation uncertainty remains; valid helper metadata passes actual core validation, saves exactly one Activity through trusted capture, resumes only after fresh disclosure selection, and refuses changed input. Pure helper tests reject malformed session/time/entropy and preserve deterministic identity when supplied explicit test inputs. Installed package payload verification must include the documented helper path. No provider or shared-service test is required for these mechanical contracts.
