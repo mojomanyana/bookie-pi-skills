@@ -11,6 +11,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { lstat, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
+import type { ManagedSelection } from "./managed-memory.js";
 
 export interface VaultAuthority {
   readonly root: string;
@@ -23,7 +24,9 @@ export interface ReferenceCaptureGrant {
   readonly sensitivity: string;
   assertCurrent(): Promise<void>;
 }
-export function createCaptureAuthority(pi: ExtensionAPI) {
+export function createCaptureAuthority(pi: ExtensionAPI, onManual = () => {}) {
+  let allowManaged = true;
+  let managedSelection: ManagedSelection | undefined;
   let epoch = 0;
   let captureEpoch = 0;
   let grant:
@@ -37,6 +40,8 @@ export function createCaptureAuthority(pi: ExtensionAPI) {
     | undefined;
   let sync: ((ctx: ExtensionContext) => Promise<void>) | undefined;
   function reset() {
+    allowManaged = true;
+    managedSelection = undefined;
     epoch++;
     captureEpoch++;
     grant = undefined;
@@ -133,6 +138,9 @@ export function createCaptureAuthority(pi: ExtensionAPI) {
         );
       if (args.trim() === "off") {
         captureEpoch++;
+        allowManaged = false;
+        managedSelection = undefined;
+        onManual();
         grant = undefined;
         ctx.ui.notify("Bookie routine capture disabled.", "info");
         return;
@@ -229,6 +237,9 @@ export function createCaptureAuthority(pi: ExtensionAPI) {
       }
       if (captureEpoch !== revision)
         throw Error("Bookie capture permission changed.");
+      allowManaged = false;
+      managedSelection = undefined;
+      onManual();
       grant = {
         vault,
         project: project.source.path,
@@ -244,6 +255,28 @@ export function createCaptureAuthority(pi: ExtensionAPI) {
   });
   return {
     bind,
+    canManage: () => allowManaged,
+    selectManaged(selected: ManagedSelection) {
+      if (!allowManaged) return false;
+      if (managedSelection !== selected) {
+        managedSelection = selected;
+        grant = {
+          vault: selected.vault,
+          project: selected.scope.project.path,
+          projectHash: selected.scope.project.sourceHash,
+          summaries: true,
+          sensitivity: "internal",
+        };
+      }
+      return true;
+    },
+    async assertManaged(selected: ManagedSelection) {
+      if (!allowManaged || managedSelection !== selected)
+        throw Error("Bookie capture permission was revoked.");
+      await selected.vault.assertCurrent();
+      if (!allowManaged || managedSelection !== selected)
+        throw Error("Bookie capture permission was revoked.");
+    },
     standingCheckpoint,
     reset,
     hasStanding: () => grant?.summaries === true,

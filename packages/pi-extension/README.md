@@ -1,5 +1,9 @@
 # `pi-bookie`
 
+**Start with an empty folder.** Open the folder as a trusted Pi project. With Pi Daddy Auto on, Bookie provides private memory for that folder without a setup command, Git repository, or project files. Tell Pi a decision in your own words. For example: “I'll choose the theme for our community workshop. Ask me for it, then remember my answer.” In a new Pi session in the same folder ask “What workshop theme did I choose?” A different folder has its own memory.
+
+Pi can call `bookie_remember` to retain a short project note and `bookie_search` or `bookie_read` without a vault path to recall it. Auto covers routine project notes at meaningful boundaries. It does not import old vaults, record whole conversations, publish notes, or enable JEV. Bookie checks the current model destination before returning note contents. Turning off Pi Daddy Auto ends this automatic access; it does not erase saved notes. With Pi Daddy absent or Auto off, explicit Bookie project selection remains available as before.
+
 Distributable Pi package for Bookie tools. Canonical behavior belongs in `pi-bookie-core`; follow [SPEC-003](../../docs/specs/003-pi-extension.md) and the Pi-specific constraints in [AGENTS.md](../../AGENTS.md#pi-implementation-constraints).
 
 BK-013 through BK-015 expose five local tools:
@@ -12,7 +16,7 @@ BK-013 through BK-015 expose five local tools:
 
 Excluded write successes serialize an explicit `redacted: true` variant without source/previous hashes, identities or source sizes; included and policy-neutral contracts retain their required hashes. Consumers must narrow that variant before reading hashes. Rollback disables affected writes, never restores fingerprint leakage ([BK-027](../../docs/planning/evidence/BK-027.md)).
 
-Every tool requires an explicit `vault` path, propagates cancellation, throws on operational failure, and bounds output to Pi's 50KB/2,000-line limits. Retrieved text is labelled untrusted. Excluded reads fail with static redaction. Write and checkpoint arguments cannot assert approval. Ordinary writes require trusted Pi UI confirmation of the canonical vault, target and exact request snapshot. Non-interactive calls fail closed unless a structured checkpoint matches the human-selected session permission below. Checkpoint preparation accepts complete caller-supplied metadata, never raw transcripts, and generates no canonical identity or timestamp. Declined, cancelled, failed, and no-UI pre-compaction capture never blocks compaction. The package starts no background resource and performs no network, commit, or push operation.
+The original tools accept an explicit vault path. Search and read can also use the currently selected project. Operational failures are reported as errors; tool output remains bounded to Pi's 50KB/2,000-line limits. Retrieved text is labelled untrusted. Excluded reads fail with static redaction. Write and checkpoint arguments cannot assert approval. Ordinary writes require trusted Pi UI confirmation of the canonical vault, target and exact request snapshot. Non-interactive calls fail closed unless a structured checkpoint matches the human-selected session permission below. Checkpoint preparation accepts complete caller-supplied metadata, never raw transcripts, and generates no canonical identity or timestamp. Declined, cancelled, failed, and no-UI pre-compaction capture never blocks compaction. The package starts no background resource and performs no network, commit, or push operation.
 
 Run `/bookie-capture` in Pi to select an existing canonical vault and Project and approve routine Activity capture for this session. Matching checkpoints may retain vault-declared, non-excluded `public` or `internal` summaries and evidence references without another dialog. Other writes still ask. Run `/bookie-capture off` to revoke; reload, session replacement, fork and shutdown also revoke, and children inherit nothing. Labels are assertions, not semantic detection of personal data; this local storage permission grants no disclosure, sharing or training authority.
 
@@ -20,9 +24,9 @@ Cooperating Bookie writers hold `.bookie-write.lock` over revision checks and pu
 
 Request files open nonblocking/no-follow, then must be stable, singly linked regular files. The 2,000,000-byte endpoint is accepted; one extra byte, malformed UTF-8/JSON, FIFO/substitution, directory, symlink or hardlink fails statically. Request abort reasons are not echoed. Failed immediate/staged checkpoint reads release the session slot before returning ([BK-028](../../docs/planning/evidence/BK-028.md)).
 
-The public 0.1.0 package is `pi-bookie`, licensed under MIT. It declares the exact
+The public package is `pi-bookie`, licensed under MIT. It declares the exact
 runtime dependency `pi-bookie-core: 0.1.0`, installed automatically.
-Install it with `pi install npm:pi-bookie@0.1.0`. Historical private
+Install it with `pi install npm:pi-bookie`. Historical private
 names and earlier qualification records remain historical. Avoid loading an old
 private Bookie entry alongside the new one; tool names, vault formats and trusted
 permission setup have not changed.

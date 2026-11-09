@@ -14,6 +14,10 @@ import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import type {
+  ManagedSelection,
+  createManagedMemory,
+} from "./managed-memory.js";
 import type { VaultAuthority } from "./capture-authority.js";
 const producerScopeKey = (value: ProducerReference) =>
   hash([value.producer, value.producerInstance, value.owner]);
@@ -65,10 +69,13 @@ async function destination(ctx: ExtensionContext) {
 export function createDisclosureAuthority(
   pi: ExtensionAPI,
   bind: (root: string, ctx: ExtensionContext) => Promise<VaultAuthority>,
+  managed?: ReturnType<typeof createManagedMemory>,
 ) {
   let epoch = 0;
+  let allowManaged = true;
   type Grant = {
     vault: VaultAuthority;
+    managed?: ManagedSelection;
     scope: RecallScope;
     classes: readonly string[];
     destination: Awaited<ReturnType<typeof destination>>;
@@ -77,10 +84,40 @@ export function createDisclosureAuthority(
     bodyScopes: Map<string, string>;
   };
   let grant: Grant | undefined;
-  const reset = () => {
+  const invalidate = () => {
     epoch++;
     grant = undefined;
   };
+  const reset = () => {
+    allowManaged = true;
+    invalidate();
+  };
+  async function selectedFor(ctx: ExtensionContext) {
+    if (!allowManaged || !managed) return grant;
+    const revision = epoch;
+    const project = await managed.get(ctx);
+    if (!project) return;
+    if (grant?.managed === project) return grant;
+    const target = await destination(ctx);
+    await project.vault.assertCurrent();
+    if (epoch !== revision || !allowManaged) throw Error(DISCLOSURE_WITHHELD);
+    if (grant?.managed === project) return grant;
+    grant = {
+      vault: project.vault,
+      managed: project,
+      scope: project.scope,
+      classes: ["internal", "public"].filter(
+        (x) =>
+          project.scope.sensitivityClasses.includes(x) &&
+          !project.scope.excludedClasses.includes(x),
+      ),
+      destination: target,
+      revision,
+      id: randomUUID(),
+      bodyScopes: new Map(),
+    };
+    return grant;
+  }
   async function check(selected: Grant, ctx: ExtensionContext) {
     if (grant !== selected || epoch !== selected.revision)
       throw Error(DISCLOSURE_WITHHELD);
@@ -97,6 +134,11 @@ export function createDisclosureAuthority(
       epoch !== selected.revision
     )
       throw Error(DISCLOSURE_WITHHELD);
+    if (selected.managed) {
+      await selected.vault.assertCurrent();
+      if (grant !== selected || epoch !== selected.revision)
+        throw Error(DISCLOSURE_WITHHELD);
+    }
   }
   pi.registerCommand("bookie-context", {
     description:
@@ -105,7 +147,9 @@ export function createDisclosureAuthority(
       if (!ctx.hasUI)
         throw Error("Bookie context settings require trusted interactive UI.");
       if (args.trim() === "off") {
-        reset();
+        allowManaged = false;
+        managed?.hide();
+        invalidate();
         ctx.ui.notify("Bookie model disclosure disabled.", "info");
         return;
       }
@@ -266,11 +310,13 @@ export function createDisclosureAuthority(
         id: randomUUID(),
         bodyScopes: new Map(),
       };
+      allowManaged = false;
+      managed?.hide();
       grant = selected;
       try {
         await check(selected, ctx);
       } catch {
-        if (grant === selected) reset();
+        if (grant === selected) invalidate();
         throw Error(DISCLOSURE_WITHHELD);
       }
       ctx.ui.notify(
@@ -279,11 +325,12 @@ export function createDisclosureAuthority(
       );
     },
   });
-  pi.on("model_select", reset);
+  pi.on("model_select", invalidate);
   return {
     reset,
+    canManage: () => allowManaged,
     async selectedRoot(ctx: ExtensionContext) {
-      const selected = grant;
+      const selected = await selectedFor(ctx);
       if (!selected) throw Error(DISCLOSURE_WITHHELD);
       await check(selected, ctx);
       return selected.vault.root;
@@ -295,7 +342,7 @@ export function createDisclosureAuthority(
     ) {
       if (dependency !== "registry" && dependency !== "canonical")
         throw Error(DISCLOSURE_WITHHELD);
-      const selected = grant;
+      const selected = await selectedFor(ctx);
       if (!selected) throw Error(DISCLOSURE_WITHHELD);
       if ((await realpath(root)) !== selected.vault.root)
         throw Error(DISCLOSURE_WITHHELD);

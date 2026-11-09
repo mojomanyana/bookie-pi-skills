@@ -166,6 +166,7 @@ test("extension registers the BK-013 read-only tool contracts", () => {
       "bookie_validate",
       "bookie_write",
       "bookie_checkpoint",
+      "bookie_remember",
     ],
   );
   for (const tool of tools) {
@@ -643,7 +644,10 @@ test("local and Git package manifests expose the built extension", async (t) => 
     join(home, "agent"),
   );
   assert.deepEqual(local.errors, []);
-  assert.equal(local.extensions[0].tools.size, 10);
+  assert.deepEqual(
+    [...local.extensions[0].tools.keys()],
+    installedTools.map(({ name }) => name),
+  );
   assert.deepEqual(
     installedTools.map(({ name }) => name),
     [
@@ -657,6 +661,7 @@ test("local and Git package manifests expose the built extension", async (t) => 
       "bookie_validate",
       "bookie_write",
       "bookie_checkpoint",
+      "bookie_remember",
     ],
   );
 });

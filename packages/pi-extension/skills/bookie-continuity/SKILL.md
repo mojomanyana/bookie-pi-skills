@@ -28,7 +28,9 @@ Example: “Outcome: display the imported model. Non-goal: redesign the importer
 
 ## Save through existing surfaces
 
-If Bookie and an already selected, trusted project are available, reuse its structured Activity checkpoint workflow. Read [the fragment recipe](references/checkpoint-recipe.md) only when preparing a save. Existing session/project routine-capture permission permits matching summaries without repeated confirmation; ordinary writes and disclosure remain separate permissions. Save at a meaningful boundary or on request, not after every tool call.
+When Pi reports that automatic Bookie memory is ready for this folder, use `bookie_remember` for a short routine project decision or handoff. Use the user’s actual choice; if they have not made one, ask before recording it. To recall a choice use `bookie_search` without a vault path. Never substitute a guess from the conversation for a successful lookup.
+
+For a structured checkpoint in an explicitly selected project, reuse its Activity checkpoint workflow. Read [the fragment recipe](references/checkpoint-recipe.md) only when preparing a save. Existing session/project routine-capture permission permits matching summaries without repeated confirmation; ordinary writes and disclosure remain separate permissions. Save at a meaningful boundary or on request, not after every tool call.
 
 Keep producer output in its owner's store. Record exact Scout research, Daddy execution or Harness evaluation references instead of copying their transcripts into a new Activity. Mark historical observations, partial output and missing evidence honestly. Do not infer task acceptance from a source hash, test exit, JEV advice or stored summary.
 
