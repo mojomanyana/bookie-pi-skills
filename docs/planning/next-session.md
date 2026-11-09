@@ -1,5 +1,7 @@
 # Next-session handoff — 2026-11-09 UTC
 
+BK-041 shipped in `pi-bookie@0.1.3`. A selected project can link a retained output after settlement. Use `/bookie-work review` in the parent Pi session to read it and record the review decision separately. See the [two-task validation and release evidence](evidence/BK-041.md).
+
 BK-040 shipped in `pi-bookie@0.1.2`. The live save-and-resume trial, dashboard observation and fresh public installation passed. See the [delivery record](evidence/public-delivery-0.1.2.md).
 
 ## Previous delivery — 2026-11-07 UTC
