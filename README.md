@@ -46,10 +46,10 @@ These optional local features do not enable the unfinished retrieval service. Ex
 ## Package installation
 
 The released public package names are **pi-bookie** and its automatic dependency
-**pi-bookie-core**, at versions 0.1.2 and 0.1.0 respectively under MIT ([ADR-0015](docs/architecture/decisions/0015-public-package-names.md)). Install the Pi package with:
+**pi-bookie-core**, at versions 0.1.3 and 0.1.0 respectively under MIT ([ADR-0015](docs/architecture/decisions/0015-public-package-names.md)). Install the Pi package with:
 
 ```bash
-pi install npm:pi-bookie@0.1.2
+pi install npm:pi-bookie@0.1.3
 ```
 
 The 0.1.1 Pi maintenance release adds the `bookie-continuity` skill and recipe
@@ -94,6 +94,8 @@ Bookie code and documentation are licensed under [MIT](LICENSE); see [ADR-0014](
 ### Scoped work maps (released BK-033)
 
 Bookie can retain a bounded, versioned work map inside an ordinary canonical Document. `bookie_work` with `action: schema` explains the actual authoring contract without shell access or private vault reads. `/bookie-work` selects the current Project/plan/task scope; `bookie_work` returns only that scope's exact inputs, output contracts, prerequisites and current owner observations. It does not dispatch work or infer acceptance from a Task label. Optional Daddy ownership and Principal review references remain independently checked.
+
+With a compatible Pi Daddy coordinator, the selected work map can link finished handoffs once with your session permission. The dashboard names the saved work ready for review. Use `/bookie-work review` to open it, then record your review decision for the exact output.
 
 For a non-engineering role, exact canonical outputs and an operator-confirmed canonical Decision provide a review path without Principal. `/bookie-work accept` confirms that exact output for the current session; `/bookie-work reconcile` records an exact operator-confirmed receipt for a settled external attempt, using recovery-only ownership when necessary. Reload preserves a compact active-branch selection hint, not permissions, judgments or ownership. See [SPEC-003's operational flow](docs/specs/003-pi-extension.md#bk-033-operational-use-and-boundaries) for setup, receipt-only amendments, resource bounds and limitations. This work-map implementation is released in 0.1.0; bounded continuation evidence does not establish general guidance quality.
 

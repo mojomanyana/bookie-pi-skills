@@ -12,6 +12,11 @@ import {
 } from "pi-bookie-core";
 import registerBookie from "../dist/index.js";
 import {
+  handoffSlot,
+  isRetainedReference,
+  linkRetainedHandoff,
+} from "../dist/retained-handoff.js";
+import {
   authorizeDisclosure,
   labelFixture,
   modelContext,
@@ -702,4 +707,209 @@ test("recovery-only reconciliation binds original attempt and exact canonical re
   await f.emit("session_start");
   assert.equal(closed, true);
   await assert.rejects(() => callbacks.assertEffectReconciled(reconciled));
+});
+
+test("a selected finished draft is linked once and can be opened for review without granting acceptance", async (t) => {
+  const f = await workFixture(t);
+  let answer = "The customer update is ready.";
+  const ref = () => ({
+    owner: "pi-daddy",
+    reference: {
+      kind: "retained-handoff",
+      operationId: "op1",
+      executionId: "ex1",
+      manifestSha256: "c".repeat(64),
+      finalSha256: hash(answer).slice(7),
+    },
+  });
+  let retained,
+    acquisition,
+    bodyReads = 0;
+  const published = [];
+  f.events.set("pi-daddy:dashboard-source:v1", ({ reply }) =>
+    reply({
+      version: 1,
+      ok: true,
+      publish: (value) => {
+        published.push(value);
+        return true;
+      },
+      close() {},
+    }),
+  );
+  f.events.set("pi-daddy:initiative:v1", (request) => {
+    const envelope = {
+      version: 1,
+      ok: true,
+      requestId: request.requestId,
+      sessionId: request.sessionId,
+      cwd: request.cwd,
+      initiativeId: request.initiativeId,
+    };
+    if (request.action === "status")
+      return request.reply({ ...envelope, revision: null, state: "absent" });
+    acquisition = request;
+    request.reply({
+      ...envelope,
+      handle: {
+        observe: async (identity) => ({
+          ...identity,
+          status: "observed",
+          ownerGeneration: 1,
+          claim: "owned",
+          execution: "settled",
+          reconciliationRequired: false,
+          assertCurrent: async () => {},
+        }),
+        retainedHandoff: async (identity) => {
+          if (!retained) return;
+          await request.assertHandoffScope({
+            ...identity,
+            cwd: f.root,
+            workspaceId: null,
+          });
+          const exact = ref();
+          return {
+            reference: exact,
+            assertCurrent: async () => assert.deepEqual(exact, ref()),
+            readText: async () => {
+              bodyReads++;
+              return answer;
+            },
+          };
+        },
+        close() {},
+        release: async () => {},
+      },
+    });
+  });
+  f.setConfirm((title) => !title.includes("Link finished"));
+  await f.select();
+  retained = true;
+  assert.equal((await f.call()).tasks[0].outputs[0].status, "missing");
+  await f.command("off");
+  retained = false;
+  f.setConfirm(() => true);
+  await f.select();
+  retained = true;
+  const settled = f.events.get("pi-daddy:initiative-settled:v1");
+  const hint = {
+    version: 1,
+    sessionId: acquisition.sessionId,
+    cwd: acquisition.cwd,
+    initiativeId: acquisition.initiativeId,
+    ...acquisition.tasks[0],
+  };
+  const before = await readFile(f.root + f.mapRef.path, "utf8");
+  await settled({ ...hint, taskRevision: "sha256:" + "0".repeat(64) });
+  await settled({ ...hint, sessionId: "other" });
+  assert.equal(await readFile(f.root + f.mapRef.path, "utf8"), before);
+  await settled(hint);
+  assert.ok(
+    (await readFile(f.root + f.mapRef.path, "utf8")).includes(
+      ref().reference.finalSha256,
+    ),
+    "the trusted settlement updates the work map before the next tool read",
+  );
+  const projection = await f.call();
+  const row = projection.tasks[0];
+  assert.equal(row.state, "awaiting-acceptance");
+  assert.equal(row.outputs[0].status, "unverified");
+  assert.equal(bodyReads, 0);
+  const path = f.root + f.mapRef.path;
+  const saved = await readFile(path, "utf8");
+  assert.ok(saved.includes(ref().reference.finalSha256));
+  assert.ok(!saved.includes(answer));
+  await f.call();
+  assert.equal(await readFile(path, "utf8"), saved);
+  await assert.rejects(() =>
+    acquisition.assertHandoffScope({
+      ...row,
+      cwd: tmpdir(),
+      workspaceId: null,
+    }),
+  );
+  const seen = [];
+  f.trusted.ui.select = async (title) => {
+    seen.push(title);
+    return "Close";
+  };
+  await f.command("review");
+  assert.equal(bodyReads, 1);
+  assert.ok(seen.some((item) => item.includes(answer)));
+  assert.equal(await readFile(path, "utf8"), saved);
+  assert.equal((await f.call()).tasks[0].state, "awaiting-acceptance");
+  answer = "replacement";
+  const stale = await f.call();
+  assert.equal(stale.tasks[0].outputs[0].status, "stale");
+  assert.equal(await readFile(path, "utf8"), saved);
+  await f.command("review");
+  assert.equal(bodyReads, 1);
+  assert.ok(
+    published.some((value) =>
+      value.items.some(
+        (item) =>
+          item.kind === "next" &&
+          JSON.stringify(item).includes("/bookie-work review"),
+      ),
+    ),
+  );
+});
+
+test("multiple deliverables need an explicit handoff and a changed task cannot receive an old retained result", async (t) => {
+  const f = await workFixture(t);
+  const task = f.map.tasks[0];
+  const identity = {
+    initiativeId: "bookie:fixture",
+    taskId,
+    taskRevision: workTaskRevision(f.map, taskId),
+  };
+  const output = {
+    owner: "pi-daddy",
+    reference: {
+      kind: "retained-handoff",
+      operationId: "principal:op/attempt",
+      executionId: "ex1",
+      manifestSha256: "a".repeat(64),
+      finalSha256: "b".repeat(64),
+    },
+  };
+  assert.ok(isRetainedReference(output));
+  assert.equal(
+    isRetainedReference({
+      ...output,
+      reference: { ...output.reference, untrusted: "extra" },
+    }),
+    false,
+  );
+  assert.equal(handoffSlot(task).id, "draft");
+  const other = { id: "screens", description: "Approved images" };
+  task.requiredOutputs.push(other);
+  assert.equal(handoffSlot(task), undefined);
+  task.requiredOutputs.push({
+    id: "handoff",
+    description: "Handoff for review",
+  });
+  assert.equal(handoffSlot(task).id, "handoff");
+  const ref = await f.save();
+  const original = await readFile(f.root + ref.path);
+  await assert.rejects(
+    linkRetainedHandoff(
+      {
+        root: f.root,
+        snapshot: () => ({ map: f.map, source: ref }),
+        assertSelection: async () => {},
+      },
+      identity,
+      {
+        reference: output,
+        assertCurrent: async () => {},
+        readText: async () => {
+          throw Error("unexpected body lookup");
+        },
+      },
+    ),
+    /task revision changed/i,
+  );
+  assert.deepEqual(await readFile(f.root + ref.path), original);
 });

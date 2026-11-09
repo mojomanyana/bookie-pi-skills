@@ -116,3 +116,5 @@ A trusted Pi caller can use `createCheckpointMetadata` from
 current session identity. The [checkpoint recipe](skills/bookie-continuity/references/checkpoint-recipe.md)
 shows how to persist that request and resume it with the selected project's
 capture and disclosure permissions.
+
+With a compatible Pi Daddy coordinator, `/bookie-work` lets you link finished task handoffs into the selected plan. When the dashboard shows **Ready for review**, use `/bookie-work review` to open the saved output. Closing it leaves the independent review pending. Select the work scope again when resuming a session.
