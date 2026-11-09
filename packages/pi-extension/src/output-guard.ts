@@ -168,6 +168,8 @@ export function guardBookieTool<P extends TSchema, D, S>(
 // Only fixed public contract guidance may cross the disclosure boundary.
 // Diagnostic files, values, arbitrary pointers and validator messages stay private.
 const AUTHORING_FEEDBACK = {
+  checkpointInput:
+    "Bookie checkpoint failed: input. No checkpoint was written. Check complete Activity metadata and all seven fragment sections. generated.by must be human:<id>, process:<id>, or <producer>/<version>; bookie.uid must be ACT- followed by a 26-character ULID. Use the packaged checkpoint metadata helper for host-owned identity and UTC time.",
   path: "Bookie write failed: MUTATION-PATH. Check request.path: use a vault-relative Markdown path without a leading slash, dot segments or backslashes, outside reserved/excluded locations.",
   checkpointVault:
     "Bookie checkpoint failed: vault. Check request.path: use a vault-relative Markdown path without a leading slash or dot segments, with an existing safe parent in the selected vault.",
@@ -198,6 +200,7 @@ export function writeFailureMessage(
 export function checkpointPreparationFailureMessage(
   reason: PrepareCheckpointFailureReason,
 ): string {
+  if (reason === "input") return AUTHORING_FEEDBACK.checkpointInput;
   if (reason === "vault") return AUTHORING_FEEDBACK.checkpointVault;
   if (reason === "sensitivity-policy") return AUTHORING_FEEDBACK.sensitivity;
   return `Bookie checkpoint failed: ${reason}.`;
@@ -228,3 +231,14 @@ const SAFE_ERRORS = new Set([
   "large request file",
   "unsafe request file",
 ]);
+
+/** Fixed public failures contain no vault data, authority or successful read body. */
+export function isStaticBookieErrorMessage(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    (SAFE_ERRORS.has(value) ||
+      value === DISCLOSURE_WITHHELD ||
+      value === MUTATION_WITHHELD ||
+      value === "Bookie request was aborted.")
+  );
+}
