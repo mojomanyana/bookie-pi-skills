@@ -217,3 +217,6 @@ The dashboard names reviewable outputs and shows `/bookie-work review`. This hum
 
 ### Automatic project memory (BK-042)
 Under [ADR-0016](../architecture/decisions/0016-managed-project-auto.md), verified root-session Pi Daddy Auto supplies the current workspace's dedicated memory scope. A user can start a project, save a routine choice and recall it in the same workspace without a vault path, setup commands, fixture or repository. Repeated saves of the same decision are idempotent. Manual file-based and cross-project operations retain their existing rules.
+
+### Remember delivered resources (BK-043)
+Under ADR-0016 the selected workspace's routine memory may retain a public resource shared in a completed Pi reply. Bookie may use a bounded model-selected reference or a cited Scout source, matched to an actual visible link in that reply. Store a separate Activity with the exact URL, preserving the original decision. Do not derive notes from arbitrary conversation text, ingest producer bodies, or treat a planned, withheld or interrupted reply as delivery. Session changes or revoked authority retire pending references. Fresh-session recall should compare the earlier decision with the delivery and leave the user's next choice open.

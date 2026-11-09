@@ -8,12 +8,11 @@ import registerBookie from "../dist/index.js";
 import { modelContext } from "./disclosure-fixture.mjs";
 
 const channel = "pi-daddy:request-project-memory-owner-v1";
-function host(cwd, enabled = true) {
+function host(cwd, enabled = true, sessionId = "root-session") {
   const events = new EventEmitter(),
     tools = new Map(),
     commands = new Map(),
     hooks = new Map();
-  const sessionId = "root-session";
   const ctx = modelContext({
     cwd,
     hasUI: true,
@@ -48,8 +47,8 @@ function host(cwd, enabled = true) {
     ctx,
     dashboards,
     commands,
-    async event(name) {
-      for (const h of hooks.get(name) || []) await h({}, ctx);
+    async event(name, payload = {}) {
+      for (const h of hooks.get(name) || []) await h(payload, ctx);
     },
     revoke() {
       enabled = false;
@@ -157,4 +156,102 @@ test("headless and untrusted sessions cannot claim workspace memory from a live 
       h.call("bookie_remember", { title: "ship", summary: "Thursday" }),
     );
   }
+});
+
+test("remember a delivered workshop resource only after it appears in a completed reply; recall both records in a new session", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "bookie-delivery-"));
+  const cwd = join(root, "project");
+  const agent = join(root, "agent");
+  await mkdir(cwd);
+  await mkdir(agent, { mode: 0o700 });
+  const old = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agent;
+  t.after(async () => {
+    if (old === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = old;
+    await rm(root, { recursive: true, force: true });
+  });
+  const h = host(cwd);
+  await h.event("session_start");
+  await h.call("bookie_remember", {
+    title: "Workshop topic",
+    summary: "The user chose modern web design. A learning resource is due.",
+  });
+  const deliveryUrl = "https://web.dev/learn";
+  const planned = {
+    title: "Workshop learning resource",
+    summary: "Publisher's beginner course for the community workshop.",
+    deliveryUrl,
+  };
+  const lookup = async (who, query) =>
+    JSON.parse(await who.call("bookie_search", { query })).result.results;
+  const deliver = async (text, stopReason = "stop") => {
+    await h.event("agent_end", {
+      messages: [
+        {
+          role: "toolResult",
+          toolName: "bookie_remember",
+          toolCallId: "id",
+          isError: false,
+          content: [],
+        },
+        { role: "assistant", stopReason, content: [{ type: "text", text }] },
+      ],
+    });
+  };
+  for (const [reply, reason] of [
+    ["I will find one.", "stop"],
+    [deliveryUrl, "aborted"],
+    [deliveryUrl + "ing", "stop"],
+  ]) {
+    await h.event("agent_start");
+    assert.match(await h.call("bookie_remember", planned), /pending/);
+    assert.equal((await lookup(h, deliveryUrl)).length, 0);
+    await deliver(reply, reason);
+    assert.equal((await lookup(h, deliveryUrl)).length, 0);
+  }
+  for (let i = 0; i < 2; i++) {
+    await h.event("agent_start");
+    await h.call("bookie_remember", planned);
+    await deliver(
+      "Start here: [Learn web development](" +
+        deliveryUrl +
+        "). What would you like to do next?",
+    );
+  }
+  await h.event("session_shutdown");
+  const next = host(cwd, true, "second-session");
+  await next.event("session_start");
+  assert.equal((await lookup(next, "Workshop")).length, 2);
+  const shared = await lookup(next, deliveryUrl);
+  assert.equal(shared.length, 1);
+  const doc = await next.call("bookie_read", {
+    selector: "path",
+    value: shared[0].source.path,
+  });
+  assert.match(doc, /https:\/\/web.dev\/learn/);
+  assert.match(doc, /shared/i);
+  await next.event("agent_start");
+  await next.call("bookie_remember", {
+    ...planned,
+    deliveryUrl: "https://web.dev/learn/css",
+  });
+  await next.commands.get("bookie-capture").handler("off", next.ctx);
+  await next.event("agent_end", {
+    messages: [
+      {
+        role: "toolResult",
+        toolName: "bookie_remember",
+        toolCallId: "id",
+        isError: false,
+        content: [],
+      },
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: "https://web.dev/learn/css" }],
+      },
+    ],
+  });
+  assert.equal((await lookup(next, "https://web.dev/learn/css")).length, 0);
 });

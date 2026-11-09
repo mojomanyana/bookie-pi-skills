@@ -30,6 +30,7 @@
     "test:built": "node --test test/*.test.mjs"
   },
   "dependencies": {
+    "mdast-util-from-markdown": "^2.0.3",
     "pi-bookie-core": "0.1.0"
   },
   "peerDependencies": {

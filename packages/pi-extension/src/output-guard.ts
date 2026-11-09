@@ -211,6 +211,7 @@ export function checkpointPreparationFailureMessage(
 const SAFE_ERRORS = new Set([
   ...Object.values(AUTHORING_FEEDBACK),
   "Bookie needs a short non-sensitive project title and summary.",
+  "Bookie needs a short non-sensitive project title and summary, and a safe public URL if supplied.",
   "Bookie could not confirm the save. Recall this note before retrying.",
   "Routine memory is unavailable. This workspace needs current Pi Daddy Auto and Bookie capture and disclosure authority.",
   "Bookie read failed: not-found.",

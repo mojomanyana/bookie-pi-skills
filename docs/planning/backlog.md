@@ -63,3 +63,5 @@ BK-016 is merged and evidenced. BK-017 remains Ready/partial; SPEC-004 remains I
 | BK-041 | Done | SPEC-003/ADR-0012/ADR-0013 | Under one selected work scope, attach retained output references and open the exact handoff for review. See [evidence](evidence/BK-041.md). | BK-033, BK-040 | Engineering and customer-update results become reviewable after settlement, with exact-source checks, safe reuse, a visible next action and separate acceptance. |
 
 **BK-042 · Implemented, awaiting public delivery — automatic project memory.** SPEC-003, ADR-0016. Open a trusted fresh workspace with Daddy Auto, save and recall a project choice, then re-open the same workspace. Verify no scope crosses into another workspace, arbitrary vault, child or disabled session.
+
+**BK-043 · Implemented and verified locally — remember resources delivered to the user.** Depends on BK-042. Save a compact receipt for a public resource actually shared in a completed reply. In a fresh Pi session in the same project, recover the decision and the exact shared URL without new research. An earlier plan or interrupted delivery must not count.

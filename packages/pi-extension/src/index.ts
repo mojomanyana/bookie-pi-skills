@@ -783,7 +783,9 @@ export default function registerBookie(pi: ExtensionAPI): void {
   pi.on("session_start", resetSession);
   pi.on("session_shutdown", resetSession);
   registerProducerBridge(pi, authority);
-  pi.registerTool(rememberTool(managed, authority, disclosure, contextFilter));
+  pi.registerTool(
+    rememberTool(pi, managed, authority, disclosure, contextFilter),
+  );
   managed.install(async (ctx) => {
     if (!authority.canManage() || !disclosure.canManage()) return false;
     const selected = await managed.get(ctx);
