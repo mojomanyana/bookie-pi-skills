@@ -46,10 +46,10 @@ These optional local features do not enable the unfinished retrieval service. Ex
 ## Package installation
 
 The released public package names are **pi-bookie** and its automatic dependency
-**pi-bookie-core**, at versions 0.1.2 and 0.1.0 respectively under MIT ([ADR-0015](docs/architecture/decisions/0015-public-package-names.md)). Install the Pi package with:
+**pi-bookie-core**, at versions 0.1.3 and 0.1.0 respectively under MIT ([ADR-0015](docs/architecture/decisions/0015-public-package-names.md)). Install the Pi package with:
 
 ```bash
-pi install npm:pi-bookie@0.1.2
+pi install npm:pi-bookie@0.1.3
 ```
 
 The 0.1.1 Pi maintenance release adds the `bookie-continuity` skill and recipe

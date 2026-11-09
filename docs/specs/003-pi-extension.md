@@ -209,7 +209,7 @@ The separately exported `pi-bookie/dist/checkpoint-metadata.js` helper accepts a
 
 Acceptance includes actor-only, UID-only and combined invalid input with unchanged vault/request and absent target; fixed failures survive context and reset without recovering protected bodies; true post-mutation uncertainty remains; valid helper metadata passes actual core validation, saves exactly one Activity through trusted capture, resumes only after fresh disclosure selection, and refuses changed input. Pure helper tests reject malformed session/time/entropy and preserve deterministic identity when supplied explicit test inputs. Installed package payload verification must include the documented helper path. No provider or shared-service test is required for these mechanical contracts.
 
-## BK-041 selected retained handoffs (implementation candidate)
+## BK-041 selected retained handoffs (Pi package 0.1.3)
 
 When the selected coordinator supports retained handoffs, `/bookie-work` offers a session permission to link the final for an explicitly selected task. The coordinator verifies the original execution, exact retained bytes and selected working root. Its bounded reference contains only the operation, execution, manifest digest and final digest. A trusted settlement hint or an explicit work read rechecks the producer and scope, then uses the existing approved Document amendment path to fill the declared handoff (or sole output) once. Multiple other output slots require explicit selection outside this automatic path. Replacing the session, revoking access, changing task inputs or losing owner evidence prevents use of an earlier result.
 
