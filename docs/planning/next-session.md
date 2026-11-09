@@ -1,4 +1,8 @@
-# Next-session handoff — 2026-11-07 UTC
+# Next-session handoff — 2026-11-09 UTC
+
+BK-040 shipped in `pi-bookie@0.1.2`. The live save-and-resume trial, dashboard observation and fresh public installation passed. See the [delivery record](evidence/public-delivery-0.1.2.md).
+
+## Previous delivery — 2026-11-07 UTC
 
 ## Current local-ledger and continuity delivery
 

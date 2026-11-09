@@ -46,10 +46,10 @@ These optional local features do not enable the unfinished retrieval service. Ex
 ## Package installation
 
 The released public package names are **pi-bookie** and its automatic dependency
-**pi-bookie-core**, at versions 0.1.1 and 0.1.0 respectively under MIT ([ADR-0015](docs/architecture/decisions/0015-public-package-names.md)). Install the Pi package with:
+**pi-bookie-core**, at versions 0.1.2 and 0.1.0 respectively under MIT ([ADR-0015](docs/architecture/decisions/0015-public-package-names.md)). Install the Pi package with:
 
 ```bash
-pi install npm:pi-bookie@0.1.1
+pi install npm:pi-bookie@0.1.2
 ```
 
 The 0.1.1 Pi maintenance release adds the `bookie-continuity` skill and recipe
@@ -102,4 +102,4 @@ BK-035 is a released recall repair: canonical observations distinguish ordered c
 
 ### Local checkpoint reliability candidate
 
-The 0.1.2 maintenance candidate (BK-040) clarifies checkpoint errors before a write, preserves safe failure history, and adds an explicit host-side metadata helper. Core validation and capture/disclosure permissions remain unchanged. See [the checkpoint recipe](packages/pi-extension/skills/bookie-continuity/references/checkpoint-recipe.md) and [candidate evidence](docs/planning/evidence/BK-040.md). Public package versions above remain the delivered baseline; this candidate does not include the held work-view performance experiment or BK-017 service work.
+The 0.1.2 maintenance release (BK-040) clarifies checkpoint errors before a write, preserves safe failure history, and adds an explicit host-side metadata helper. Core validation and capture/disclosure permissions remain unchanged. See [the checkpoint recipe](packages/pi-extension/skills/bookie-continuity/references/checkpoint-recipe.md) and [verified public delivery](docs/planning/evidence/public-delivery-0.1.2.md).
