@@ -503,8 +503,8 @@ test("a fresh dashboard restores only explicitly open choices from this project'
     title: "Completed setup",
     summary: "The venue is open on Saturday.",
   });
-  // An archive of closed activities must not crowd the single open choice
-  // out of the first page on the fresh-session lookup.
+  // Place both the tagged note and a pre-tag receipt beyond a full page of
+  // closed activities. The old receipt stores its choice inline in Outcome.
   const closed = JSON.parse(
     await original.call("bookie_search", { query: "Completed setup" }),
   ).result.results[0];
@@ -514,6 +514,22 @@ test("a fresh dashboard restores only explicitly open choices from this project'
   );
   const vault = join(store, ledger, "vault");
   const template = await readFile(join(vault, closed.source.path), "utf8");
+  const legacyDigest = "f".repeat(32);
+  const legacyChoice = "Printed maps or a wall projection?";
+  const legacyReceipt = template
+    .replace(closed.uid, "ACT-0" + legacyDigest.slice(0, 25).toUpperCase())
+    .replace(
+      "The venue is open on Saturday.",
+      "Guide delivered. Open choice: " + legacyChoice,
+    );
+  await writeFile(
+    join(
+      vault,
+      "projects/workspace/activities",
+      "note-" + legacyDigest + ".md",
+    ),
+    legacyReceipt,
+  );
   for (let n = 0; n < 52; n++) {
     const digest = n.toString(16).padStart(6, "0") + "0".repeat(26);
     await writeFile(
@@ -532,7 +548,16 @@ test("a fresh dashboard restores only explicitly open choices from this project'
   await original.event("session_shutdown");
   const next = host(cwd, true, "new-parent");
   await next.event("session_start");
-  assert.deepEqual(choices(next), selected);
+  const restored = choices(next);
+  assert.equal(restored.length, 2);
+  assert.deepEqual(
+    restored.find((row) => row.id === selected[0].id),
+    selected[0],
+  );
+  assert.equal(
+    restored.find((row) => row.label === legacyChoice)?.state,
+    "observed",
+  );
   const unrelated = host(other, true, "unrelated-parent");
   await unrelated.event("session_start");
   assert.deepEqual(choices(unrelated), []);

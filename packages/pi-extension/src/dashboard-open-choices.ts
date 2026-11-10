@@ -17,6 +17,8 @@ export type ChoiceRow = {
   label: string;
 };
 
+const maxFullReads = 7;
+
 export async function dashboardOpenChoices(access: ChoiceAccess) {
   const project = access.scope.project.path;
   // Short checkpoint bodies fit in the initial query. Read longer ones by exact revision within a fixed budget.
@@ -39,13 +41,17 @@ export async function dashboardOpenChoices(access: ChoiceAccess) {
   const scans = [scan];
   // An ordinary closed note has the same heading. If the general results are
   // bounded, prioritize indexed choices and the explicit marker in old receipts.
-  if (scan.resultsTruncated || scan.outputTruncated) {
+  const longNotes = scan.results.filter((hit) => hit.excerptTruncated).length;
+  if (scan.resultsTruncated || longNotes > maxFullReads) {
     await access.assertCurrent();
     const indexed = await search(section, "open-choice");
-    const legacy = await search("Open:");
-    if (!indexed.complete || !legacy.complete)
+    // Literal searches use the shared suffix so both "Open:" and "open:"
+    // forms can qualify. The Markdown parser still validates the full marker.
+    const legacyOpen = await search("pen:");
+    const legacyChoice = await search("hoice:");
+    if (!indexed.complete || !legacyOpen.complete || !legacyChoice.complete)
       return { rows: [], limited: true };
-    scans.unshift(indexed, legacy);
+    scans.unshift(indexed, legacyOpen, legacyChoice);
   }
   const rows: ChoiceRow[] = [];
   const seen = new Set<string>();
@@ -65,7 +71,7 @@ export async function dashboardOpenChoices(access: ChoiceAccess) {
       continue;
     let body = hit.excerpt;
     if (hit.matchedField !== "body" || hit.excerptTruncated) {
-      if (fullReads >= 7) {
+      if (fullReads >= maxFullReads) {
         limited = true;
         continue;
       }
