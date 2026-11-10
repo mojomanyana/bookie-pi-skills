@@ -75,3 +75,5 @@ BK-043 follow-up acceptance covers a nested workspace and a session that starts 
 ```sh
 node packages/pi-extension/scripts/verify-open-choice.mjs <pi-install>/node_modules <pi-daddy-package> --answer
 ```
+
+Merged in [PR #53](https://github.com/mojomanyana/bookie-pi-skills/pull/53) after the [feature checks passed](https://github.com/mojomanyana/bookie-pi-skills/actions/runs/42838741857).
