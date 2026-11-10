@@ -209,3 +209,16 @@ test("a saved meeting decision cannot give a later research link the meeting's t
   assert.doesNotMatch(read.content[0].text, /budget meeting/i);
   await h.emit("session_shutdown");
 });
+
+test("only one delivered resource can acquire a choice from the final reply", async () => {
+  const choice = "Which chart will participants hold?";
+  const h = await simulatedRun();
+  await h.scout([others[0], guide]);
+  await h.finish(guide + " " + others[0] + "\n\nOpen choice: " + choice);
+  assert.equal(h.writes.length, 2);
+  assert.ok(h.writes.every((note) => note.openChoice === undefined));
+  const one = await simulatedRun();
+  await one.stage();
+  await one.finish(guide + "\n\n> Open choice: " + choice);
+  assert.deepEqual(one.writes, [explicit]);
+});

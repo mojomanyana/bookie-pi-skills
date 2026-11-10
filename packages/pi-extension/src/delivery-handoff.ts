@@ -3,6 +3,7 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import type { ProjectNote } from "./remember.js";
+import { markedOpenChoice } from "./open-choice.js";
 import { mentionsDeliveryUrl } from "./delivery-url.js";
 import { scoutDeliveryUrls } from "./scout-delivery.js";
 
@@ -108,15 +109,28 @@ export function registerDeliveryHandoff(
             });
         }
       }
-      let attempts = 0;
-      for (const [url, item] of candidates) {
-        if (active.controller.signal.aborted || attempts >= MAX_DELIVERIES)
-          break;
-        if (!blocks.some((block) => mentionsDeliveryUrl(block.text, url)))
-          continue;
-        attempts++;
+      // A reply-wide choice belongs to a single delivered item. Ambiguous
+      // multi-resource handoffs must identify each choice in its own note.
+      const delivered: Pending[] = [];
+      for (const [url, pending] of candidates) {
+        if (blocks.some((block) => mentionsDeliveryUrl(block.text, url))) {
+          delivered.push(pending);
+          if (delivered.length === MAX_DELIVERIES) break;
+        }
+      }
+      const replyChoice =
+        delivered.length === 1 &&
+        blocks.reduce((length, block) => length + block.text.length + 2, 0) <=
+          65536
+          ? markedOpenChoice(blocks.map((block) => block.text).join("\n\n"))
+          : undefined;
+      for (const item of delivered) {
+        if (active.controller.signal.aborted) break;
         try {
-          await item.scope.save(item.note, active.controller.signal);
+          await item.scope.save(
+            replyChoice ? { ...item.note, openChoice: replyChoice } : item.note,
+            active.controller.signal,
+          );
         } catch {
           if (!active.controller.signal.aborted)
             ctx.ui.notify(

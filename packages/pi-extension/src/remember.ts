@@ -20,6 +20,7 @@ import type { createDisclosureAuthority } from "./disclosure-authority.js";
 import type { createCaptureAuthority } from "./capture-authority.js";
 import type { createBookieContextFilter } from "./context-filter.js";
 
+import { markedOpenChoice, validOpenChoice } from "./open-choice.js";
 import { isDeliveryUrl } from "./delivery-url.js";
 import { registerDeliveryHandoff } from "./delivery-handoff.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -28,12 +29,13 @@ export interface ProjectNote {
   title: string;
   summary: string;
   deliveryUrl?: string;
+  openChoice?: string;
 }
 
 function checkNote(note: ProjectNote): boolean {
   return (
     Object.keys(note).every((key) =>
-      ["title", "summary", "deliveryUrl"].includes(key),
+      ["title", "summary", "deliveryUrl", "openChoice"].includes(key),
     ) &&
     typeof note.title === "string" &&
     note.title.trim().length > 0 &&
@@ -43,6 +45,7 @@ function checkNote(note: ProjectNote): boolean {
     note.summary.trim().length > 0 &&
     note.summary.length <= 2000 &&
     !containsDetectedSecret(note.title + "\n" + note.summary) &&
+    (note.openChoice === undefined || validOpenChoice(note.openChoice)) &&
     (note.deliveryUrl === undefined || isDeliveryUrl(note.deliveryUrl))
   );
 }
@@ -78,6 +81,8 @@ export function rememberTool(
     ) {
       if (!checkNote(note)) throw Error();
       const { title, summary, deliveryUrl } = note;
+      const legacyChoice = markedOpenChoice(summary, true);
+      const choice = note.openChoice?.trim() ?? legacyChoice;
       const guard = async () => {
         await assertCurrent();
         signal?.throwIfAborted();
@@ -85,11 +90,15 @@ export function rememberTool(
       await guard();
       const hash = createHash("sha256")
         .update(
-          JSON.stringify(
-            deliveryUrl
-              ? [ticket.scope.project.uid, title, summary, deliveryUrl]
-              : [ticket.scope.project.uid, title, summary],
-          ),
+          JSON.stringify([
+            ticket.scope.project.uid,
+            title,
+            summary,
+            ...(deliveryUrl ? [deliveryUrl] : []),
+            ...(choice && choice !== legacyChoice
+              ? [{ openChoice: choice }]
+              : []),
+          ]),
         )
         .digest("hex");
       const path = posix.join(
@@ -101,6 +110,15 @@ export function rememberTool(
       const metadata = createCheckpointMetadata({
         sessionId: ctx.sessionManager.getSessionId(),
       });
+      const sections: Partial<
+        Record<(typeof CHECKPOINT_SECTIONS)[number], string>
+      > = {
+        outcome: deliveryUrl
+          ? "Pi shared this resource with the user. " + summary
+          : summary,
+        ...(deliveryUrl ? { evidence: deliveryUrl } : {}),
+        ...(choice ? { "unresolved-work": choice } : {}),
+      };
       const prepared = await prepareCheckpoint(
         ticket.root,
         {
@@ -109,6 +127,7 @@ export function rememberTool(
             type: "Activity",
             title,
             status: "stable",
+            ...(choice ? { tags: ["open-choice"] } : {}),
             generated: metadata.generated,
             bookie: {
               profile: "1.0",
@@ -123,14 +142,7 @@ export function rememberTool(
           ).map((section) => ({
             section,
             sensitivity: "internal",
-            text:
-              section === "outcome"
-                ? deliveryUrl
-                  ? "Pi shared this resource with the user. " + summary
-                  : summary
-                : section === "evidence" && deliveryUrl
-                  ? deliveryUrl
-                  : "No additional information recorded.",
+            text: sections[section] ?? "No additional information recorded.",
           })),
         },
         signal ? { signal } : {},
@@ -159,10 +171,24 @@ export function rememberTool(
         const loaded = loadConcept(Buffer.from(found.sourceText), {
           file: path,
         });
+        if (!loaded.ok || loaded.concept.frontmatter.title !== title)
+          throw Error();
+        const existing = loaded.concept.bodyText.trim();
+        const expected = prepared.preview.bodyText.trim();
+        if (existing === expected) return true;
+        // Before structured choices, this same content-addressed note already
+        // stored the question in Outcome. Verify its complete previous-format
+        // body before accepting a retry without mutating the immutable note.
+        const oldSection = "\n# Unresolved work\n\n";
         if (
-          !loaded.ok ||
-          loaded.concept.frontmatter.title !== title ||
-          loaded.concept.bodyText.trim() !== prepared.preview.bodyText.trim()
+          !legacyChoice ||
+          legacyChoice !== choice ||
+          existing !==
+            expected.replace(
+              oldSection + choice + "\n\n# Next action",
+              oldSection +
+                "No additional information recorded.\n\n# Next action",
+            )
         )
           throw Error();
         return true;
@@ -195,6 +221,8 @@ export function rememberTool(
         },
       );
       await guard();
+      await managed.refreshDashboard(ctx);
+      await guard();
       return outcome;
     }
     return { assertCurrent, save };
@@ -205,11 +233,19 @@ export function rememberTool(
     name: "bookie_remember",
     label: "Remember project note",
     description:
-      "Save a bounded routine project decision or outcome as untrusted project context. For a newly delivered public resource, supply deliveryUrl, a title naming the task, and a short summary. The link is recorded once it appears in the finished reply. During recall, reuse the saved receipt. Exclude personal information, private sources and credentials.",
+      "Save a bounded routine project decision or outcome as untrusted project context. For a newly delivered public resource, supply deliveryUrl, a title naming the task, and a short summary. The link is recorded once it appears in the finished reply. When a concrete choice remains with the user, supply it as openChoice. During recall, reuse the saved receipt. Exclude personal information, private sources and credentials.",
     parameters: Type.Object(
       {
         title: Type.String({ minLength: 1, maxLength: 120 }),
         summary: Type.String({ minLength: 1, maxLength: 2000 }),
+        openChoice: Type.Optional(
+          Type.String({
+            minLength: 1,
+            maxLength: 240,
+            description:
+              "The specific open choice still left to the user, in a short, non-sensitive line. Omit for settled decisions.",
+          }),
+        ),
         deliveryUrl: Type.Optional(
           Type.String({
             minLength: 1,
@@ -223,7 +259,7 @@ export function rememberTool(
     ),
     async execute(callId, params, signal, _onUpdate, ctx) {
       const invalid = Error(
-        "Bookie needs a short non-sensitive project title and summary, and a safe public URL if supplied.",
+        "Bookie needs a short non-sensitive project title and summary, a short open choice if supplied, and a safe public URL if supplied.",
       );
       let entered = false;
       try {

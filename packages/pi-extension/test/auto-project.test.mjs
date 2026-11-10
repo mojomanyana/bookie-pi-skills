@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtemp, mkdir, rm, readdir } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  rm,
+  readdir,
+  readFile,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -328,4 +335,232 @@ test("remember a delivered workshop resource only after it appears in a complete
     ],
   });
   assert.equal((await lookup(next, "https://web.dev/learn/css")).length, 0);
+});
+
+test("remember puts the user's open choice under Unresolved work, including a final-only delivery handoff", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "bookie-open-choice-"));
+  const cwd = join(root, "project"),
+    agent = join(root, "agent");
+  await mkdir(cwd);
+  await mkdir(agent, { mode: 0o700 });
+  const old = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agent;
+  t.after(async () => {
+    if (old === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = old;
+    await rm(root, { recursive: true, force: true });
+  });
+  const h = host(cwd);
+  await h.event("session_start");
+  const read = async (who, topic) => {
+    const {
+      result: { results },
+    } = JSON.parse(await who.call("bookie_search", { query: topic }));
+    assert.equal(results.length, 1);
+    const result = JSON.parse(
+      await who.call("bookie_read", {
+        selector: "path",
+        value: results[0].source.path,
+      }),
+    );
+    return result.result.sourceText;
+  };
+  const choice =
+    "Which chart should participants hold: the StarDome foldout or the local planisphere?";
+  const planned = {
+    title: "Sky workshop",
+    summary: "Participants will learn the constellations.",
+    deliveryUrl: "https://www.astronomy.com/observing/how-to-use-a-star-chart/",
+  };
+  const deliver = async () => {
+    await h.event("agent_start");
+    await h.call("bookie_remember", planned);
+    await h.event("agent_end", {
+      messages: [
+        {
+          role: "toolResult",
+          toolCallId: "id",
+          toolName: "bookie_remember",
+          isError: false,
+          content: [],
+        },
+        {
+          role: "assistant",
+          stopReason: "stop",
+          content: [
+            {
+              type: "text",
+              text: planned.deliveryUrl + "\n\nOpen choice: " + choice,
+            },
+          ],
+        },
+      ],
+    });
+  };
+  await deliver();
+  await deliver();
+  await h.event("session_shutdown");
+  const next = host(cwd, true, "resumed-choices");
+  await next.event("session_start");
+  const body = await read(next, "Sky workshop");
+  assert.ok(
+    body.includes("# Unresolved work\n\n" + choice + "\n\n# Next action"),
+  );
+  const input = {
+    title: "Bootcamp",
+    summary: "Location selected.",
+    openChoice: "Will participants use tablets or laptops?",
+  };
+  assert.match(await next.call("bookie_remember", input), /saved/);
+  assert.match(await next.call("bookie_remember", input), /already saved/);
+  assert.ok(
+    (await read(next, "Bootcamp")).includes(
+      "# Unresolved work\n\n" + input.openChoice + "\n\n# Next action",
+    ),
+  );
+  await assert.rejects(
+    next.call("bookie_remember", {
+      ...input,
+      openChoice: "Overlong " + "x".repeat(240),
+    }),
+  );
+});
+
+test("retrying a prose-only legacy Activity confirms its full old body without changing bytes", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "bookie-legacy-choice-"));
+  const agent = join(root, "agent"),
+    cwd = join(root, "workspace");
+  const previous = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agent;
+  t.after(async () => {
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previous;
+    await rm(root, { recursive: true, force: true });
+  });
+  await mkdir(agent, { mode: 0o700 });
+  await mkdir(cwd);
+  const first = host(cwd);
+  await first.event("session_start");
+  const choice =
+    "which printed chart participants will hold (StarDome foldout vs. a physical planisphere).";
+  const note = {
+    title: "Workshop for stargazers",
+    summary: "Worked example uses a printed guide (April sky). Open: " + choice,
+  };
+  await first.call("bookie_remember", note);
+  const { result } = JSON.parse(
+    await first.call("bookie_search", { query: "stargazers" }),
+  );
+  assert.equal(result.results.length, 1);
+  const store = join(agent, "bookie-project-memory");
+  const ledger = (await readdir(store)).find((name) =>
+    name.startsWith("ledger-"),
+  );
+  const file = join(store, ledger, "vault", result.results[0].source.path);
+  const structured = await readFile(file, "utf8");
+  assert.match(structured, /^tags:\n {2}- open-choice$/mu);
+  const legacy = structured
+    .replace(/^tags:\n {2}- open-choice\n/mu, "")
+    .replace(
+      "# Unresolved work\n\n" + choice,
+      "# Unresolved work\n\nNo additional information recorded.",
+    );
+  assert.notEqual(structured, legacy);
+  await writeFile(file, legacy);
+  await first.event("session_shutdown");
+  const next = host(cwd, true, "restore");
+  await next.event("session_start");
+  assert.ok(next.dashboards.at(-1).items.some((item) => item.label === choice));
+  assert.match(await next.call("bookie_remember", note), /already saved/);
+  assert.equal(await readFile(file, "utf8"), legacy);
+  const modified = legacy.replace("Worked example", "Unrelated edit");
+  await writeFile(file, modified);
+  await assert.rejects(next.call("bookie_remember", note));
+  assert.equal(await readFile(file, "utf8"), modified);
+});
+
+test("a fresh dashboard restores only explicitly open choices from this project's saved notes", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "bookie-choice-dashboard-"));
+  const prev = process.env.PI_CODING_AGENT_DIR;
+  const agent = join(root, "agent"),
+    cwd = join(root, "workshop"),
+    other = join(root, "elsewhere");
+  process.env.PI_CODING_AGENT_DIR = agent;
+  t.after(async () => {
+    if (prev === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = prev;
+    await rm(root, { recursive: true, force: true });
+  });
+  await Promise.all([cwd, other, agent].map((p) => mkdir(p, { mode: 0o700 })));
+  const original = host(cwd);
+  await original.event("session_start");
+  await original.call("bookie_remember", {
+    title: "Sky workshop",
+    summary: "Guide delivered.",
+    openChoice: "StarDome foldout or local planisphere?",
+  });
+  await original.call("bookie_remember", {
+    title: "Completed setup",
+    summary: "The venue is open on Saturday.",
+  });
+  // Place both the tagged note and a pre-tag receipt beyond a full page of
+  // closed activities. The old receipt stores its choice inline in Outcome.
+  const closed = JSON.parse(
+    await original.call("bookie_search", { query: "Completed setup" }),
+  ).result.results[0];
+  const store = join(agent, "bookie-project-memory");
+  const ledger = (await readdir(store)).find((name) =>
+    name.startsWith("ledger-"),
+  );
+  const vault = join(store, ledger, "vault");
+  const template = await readFile(join(vault, closed.source.path), "utf8");
+  const legacyDigest = "f".repeat(32);
+  const legacyChoice = "Printed maps or a wall projection?";
+  const legacyReceipt = template
+    .replace(closed.uid, "ACT-0" + legacyDigest.slice(0, 25).toUpperCase())
+    .replace(
+      "The venue is open on Saturday.",
+      "Guide delivered. Open choice: " + legacyChoice,
+    );
+  await writeFile(
+    join(
+      vault,
+      "projects/workspace/activities",
+      "note-" + legacyDigest + ".md",
+    ),
+    legacyReceipt,
+  );
+  for (let n = 0; n < 52; n++) {
+    const digest = n.toString(16).padStart(6, "0") + "0".repeat(26);
+    await writeFile(
+      join(vault, "projects/workspace/activities", "note-" + digest + ".md"),
+      template.replace(closed.uid, "ACT-0" + digest.slice(0, 25).toUpperCase()),
+    );
+  }
+  const choices = (h) =>
+    h.dashboards
+      .at(-1)
+      .items.filter((item) => item.id.startsWith("open-choice-"));
+  const selected = choices(original);
+  assert.equal(selected.length, 1);
+  assert.equal(selected[0].label, "StarDome foldout or local planisphere?");
+  assert.equal(selected[0].state, "observed");
+  await original.event("session_shutdown");
+  const next = host(cwd, true, "new-parent");
+  await next.event("session_start");
+  const restored = choices(next);
+  assert.equal(restored.length, 2);
+  assert.deepEqual(
+    restored.find((row) => row.id === selected[0].id),
+    selected[0],
+  );
+  assert.equal(
+    restored.find((row) => row.label === legacyChoice)?.state,
+    "observed",
+  );
+  const unrelated = host(other, true, "unrelated-parent");
+  await unrelated.event("session_start");
+  assert.deepEqual(choices(unrelated), []);
+  next.revoke();
+  assert.equal(next.dashboards.at(-1), "closed");
 });
