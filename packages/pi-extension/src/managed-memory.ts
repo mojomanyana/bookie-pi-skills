@@ -1,3 +1,8 @@
+import {
+  dashboardOpenChoices,
+  type ChoiceAccess,
+  type ChoiceRow,
+} from "./dashboard-open-choices.js";
 import { createRequire } from "node:module";
 import type {
   ExtensionAPI,
@@ -41,8 +46,12 @@ export function createManagedMemory(pi: ExtensionAPI) {
     | { publish(payload: unknown): boolean; close(): void; sequence: number }
     | undefined;
   let displayEpoch = 0;
+  let refreshRevision = 0;
+  let authorize:
+    ((ctx: ExtensionContext) => Promise<ChoiceAccess | undefined>) | undefined;
   function hide() {
     displayEpoch++;
+    refreshRevision++;
     const old = publisher;
     publisher = undefined;
     try {
@@ -141,7 +150,11 @@ export function createManagedMemory(pi: ExtensionAPI) {
       throw error;
     }
   }
-  function show(ctx: ExtensionContext) {
+  function show(
+    ctx: ExtensionContext,
+    choices: ChoiceRow[] = [],
+    limited = false,
+  ) {
     const selected = slot;
     if (!selected || !ownerMatches(selected.owner, ctx)) {
       hide();
@@ -153,8 +166,16 @@ export function createManagedMemory(pi: ExtensionAPI) {
         kind: "work",
         state: "observed",
         label: "Current workspace memory",
-        details: ["Ready to save and recall routine project notes."],
+        details: [
+          "Ready to save and recall routine project notes.",
+          ...(limited
+            ? [
+                "Only a bounded selection of saved open choices could be displayed.",
+              ]
+            : []),
+        ],
       },
+      ...choices,
     ];
     const publish = () => {
       if (
@@ -208,32 +229,43 @@ export function createManagedMemory(pi: ExtensionAPI) {
       hide();
     }
   }
-  function install(warm: (ctx: ExtensionContext) => Promise<boolean>) {
-    const refresh = async (ctx: ExtensionContext) => {
-      try {
-        if (await warm(ctx)) {
-          show(ctx);
-          return true;
+  async function refreshDashboard(ctx: ExtensionContext) {
+    const revision = ++refreshRevision;
+    try {
+      const access = await authorize?.(ctx);
+      if (revision !== refreshRevision) return false;
+      if (access) {
+        if (!publisher) show(ctx);
+        // Standalone Pi does not need to enumerate notes for a dashboard.
+        if (publisher) {
+          const { rows, limited } = await dashboardOpenChoices(access);
+          await access.assertCurrent();
+          if (revision !== refreshRevision) return false;
+          show(ctx, rows, limited);
         }
-      } catch {
-        /* Recheck on use; startup continues. */
+        return true;
       }
-      hide();
-      return false;
-    };
+    } catch {
+      // Recheck on use. Discard previous rows when current access is unknown.
+    }
+    if (revision === refreshRevision) hide();
+    return false;
+  }
+  function install(warm: NonNullable<typeof authorize>) {
+    authorize = warm;
     pi.on("session_start", async (_event, ctx) => {
       reset();
       active = ctx;
-      if (ctx) await refresh(ctx);
+      if (ctx) await refreshDashboard(ctx);
     });
     pi.on("session_shutdown", reset);
     pi.on("model_select", hide);
     pi.on("before_agent_start", async (event, ctx) => {
-      if (await refresh(ctx))
+      if (await refreshDashboard(ctx))
         return {
           systemPrompt:
             event.systemPrompt +
-            "\nBookie project memory is ready in this workspace. Save project decisions at meaningful boundaries. When newly delivering a public resource, use bookie_remember with its exact deliveryUrl, a task-specific title and short summary before giving the link, even if you already saved the decision. Bookie records the link once it appears in the completed reply. For a project recap, use bookie_search for the topic and for shared resources, read matching notes, and distinguish what was decided, delivered and still open. For a recap, reuse existing receipts without writing or researching again. Keep personal and sensitive details out.",
+            "\nBookie project memory is ready in this workspace. Save project decisions at meaningful boundaries. When newly delivering a public resource, use bookie_remember with its exact deliveryUrl, a task-specific title and short summary before giving the link, even if you already saved the decision. Bookie records the link once it appears in the completed reply. If the user still has a concrete choice, include it as openChoice in the note. For a newly delivered resource you can also state it on its own line as “Open choice: …” in the final reply. For a project recap, use bookie_search for the topic and for shared resources, read matching notes, and distinguish what was decided, delivered and still open. For a recap, reuse existing receipts without writing or researching again. Keep personal and sensitive details out.",
         };
     });
     pi.events?.on?.("pi-daddy:project-memory-owner-v1", () => {
@@ -241,8 +273,8 @@ export function createManagedMemory(pi: ExtensionAPI) {
         slot = undefined;
         hide();
       }
-      if (active) void refresh(active);
+      if (active) void refreshDashboard(active);
     });
   }
-  return { get, install, hide };
+  return { get, install, hide, refreshDashboard };
 }
