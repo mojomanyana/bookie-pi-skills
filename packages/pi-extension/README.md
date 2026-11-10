@@ -128,3 +128,12 @@ When Pi shares a public learning resource or other public reference, a managed p
 Routine notes can include one short `openChoice` for a decision the user still owns. For a single delivered resource, a visible `Open choice: …` line in the final reply also fills the Activity’s Unresolved work field. With compatible Pi Daddy, select the question under **Open choices** and press **Enter**. Pick an option, type your own answer, or decide later. Saving records your answer for subsequent sessions in this project. Other questions remain open. A question saved as plain text accepts a written answer. For older questions that explicitly give a pair as “which … (A vs. B)” or “Should … use A, or B?”, Bookie also offers the two original labels. These suggestions carry no inferred preference.
 
 To present alternatives, supply `choiceOptions` with short labels. For a recommendation, include `choiceRecommendation` with `option`, `reason` and `evidence`. Use a supporting excerpt from the saved summary or the delivered source URL. For example, if the workshop brief says “Practise grid references,” that supports a street atlas with an index grid. A more specific brief changes the recommendation. For an exercise on six-figure National Grid references, an OS map fits the worked example showing how to locate a point within a square. Cite the [Ordnance Survey exercise](https://www.ordnancesurvey.co.uk/mapzone/assets/doc/map-skills/Grid-References-en.pdf) when that evidence is part of the project. If participants are simply choosing a favorite map, leave the options unranked.
+
+### Release notes
+
+[CHANGELOG.md](CHANGELOG.md) ships inside the npm package. Pi 1.5 and newer can
+show entries newer than the last seen package version on a fresh launch. The
+first observation records the installed version without showing old entries.
+Upgrading from a release without a changelog can therefore be silent; later
+version changes can display their new entries. This is update information, not
+an extra prompt or a model call.

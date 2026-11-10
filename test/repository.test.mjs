@@ -373,7 +373,7 @@ test("toolchain, workspaces, and lockfile versions stay aligned", () => {
       "packages/pi-extension": {
         name: "pi-bookie",
         public: true,
-        version: "0.3.0",
+        version: "0.3.1",
       },
       "packages/cli": { name: "@bookie/cli", public: false, version: "0.0.0" },
       "apps/service": {
