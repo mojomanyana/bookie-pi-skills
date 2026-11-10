@@ -62,6 +62,8 @@ export function guardBookieTool<P extends TSchema, D, S>(
           object(values) && typeof values.vault === "string"
             ? values.vault
             : undefined;
+        if (suppliedVault === "@" || suppliedVault === "")
+          throw Error(DISCLOSURE_WITHHELD);
         const root =
           suppliedVault === undefined
             ? await authority.selectedRoot(ctx)

@@ -7,8 +7,9 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, readFile, readdir, rm } from "node:fs/promises";
+import { findPackageJSON } from "node:module";
 import { homedir, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const [modulesArg, mode = "offline", phaseArg, inheritedRoot] =
@@ -144,11 +145,16 @@ if (toggle) delete process.env.PI_DADDY_AUTO_MODE;
 else process.env.PI_DADDY_AUTO_MODE = "1";
 process.env.PI_DADDY_HERDR = "0";
 process.env.PI_DADDY_ACTIVITY_TIMELINE = "off";
-const load = (name) =>
-  import(pathToFileURL(join(modules, name, "dist/index.js")).href);
-const { Type, createAssistantMessageEventStream } = await load(
+const piPackage = join(modules, "@earendil-works/pi-coding-agent/package.json");
+// A fresh npm install can hoist a different pi-ai version for a peer package.
+const aiPackage = findPackageJSON(
   "@earendil-works/pi-ai",
+  pathToFileURL(piPackage),
 );
+const loadRuntime = (manifest) =>
+  import(pathToFileURL(join(dirname(manifest), "dist/index.js")).href);
+const { Type, createAssistantMessageEventStream } =
+  await loadRuntime(aiPackage);
 const {
   DefaultResourceLoader,
   SettingsManager,
@@ -156,7 +162,7 @@ const {
   SessionManager,
   ModelRuntime,
   createAgentSession,
-} = await load("@earendil-works/pi-coding-agent");
+} = await loadRuntime(piPackage);
 const provider = local ? fixtureProvider : "openai-codex";
 const model = local ? fixtureModel : "gpt-6.1-sol";
 
