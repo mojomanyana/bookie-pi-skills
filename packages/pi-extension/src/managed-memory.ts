@@ -1,3 +1,4 @@
+import { registerDashboardChoiceControls } from "./dashboard-choice-controls.js";
 import {
   dashboardOpenChoices,
   type ChoiceAccess,
@@ -45,6 +46,7 @@ export function createManagedMemory(pi: ExtensionAPI) {
   let publisher:
     | { publish(payload: unknown): boolean; close(): void; sequence: number }
     | undefined;
+  let closeChoiceControls: (() => void) | undefined;
   let displayEpoch = 0;
   let refreshRevision = 0;
   let authorize:
@@ -55,6 +57,8 @@ export function createManagedMemory(pi: ExtensionAPI) {
     const old = publisher;
     publisher = undefined;
     try {
+      closeChoiceControls?.();
+      closeChoiceControls = undefined;
       old?.close();
     } catch {
       /* The dashboard is optional. */
@@ -223,6 +227,25 @@ export function createManagedMemory(pi: ExtensionAPI) {
             sequence: 0,
           };
           publish();
+          if (publisher && typeof value.generation === "string") {
+            closeChoiceControls = registerDashboardChoiceControls(pi, {
+              sessionId: selected.owner.sessionId,
+              cwd: ctx.cwd,
+              sourceGeneration: value.generation,
+              access: async () => {
+                if (
+                  displayEpoch !== generation ||
+                  slot !== selected ||
+                  !ownerMatches(selected.owner, ctx)
+                )
+                  return;
+                return authorize?.(ctx);
+              },
+              refresh: async () => {
+                await refreshDashboard(ctx);
+              },
+            });
+          }
         },
       });
     } catch {
@@ -265,7 +288,7 @@ export function createManagedMemory(pi: ExtensionAPI) {
         return {
           systemPrompt:
             event.systemPrompt +
-            "\nBookie project memory is ready in this workspace. Save project decisions at meaningful boundaries. When newly delivering a public resource, use bookie_remember with its exact deliveryUrl, a task-specific title and short summary before giving the link, even if you already saved the decision. Bookie records the link once it appears in the completed reply. If the user still has a concrete choice, include it as openChoice in the note. For a newly delivered resource you can also state it on its own line as “Open choice: …” in the final reply. For a project recap, use bookie_search for the topic and for shared resources, read matching notes, and distinguish what was decided, delivered and still open. For a recap, reuse existing receipts without writing or researching again. Keep personal and sensitive details out.",
+            "\nBookie project memory is ready in this workspace. Save project decisions at meaningful boundaries. When newly delivering a public resource, use bookie_remember with its exact deliveryUrl, a task-specific title and short summary before giving the link, even if you already saved the decision. Bookie records the link once it appears in the completed reply. If the user still has a concrete choice, record its question as openChoice. Supply choiceOptions with the genuinely different alternatives, as many or as few as the situation calls for. Keep labels short and concrete. When a project requirement, observed measurement or real example makes one a better fit, include the supporting fact in the summary and give a choiceRecommendation with its option, reason and exact supporting quote or delivered URL. Leave the recommendation out when the evidence is weak or the difference is personal preference. The user can choose another option or supply their own answer. For a newly delivered resource you can also state it on its own line as “Open choice: …” in the final reply. For a project recap, use bookie_search for the topic and for shared resources, read matching notes, and distinguish what was decided, delivered and still open. For a recap, reuse existing receipts without writing or researching again. Keep personal and sensitive details out.",
         };
     });
     pi.events?.on?.("pi-daddy:project-memory-owner-v1", () => {

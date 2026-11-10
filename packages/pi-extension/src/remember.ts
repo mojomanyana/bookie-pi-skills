@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { createHash } from "node:crypto";
 import { posix, resolve } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
@@ -8,19 +9,22 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
   containsDetectedSecret,
-  prepareCheckpoint,
   createCheckpointWithPolicy,
-  CHECKPOINT_SECTIONS,
   inspectConcept,
   loadConcept,
 } from "pi-bookie-core";
-import { createCheckpointMetadata } from "./checkpoint-metadata.js";
+import { prepareManagedActivity } from "./managed-activity.js";
 import type { createManagedMemory } from "./managed-memory.js";
 import type { createDisclosureAuthority } from "./disclosure-authority.js";
 import type { createCaptureAuthority } from "./capture-authority.js";
 import type { createBookieContextFilter } from "./context-filter.js";
 
-import { markedOpenChoice, validOpenChoice } from "./open-choice.js";
+import {
+  choiceGuidance,
+  markedOpenChoice,
+  validOpenChoice,
+  type ChoiceRecommendation,
+} from "./open-choice.js";
 import { isDeliveryUrl } from "./delivery-url.js";
 import { registerDeliveryHandoff } from "./delivery-handoff.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -30,12 +34,21 @@ export interface ProjectNote {
   summary: string;
   deliveryUrl?: string;
   openChoice?: string;
+  choiceOptions?: string[];
+  choiceRecommendation?: ChoiceRecommendation;
 }
 
 function checkNote(note: ProjectNote): boolean {
   return (
     Object.keys(note).every((key) =>
-      ["title", "summary", "deliveryUrl", "openChoice"].includes(key),
+      [
+        "title",
+        "summary",
+        "deliveryUrl",
+        "openChoice",
+        "choiceOptions",
+        "choiceRecommendation",
+      ].includes(key),
     ) &&
     typeof note.title === "string" &&
     note.title.trim().length > 0 &&
@@ -46,6 +59,15 @@ function checkNote(note: ProjectNote): boolean {
     note.summary.length <= 2000 &&
     !containsDetectedSecret(note.title + "\n" + note.summary) &&
     (note.openChoice === undefined || validOpenChoice(note.openChoice)) &&
+    ((note.choiceOptions === undefined &&
+      note.choiceRecommendation === undefined) ||
+      (note.openChoice !== undefined &&
+        !!choiceGuidance(
+          note.choiceOptions,
+          note.choiceRecommendation,
+          note.summary,
+          note.deliveryUrl,
+        ))) &&
     (note.deliveryUrl === undefined || isDeliveryUrl(note.deliveryUrl))
   );
 }
@@ -83,6 +105,14 @@ export function rememberTool(
       const { title, summary, deliveryUrl } = note;
       const legacyChoice = markedOpenChoice(summary, true);
       const choice = note.openChoice?.trim() ?? legacyChoice;
+      const guidance = note.choiceOptions?.length
+        ? choiceGuidance(
+            note.choiceOptions,
+            note.choiceRecommendation,
+            summary,
+            deliveryUrl,
+          )
+        : undefined;
       const guard = async () => {
         await assertCurrent();
         signal?.throwIfAborted();
@@ -98,6 +128,7 @@ export function rememberTool(
             ...(choice && choice !== legacyChoice
               ? [{ openChoice: choice }]
               : []),
+            ...(guidance ? [{ choiceGuidance: guidance }] : []),
           ]),
         )
         .digest("hex");
@@ -107,45 +138,25 @@ export function rememberTool(
         "note-" + hash.slice(0, 32) + ".md",
       );
       const uid = "ACT-0" + hash.slice(0, 25).toUpperCase();
-      const metadata = createCheckpointMetadata({
-        sessionId: ctx.sessionManager.getSessionId(),
-      });
-      const sections: Partial<
-        Record<(typeof CHECKPOINT_SECTIONS)[number], string>
-      > = {
-        outcome: deliveryUrl
-          ? "Pi shared this resource with the user. " + summary
-          : summary,
-        ...(deliveryUrl ? { evidence: deliveryUrl } : {}),
-        ...(choice ? { "unresolved-work": choice } : {}),
-      };
-      const prepared = await prepareCheckpoint(
+      const prepared = await prepareManagedActivity(
         ticket.root,
         {
-          path: path.slice(1),
-          frontmatter: {
-            type: "Activity",
-            title,
-            status: "stable",
-            ...(choice ? { tags: ["open-choice"] } : {}),
-            generated: metadata.generated,
-            bookie: {
-              profile: "1.0",
-              uid,
-              project: ticket.scope.project.path,
-              occurred_at: metadata.occurred_at,
-              sensitivity: "internal",
-            },
+          path,
+          uid,
+          project: ticket.scope.project.path,
+          title,
+          ...(choice ? { tags: ["open-choice"] } : {}),
+          ...(guidance ? { fields: { choice_guidance: guidance } } : {}),
+          sections: {
+            outcome: deliveryUrl
+              ? "Pi shared this resource with the user. " + summary
+              : summary,
+            ...(deliveryUrl ? { evidence: deliveryUrl } : {}),
+            ...(choice ? { "unresolved-work": choice } : {}),
           },
-          fragments: CHECKPOINT_SECTIONS.filter(
-            (section) => section !== "source-session",
-          ).map((section) => ({
-            section,
-            sensitivity: "internal",
-            text: sections[section] ?? "No additional information recorded.",
-          })),
         },
-        signal ? { signal } : {},
+        ctx.sessionManager.getSessionId(),
+        signal,
       );
       if (!prepared.ok) throw Error();
       // The same title and summary retry the same record. An edited or suppressed
@@ -172,6 +183,17 @@ export function rememberTool(
           file: path,
         });
         if (!loaded.ok || loaded.concept.frontmatter.title !== title)
+          throw Error();
+        const bookie = loaded.concept.frontmatter.bookie;
+        if (
+          typeof bookie !== "object" ||
+          !bookie ||
+          Array.isArray(bookie) ||
+          !isDeepStrictEqual(
+            "choice_guidance" in bookie ? bookie.choice_guidance : undefined,
+            guidance,
+          )
+        )
           throw Error();
         const existing = loaded.concept.bodyText.trim();
         const expected = prepared.preview.bodyText.trim();
@@ -233,7 +255,7 @@ export function rememberTool(
     name: "bookie_remember",
     label: "Remember project note",
     description:
-      "Save a bounded routine project decision or outcome as untrusted project context. For a newly delivered public resource, supply deliveryUrl, a title naming the task, and a short summary. The link is recorded once it appears in the finished reply. When a concrete choice remains with the user, supply it as openChoice. During recall, reuse the saved receipt. Exclude personal information, private sources and credentials.",
+      "Save a bounded routine project decision or outcome as untrusted project context. For a newly delivered public resource, supply deliveryUrl, a title naming the task, and a short summary. The link is recorded once it appears in the finished reply. When a concrete choice remains with the user, supply it as openChoice. Supply choiceOptions when there are concrete alternatives, and choiceRecommendation only if a saved fact or delivered reference supports the reason. During recall, reuse the saved receipt. Exclude personal information, private sources and credentials.",
     parameters: Type.Object(
       {
         title: Type.String({ minLength: 1, maxLength: 120 }),
@@ -245,6 +267,29 @@ export function rememberTool(
             description:
               "The specific open choice still left to the user, in a short, non-sensitive line. Omit for settled decisions.",
           }),
+        ),
+        choiceOptions: Type.Optional(
+          Type.Array(Type.String({ minLength: 1, maxLength: 120 }), {
+            maxItems: 8,
+            uniqueItems: true,
+            description:
+              "Distinct alternatives for this open choice. Omit when none have been identified.",
+          }),
+        ),
+        choiceRecommendation: Type.Optional(
+          Type.Object(
+            {
+              option: Type.String({ minLength: 1, maxLength: 120 }),
+              reason: Type.String({ minLength: 1, maxLength: 240 }),
+              evidence: Type.String({
+                minLength: 1,
+                maxLength: 240,
+                description:
+                  "Exact supporting quote from summary, or the exact saved deliveryUrl.",
+              }),
+            },
+            { additionalProperties: false },
+          ),
         ),
         deliveryUrl: Type.Optional(
           Type.String({
@@ -259,7 +304,7 @@ export function rememberTool(
     ),
     async execute(callId, params, signal, _onUpdate, ctx) {
       const invalid = Error(
-        "Bookie needs a short non-sensitive project title and summary, a short open choice if supplied, and a safe public URL if supplied.",
+        "Bookie needs a short non-sensitive project title and summary, a short open choice if supplied, distinct options with a supported recommendation if supplied, and a safe public URL if supplied.",
       );
       let entered = false;
       try {

@@ -1,4 +1,9 @@
 /* eslint-disable preserve-caught-error -- This disclosure boundary intentionally drops private provider/filesystem causes. */
+import {
+  answeredChoiceIds,
+  historyChoice,
+  projectChoiceHistory,
+} from "./choice-answer.js";
 import type {
   MutationDiagnostic,
   PrepareCheckpointFailureReason,
@@ -102,15 +107,64 @@ export function guardBookieTool<P extends TSchema, D, S>(
                 ].includes(key),
             ),
           );
+          const ref = historyChoice(ticket, raw);
+          if (ref) {
+            const resolution = await projectChoiceHistory(ticket, ref);
+            if (resolution) filtered.choiceResolution = resolution;
+          }
         } else if (tool.name === "bookie_search") {
+          const results: unknown[] = [];
+          let checked = 0,
+            limited = false;
+          const visible: Record<string, unknown>[] = (
+            Array.isArray(raw.results) ? raw.results : []
+          ).filter(ticket.allows);
+          const candidates = visible.map((hit) => ({
+            hit,
+            ref: historyChoice(ticket!, hit),
+          }));
+          // A large general search often mostly finds ordinary notes. Check the
+          // receipt index once, then spend exact reads only on linked choices.
+          const index =
+            candidates.filter((x) => x.ref).length > 8
+              ? await answeredChoiceIds(ticket)
+              : undefined;
+          for (const { hit, ref } of candidates) {
+            if (
+              !ref ||
+              (ref.kind === "note" &&
+                index?.complete &&
+                !index.truncated &&
+                !index.ids.has(ref.id))
+            ) {
+              results.push(hit);
+              continue;
+            }
+            if (++checked > 8) {
+              limited = true;
+              if (ref.kind === "note")
+                results.push({
+                  ...hit,
+                  choiceResolution: { status: "unknown" },
+                });
+              continue;
+            }
+            try {
+              const resolution = await projectChoiceHistory(ticket, ref);
+              results.push(
+                resolution ? { ...hit, choiceResolution: resolution } : hit,
+              );
+            } catch {
+              limited = true;
+            }
+          }
           filtered = {
             mode: "filesystem",
-            complete: raw.complete === true && !raw.resultsTruncated,
-            results: (Array.isArray(raw.results) ? raw.results : []).filter(
-              ticket.allows,
-            ),
+            complete:
+              raw.complete === true && !raw.resultsTruncated && !limited,
+            results,
             scope: "selected project and allowed classes",
-            resultsTruncated: raw.resultsTruncated === true,
+            resultsTruncated: raw.resultsTruncated === true || limited,
           };
         } else if (tool.name === "bookie_validate") {
           filtered = {

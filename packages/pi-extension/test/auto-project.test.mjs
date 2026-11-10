@@ -473,6 +473,31 @@ test("retrying a prose-only legacy Activity confirms its full old body without c
   assert.ok(next.dashboards.at(-1).items.some((item) => item.label === choice));
   assert.match(await next.call("bookie_remember", note), /already saved/);
   assert.equal(await readFile(file, "utf8"), legacy);
+  const { readChoice, answerChoice } = await import("../dist/choice-answer.js");
+  const access = {
+    root: join(store, ledger, "vault"),
+    scope: { project: { path: "/projects/workspace/project.md" } },
+    allows: () => true,
+    assertCurrent: async () => {},
+  };
+  const id = next.dashboards
+    .at(-1)
+    .items.find((item) => item.label === choice).id;
+  const restored = await readChoice(access, id);
+  assert.deepEqual(restored.options, [
+    "StarDome foldout",
+    "a physical planisphere",
+  ]);
+  assert.equal(restored.recommendation, undefined);
+  assert.equal(
+    await answerChoice(
+      access,
+      { id, revision: restored.revision, answer: restored.options[0] },
+      "restore",
+    ),
+    "saved",
+  );
+  assert.equal(await readFile(file, "utf8"), legacy);
   const modified = legacy.replace("Worked example", "Unrelated edit");
   await writeFile(file, modified);
   await assert.rejects(next.call("bookie_remember", note));
@@ -563,4 +588,186 @@ test("a fresh dashboard restores only explicitly open choices from this project'
   assert.deepEqual(choices(unrelated), []);
   next.revoke();
   assert.equal(next.dashboards.at(-1), "closed");
+});
+
+test("saving a chosen or typed answer closes only its exact note and a fresh Pi reads the user's decisions", async (t) => {
+  const { readChoice, answerChoice } = await import("../dist/choice-answer.js");
+  const root = await mkdtemp(join(tmpdir(), "bookie-answers-"));
+  const previous = process.env.PI_CODING_AGENT_DIR;
+  const agent = join(root, "agent"),
+    cwd = join(root, "project");
+  process.env.PI_CODING_AGENT_DIR = agent;
+  t.after(async () => {
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previous;
+    await rm(root, { recursive: true, force: true });
+  });
+  await Promise.all([agent, cwd].map((p) => mkdir(p, { mode: 0o700 })));
+  const first = host(cwd);
+  await first.event("session_start");
+  const note = {
+    title: "Orion workshop",
+    summary: "Participants already have a printed chart.",
+    openChoice: "Which guide should we use?",
+    choiceOptions: ["Printed chart", "Mobile sky map", "Both"],
+    choiceRecommendation: {
+      option: "Printed chart",
+      reason: "Everyone can follow along offline.",
+      evidence: "Participants already have a printed chart.",
+    },
+  };
+  for (const bad of [
+    { ...note, openChoice: undefined },
+    { ...note, choiceOptions: [] },
+    { ...note, choiceOptions: ["Same", "Same"] },
+    {
+      ...note,
+      choiceRecommendation: { ...note.choiceRecommendation, option: "Neither" },
+    },
+    {
+      ...note,
+      choiceRecommendation: {
+        ...note.choiceRecommendation,
+        evidence: "Unrecorded support",
+      },
+    },
+  ])
+    await assert.rejects(first.call("bookie_remember", bad));
+  await first.call("bookie_remember", note);
+  assert.match(await first.call("bookie_remember", note), /already saved/);
+  const selected = first.dashboards.at(-1).items.at(-1);
+  const secondNote = {
+    title: "Lyra workshop",
+    summary: "The second group is meeting.",
+    openChoice: note.openChoice,
+  };
+  await first.call("bookie_remember", secondNote);
+  assert.match(
+    await first.call("bookie_remember", { ...secondNote, choiceOptions: [] }),
+    /already saved/,
+  );
+  await first.call("bookie_remember", {
+    title: "Remaining workshop",
+    summary: "Venue pending.",
+    openChoice: "Which venue?",
+  });
+  const all = first.dashboards
+    .at(-1)
+    .items.filter((r) => r.id.startsWith("open-choice-"));
+  assert.equal(all.length, 3);
+  const other = all.find(
+    (r) => r.label === selected.label && r.id !== selected.id,
+  );
+  assert.ok(other);
+  const parent = join(agent, "bookie-project-memory");
+  const ledger = (await readdir(parent)).find((n) => n.startsWith("ledger-"));
+  const access = {
+    root: join(parent, ledger, "vault"),
+    scope: { project: { path: "/projects/workspace/project.md" } },
+    allows: () => true,
+    assertCurrent: async () => {},
+  };
+  const selectedInfo = await readChoice(access, selected.id);
+  assert.equal(selectedInfo.label, note.openChoice);
+  assert.deepEqual(selectedInfo.options, note.choiceOptions);
+  assert.deepEqual(selectedInfo.recommendation, note.choiceRecommendation);
+  const otherInfo = await readChoice(access, other.id);
+  assert.deepEqual(otherInfo.options, []);
+  assert.equal(otherInfo.recommendation, undefined);
+  const payload = {
+    id: selected.id,
+    revision: selectedInfo.revision,
+    answer: note.choiceOptions[0],
+  };
+  for (const bad of [
+    { ...payload, revision: "sha256:" + "0".repeat(64) },
+    { ...payload, id: "../other" },
+    { ...payload, answer: "A\n# Outcome\nInjected" },
+    { ...payload, answer: "token=private0123456789012345" },
+  ])
+    await assert.rejects(answerChoice(access, bad, "root-session"));
+  await assert.rejects(
+    answerChoice(
+      {
+        ...access,
+        assertCurrent: async () => {
+          throw Error("revoked");
+        },
+      },
+      payload,
+      "root-session",
+    ),
+  );
+  assert.deepEqual(
+    (
+      await Promise.all([
+        answerChoice(access, payload, "root-session"),
+        answerChoice(access, payload, "session-2"),
+      ])
+    ).sort(),
+    ["already saved", "saved"],
+  );
+  await assert.rejects(
+    answerChoice(
+      access,
+      { ...payload, answer: "Conflicting choice" },
+      "root-session",
+    ),
+  );
+  assert.equal(await readChoice(access, selected.id), undefined);
+  assert.ok(await readChoice(access, other.id));
+  const typed = { id: other.id, revision: otherInfo.revision, answer: "None" };
+  assert.equal(await answerChoice(access, typed, "root-session"), "saved");
+  await first.event("session_shutdown");
+  const next = host(cwd, true, "fresh-parent");
+  await next.event("session_start");
+  assert.deepEqual(
+    next.dashboards
+      .at(-1)
+      .items.filter((r) => r.id.startsWith("open-choice-"))
+      .map((r) => r.label),
+    ["Which venue?"],
+  );
+  const hits = JSON.parse(
+    await next.call("bookie_search", { query: note.title }),
+  ).result.results;
+  const source = hits.find((h) => h.source.path.includes("/note-"));
+  const receipt = hits.find((h) => h.source.path.includes("/answer-"));
+  assert.ok(receipt);
+  assert.equal(source.choiceResolution.answer, "Printed chart");
+  const topicHit = JSON.parse(
+    await next.call("bookie_search", {
+      query: "Participants already have a printed chart.",
+    }),
+  ).result.results;
+  assert.equal(topicHit.length, 1);
+  assert.equal(topicHit[0].choiceResolution.answer, "Printed chart");
+  const read = async (h) =>
+    JSON.parse(
+      await next.call("bookie_read", {
+        selector: "path",
+        value: h.source.path,
+      }),
+    ).result;
+  assert.equal((await read(source)).choiceResolution.answer, "Printed chart");
+  assert.match((await read(receipt)).sourceText, /Printed chart/);
+  const { historyChoice, projectChoiceHistory } =
+    await import("../dist/choice-answer.js");
+  for (const hit of [source, receipt]) {
+    const ref = historyChoice(access, hit);
+    await assert.rejects(
+      projectChoiceHistory(access, {
+        ...ref,
+        revision: "sha256:" + "0".repeat(64),
+      }),
+    );
+    for (const hidden of [source.uid, receipt.uid]) {
+      await assert.rejects(
+        projectChoiceHistory(
+          { ...access, allows: (record) => record.uid !== hidden },
+          ref,
+        ),
+      );
+    }
+  }
 });
