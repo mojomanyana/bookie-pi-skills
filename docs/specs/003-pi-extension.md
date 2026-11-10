@@ -12,6 +12,8 @@ Depends on: SPEC-002, [ADR-0009](../architecture/decisions/0009-structured-check
 
 [ADR-0015](../architecture/decisions/0015-public-package-names.md) names the public Pi package `pi-bookie` at MIT0.1.0, with the exact automatic runtime dependency `pi-bookie-core: 0.1.0`. Keep `pi.extensions: ["./src/index.ts"]`, host Pi peer dependencies and existing tool/event names. The current Pi release installs with `pi install npm:pi-bookie@0.1.2`; local/Git installation remains supported. ADR-0015's dated maintenance clarification permits Pi 0.1.1 with core 0.1.0 unchanged; exact paired package qualification and publication are recorded in the 0.1.1 delivery evidence. The root, CLI and service remain private. Renaming does not deliver unfinished service work or import earlier archive qualification.
 
+The public Pi archive includes a root CHANGELOG.md with headings matching the package version. Pi 1.5+ may display newer entries at the next fresh launch; first observation establishes a baseline. This packaging metadata changes no memory or permission behavior.
+
 ## Goal
 
 Provide a distributable Pi package that exposes safe Bookie read, search, write, checkpoint, validate, and export workflows while keeping canonical rules in core and requiring approval for durable capture.

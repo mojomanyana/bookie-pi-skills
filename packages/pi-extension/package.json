@@ -1,6 +1,6 @@
 {
   "name": "pi-bookie",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": false,
   "type": "module",
   "keywords": [
@@ -11,6 +11,7 @@
     "src",
     "skills",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "pi": {
