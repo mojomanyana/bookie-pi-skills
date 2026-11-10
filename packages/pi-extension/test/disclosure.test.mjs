@@ -104,7 +104,9 @@ test("all tools fail closed before reading or mutating when model disclosure is 
       ),
       tool.name === "bookie_work"
         ? /Bookie work selection is unavailable or no longer authorized\./
-        : /disclosure authority|Bookie consumer failed: denied/,
+        : ["bookie_read", "bookie_search"].includes(tool.name)
+          ? /Bookie recall withheld/
+          : /disclosure authority|Bookie consumer failed: denied/,
     );
   await f.grant();
   assert.match(JSON.stringify(await f.read()), /Fixture task/);
@@ -273,6 +275,10 @@ async function authorityFixture(t) {
     `import * as core from ${coreUrl}; export * from ${coreUrl};
     let hook; export const setHook=(value)=>{hook=value;};
     export async function readRecallState(...args){const result=await core.readRecallState(...args);return hook?hook(result):result;}`,
+  );
+  await cp(
+    new URL("../dist/memory-readiness.js", import.meta.url),
+    join(dir, "memory-readiness.js"),
   );
   const source = await readFile(
     new URL("../dist/disclosure-authority.js", import.meta.url),

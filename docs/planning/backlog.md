@@ -64,4 +64,6 @@ BK-016 is merged and evidenced. BK-017 remains Ready/partial; SPEC-004 remains I
 
 **BK-042 · Implemented, awaiting public delivery — automatic project memory.** SPEC-003, ADR-0016. Open a trusted fresh workspace with Daddy Auto, save and recall a project choice, then re-open the same workspace. Verify no scope crosses into another workspace, arbitrary vault, child or disabled session.
 
-**BK-043 · Implemented and verified locally — remember resources delivered to the user.** Depends on BK-042. Save a compact receipt for a public resource actually shared in a completed reply. In a fresh Pi session in the same project, recover the decision and the exact shared URL without new research. An earlier plan or interrupted delivery must not count.
+**BK-043 · Delivered in [0.2.1](https://github.com/mojomanyana/bookie-pi-skills/releases/tag/v0.2.1) — remember resources delivered to the user.** Depends on BK-042. Save a compact receipt for a public resource actually shared in a completed reply. In a fresh Pi session in the same project, recover the decision and the exact shared URL without new research. An earlier plan or interrupted delivery must not count.
+
+BK-043 follow-up acceptance covers a nested workspace and a session that starts with Auto off. Withheld recall must remain unknown, a successful search may establish a fresh start, and after enabling Auto a new session must recover the earlier delivery.

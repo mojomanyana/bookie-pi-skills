@@ -111,11 +111,34 @@ test("fresh trusted Auto workspace remembers and recalls across sessions without
   await off.event("session_start");
   await assert.rejects(
     off.call("bookie_search", { query: subject }),
-    /withheld/,
+    /no active Pi Daddy Auto connection.*history is unknown/i,
   );
-  await assert.rejects(
-    next.call("bookie_search", { query: subject, vault: other }),
-    /withheld/,
+  // A plausible model mistake in a fresh session is to name the repository as
+  // the private vault. It receives actionable guidance without changing scope.
+  for (const vault of [".", other, join(cwd, "absent")]) {
+    for (const [name, args] of [
+      ["bookie_search", { query: subject }],
+      [
+        "bookie_read",
+        { selector: "path", value: "/projects/workspace/project.md" },
+      ],
+    ]) {
+      await assert.rejects(next.call(name, { ...args, vault }), {
+        message:
+          "Bookie lookup withheld. The supplied vault does not match the selected project memory. If the request is about that project, retry once with the vault argument omitted.",
+      });
+    }
+  }
+  assert.match(
+    await next.call("bookie_search", { query: subject }),
+    /Moonstone/,
+  );
+  assert.match(
+    await next.call("bookie_read", {
+      selector: "path",
+      value: "/projects/workspace/project.md",
+    }),
+    /Workspace memory/,
   );
   await next.commands.get("bookie-capture").handler("off", next.ctx);
   await assert.rejects(next.call("bookie_remember", args));
@@ -127,13 +150,17 @@ test("fresh trusted Auto workspace remembers and recalls across sessions without
   next.ctx.model = { ...original, id: "unselected" };
   await assert.rejects(
     next.call("bookie_search", { query: subject }),
-    /withheld/,
+    /could not verify the current Pi model destination.*history is unknown/i,
+  );
+  await assert.rejects(
+    next.call("bookie_search", { vault: ".", query: subject }),
+    (e) => /withheld/.test(e.message) && !e.message.includes("retry once"),
   );
   next.ctx.model = original;
   await next.commands.get("bookie-context").handler("off", next.ctx);
   await assert.rejects(
     next.call("bookie_search", { query: subject }),
-    /withheld/,
+    /no current authorization.*history is unknown/i,
   );
 });
 
@@ -150,12 +177,59 @@ test("headless and untrusted sessions cannot claim workspace memory from a live 
     assert.equal(h.dashboards.length, 0);
     await assert.rejects(
       h.call("bookie_search", { query: "ship" }),
-      /withheld/,
+      override.hasUI === false
+        ? /needs an interactive parent Pi session.*history is unknown/i
+        : /has not trusted this folder.*history is unknown/i,
     );
     await assert.rejects(
       h.call("bookie_remember", { title: "ship", summary: "Thursday" }),
     );
   }
+});
+
+test("lookup readiness failures identify the failed check without exposing its private details", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "bookie-readiness-"));
+  const agent = join(root, "agent");
+  const project = join(root, "project");
+  await mkdir(agent, { mode: 0o700 });
+  await mkdir(project);
+  const previous = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agent;
+  t.after(async () => {
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previous;
+    await rm(root, { recursive: true, force: true });
+  });
+  const privateDetail = "private-diagnostic-do-not-disclose";
+  const h = host(project);
+  const lookup = () => h.call("bookie_search", { query: "keyboard" });
+  const originalRegistry = h.ctx.modelRegistry;
+  h.ctx.modelRegistry = {
+    getApiKeyAndHeaders: async () => {
+      throw Error(privateDetail);
+    },
+  };
+  await h.event("session_start");
+  await assert.rejects(
+    lookup(),
+    (err) =>
+      /could not verify the current Pi model destination.*history is unknown/i.test(
+        err.message,
+      ) && !err.message.includes(privateDetail),
+  );
+  h.ctx.modelRegistry = originalRegistry;
+  assert.deepEqual(JSON.parse(await lookup()).result.results, []);
+  await h.event("session_shutdown");
+  process.env.PI_CODING_AGENT_DIR = join(root, privateDetail);
+  const next = host(project);
+  await next.event("session_start");
+  await assert.rejects(
+    next.call("bookie_search", { query: "keyboard" }),
+    (err) =>
+      /could not verify this folder.s private memory.*history is unknown/i.test(
+        err.message,
+      ) && !err.message.includes(privateDetail),
+  );
 });
 
 test("remember a delivered workshop resource only after it appears in a completed reply; recall both records in a new session", async (t) => {

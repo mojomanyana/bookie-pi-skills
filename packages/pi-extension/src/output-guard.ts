@@ -5,6 +5,10 @@ import type {
 } from "pi-bookie-core";
 import type { createBookieContextFilter } from "./context-filter.js";
 import { resolve } from "node:path";
+import {
+  ProjectMemoryUnavailable,
+  isProjectMemoryUnavailableMessage,
+} from "./memory-readiness.js";
 import type {
   AgentToolResult,
   ToolDefinition,
@@ -13,6 +17,7 @@ import type { TSchema } from "typebox";
 import {
   DISCLOSURE_WITHHELD,
   MUTATION_WITHHELD,
+  WrongRecallVault,
   type createDisclosureAuthority,
 } from "./disclosure-authority.js";
 const payloads = new WeakMap<object, object>();
@@ -48,25 +53,29 @@ export function guardBookieTool<P extends TSchema, D, S>(
       const values: unknown = params;
       const mutation =
         tool.name === "bookie_write" || tool.name === "bookie_checkpoint";
+      const recall =
+        tool.name === "bookie_read" || tool.name === "bookie_search";
       let entered = false;
       let ticket: Awaited<ReturnType<typeof authority.capture>> | undefined;
       try {
-        const root =
+        const suppliedVault =
           object(values) && typeof values.vault === "string"
-            ? resolve(ctx.cwd, values.vault.replace(/^@/, ""))
-            : await authority.selectedRoot(ctx);
+            ? values.vault
+            : undefined;
+        const root =
+          suppliedVault === undefined
+            ? await authority.selectedRoot(ctx)
+            : resolve(ctx.cwd, suppliedVault.replace(/^@/, ""));
         const input =
           object(values) && values.vault === undefined
             ? { ...params, vault: root }
             : params;
-        const canonical =
-          tool.name === "bookie_read" ||
-          tool.name === "bookie_search" ||
-          tool.name === "bookie_validate";
+        const canonical = recall || tool.name === "bookie_validate";
         ticket = await authority.capture(
           root,
           ctx,
           canonical ? "canonical" : "registry",
+          suppliedVault !== undefined && recall,
         );
         entered = true;
         const result = await tool.execute(
@@ -136,6 +145,15 @@ export function guardBookieTool<P extends TSchema, D, S>(
         return formatted;
       } catch (error) {
         // Neither arbitrary underlying errors nor result.details can escape this boundary.
+        if (recall && !entered) {
+          if (error instanceof WrongRecallVault)
+            throw Error(WrongRecallVault.detail);
+          if (
+            error instanceof ProjectMemoryUnavailable &&
+            isProjectMemoryUnavailableMessage(error.message)
+          )
+            throw Error(error.message);
+        }
         if (ticket) {
           try {
             await ticket.assertCurrent();
@@ -242,7 +260,9 @@ const SAFE_ERRORS = new Set([
 export function isStaticBookieErrorMessage(value: unknown): value is string {
   return (
     typeof value === "string" &&
-    (SAFE_ERRORS.has(value) ||
+    (isProjectMemoryUnavailableMessage(value) ||
+      value === WrongRecallVault.detail ||
+      SAFE_ERRORS.has(value) ||
       value === DISCLOSURE_WITHHELD ||
       value === MUTATION_WITHHELD ||
       value === "Bookie request was aborted.")

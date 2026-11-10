@@ -1,5 +1,5 @@
 // Run with Node 24 and an installation of Pi 1.4+ and pi-daddy 0.54+.
-// node verify-workshop-recall.mjs <installation>/node_modules [offline | scout | --subscription]
+// node verify-workshop-recall.mjs <installation>/node_modules [offline | scout | auto-toggle | --subscription]
 // The default uses a local provider. --subscription uses openai-codex/gpt-6.1-sol
 // through Pi with synthetic data. Scout uses a fixed, offline v1 tool result.
 // Each scenario starts two Pi processes in one private temporary project.
@@ -14,12 +14,14 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const [modulesArg, mode = "offline", phaseArg, inheritedRoot] =
   process.argv.slice(2);
 assert(
-  modulesArg && ["offline", "scout", "--subscription"].includes(mode),
+  modulesArg &&
+    ["offline", "scout", "auto-toggle", "--subscription"].includes(mode),
   "Specify the Pi node_modules directory and optional --subscription",
 );
 const modules = resolve(modulesArg);
 const local = mode !== "--subscription";
 const scout = mode === "scout";
+const toggle = mode === "auto-toggle";
 const authPath =
   process.env.WORKSHOP_SUBSCRIPTION_AUTH ??
   join(
@@ -32,7 +34,8 @@ assert(
 );
 const root =
   inheritedRoot ?? (await mkdtemp(join(tmpdir(), "bookie-workshop-")));
-const cwd = join(root, "workshop");
+const project = join(root, "workshop");
+const cwd = toggle ? join(project, "tmp-test") : project;
 const agentDir = join(root, "agent");
 const source = {
   title: "Layout field guide",
@@ -52,7 +55,9 @@ const bookie =
   fileURLToPath(new URL("../src/index.ts", import.meta.url));
 const daddy = join(modules, "pi-daddy", "extensions", "grants.ts");
 const fixtureProvider = "workshop-fixture";
-const fixtureModel = "local";
+const fixtureModel = toggle
+  ? "accounts/fireworks/models/deepseek-v4p1-flash-1017"
+  : "local";
 const sourceTool = scout ? "scout_research" : "publisher_catalog";
 const sourceText =
   "The original publisher provides a free guide to responsive typography.";
@@ -117,14 +122,26 @@ const rows = [];
 const decisions = [];
 const sessionIds = [];
 const runtimeErrors = [];
+const accessChecks = [];
+const repeatWorkshop =
+  "I am planning a workshop on responsive typography. Check the project notes. If we already discussed it, tell me the exact resource I received and what I still need to choose. If there is no record, share one beginner guide from the supplied publisher catalog and leave the next step to me.";
+const unavailableWorkshop =
+  "I cannot check the project notes. Our earlier workshop decisions are unknown.";
+const lookupProbe =
+  "Check project notes now for the deliberately absent smoke-test marker.";
 
 if (!phaseArg) {
-  await mkdir(cwd);
+  await mkdir(cwd, { recursive: true });
+  if (toggle) {
+    const git = spawnSync("git", ["init", "-q", project], { encoding: "utf8" });
+    assert.equal(git.status, 0, git.stderr);
+  }
   await mkdir(agentDir);
 }
 process.chdir(cwd);
 process.env.PI_CODING_AGENT_DIR = agentDir;
-process.env.PI_DADDY_AUTO_MODE = "1";
+if (toggle) delete process.env.PI_DADDY_AUTO_MODE;
+else process.env.PI_DADDY_AUTO_MODE = "1";
 process.env.PI_DADDY_HERDR = "0";
 process.env.PI_DADDY_ACTIVITY_TIMELINE = "off";
 const load = (name) =>
@@ -135,6 +152,7 @@ const { Type, createAssistantMessageEventStream } = await load(
 const {
   DefaultResourceLoader,
   SettingsManager,
+  ProjectTrustStore,
   SessionManager,
   ModelRuntime,
   createAgentSession,
@@ -143,9 +161,34 @@ const provider = local ? fixtureProvider : "openai-codex";
 const model = local ? fixtureModel : "gpt-6.1-sol";
 
 function fixture(phase, context) {
-  const responses = context.messages.filter(
-    (message) => message.role === "toolResult",
-  );
+  const received = toggle
+    ? context.messages.slice(
+        context.messages.findLastIndex((m) => m.role === "user"),
+      )
+    : context.messages;
+  const responses = received.filter((message) => message.role === "toolResult");
+  if (toggle && lines(received[0]?.content) === lookupProbe) {
+    if (!responses.length)
+      return tool("bookie_search", { query: "absent-smoke-test-marker" });
+    assert.equal(responses[0].isError, false);
+    const search = JSON.parse(lines(responses[0].content)).result;
+    assert.equal(search.complete, true);
+    assert.deepEqual(search.results, []);
+    return say("Project notes searched; no matching note.");
+  }
+  if (toggle) {
+    // Both sessions receive the identical workshop request. Only the search
+    // result determines which path the local provider exercises.
+    assert.equal(lines(received[0]?.content), repeatWorkshop);
+    if (!responses.length) return tool("bookie_search", { query: "workshop" });
+    assert.equal(responses[0].toolName, "bookie_search");
+    if (responses[0].isError) return say(unavailableWorkshop);
+    const search = JSON.parse(lines(responses[0].content)).result;
+    if (!search.results.length && search.complete !== true)
+      return say(unavailableWorkshop);
+    phase = search.results.length ? "recall" : "delivery";
+    if (phase === "delivery") responses.shift();
+  }
   if (phase === "delivery") {
     const users = context.messages.filter((message) => message.role === "user");
     if (scout && users.length === 1 && responses.length)
@@ -281,9 +324,16 @@ function localProvider(phase) {
 }
 
 async function run(phase, prompt) {
+  let trusted = true;
+  if (toggle) {
+    const store = new ProjectTrustStore(agentDir);
+    if (phase === "delivery") store.set(project, true);
+    assert.deepEqual(store.getEntry(cwd), { path: project, decision: true });
+    trusted = store.get(cwd) === true;
+  }
   const settingsManager = SettingsManager.inMemory(
     { cacheWarming: "off", retry: { enabled: false }, enableAnalytics: false },
-    { projectTrusted: true },
+    { projectTrusted: trusted },
   );
   const runtime = await ModelRuntime.create({
     ...(local
@@ -349,8 +399,13 @@ async function run(phase, prompt) {
   });
   assert.deepEqual(session.messages, []);
   sessionIds.push(session.sessionManager.getSessionId());
+  const notices = [];
   const ui = new Proxy(
-    { notify() {} },
+    {
+      notify(text) {
+        notices.push(text);
+      },
+    },
     {
       get(target, key) {
         if (key in target) return target[key];
@@ -394,11 +449,66 @@ async function run(phase, prompt) {
         });
       }
     });
+    if (toggle) {
+      // Exercise the parent operator command. The dashboard uses the same
+      // owner-scoped setAutoApproval operation. Never synthesize a memory lease.
+      async function auto(target) {
+        notices.length = 0;
+        await session.prompt(
+          target ? "/grants auto " + target : "/grants auto",
+        );
+        assert.match(
+          notices.at(-1) ?? "",
+          new RegExp(
+            "permission Auto " + (target ?? "off").toUpperCase() + "\\b",
+          ),
+        );
+      }
+      async function checkLookup(expected) {
+        const before = rows.length;
+        const withheld = expected === "withheld";
+        await session.prompt(withheld ? repeatWorkshop : lookupProbe);
+        const observed = rows.slice(before);
+        assert.equal(observed.length, 1);
+        assert.equal(observed[0].tool, "bookie_search");
+        if (withheld) {
+          const reply = session.messages.at(-1);
+          assert.equal(reply.stopReason, "stop");
+          assert.equal(lines(reply.content), unavailableWorkshop);
+          assert.equal(observed[0].error, true);
+          assert.match(observed[0].text, /no active Pi Daddy Auto connection/i);
+          assert.match(observed[0].text, /project history is unknown/i);
+          assert.doesNotMatch(observed[0].text, /"results"\s*:/);
+        } else {
+          assert.equal(observed[0].error, false);
+          const search = JSON.parse(observed[0].text).result;
+          assert.equal(search.complete, true);
+          assert.deepEqual(search.results, []);
+        }
+        observed[0].expectedRefusal = withheld;
+        accessChecks.push({
+          phase,
+          outcome: expected,
+          prompt: withheld ? "same-workshop-request" : "known-absent-marker",
+          toolCount: observed.length,
+          toolError: observed[0].error,
+        });
+      }
+      await auto();
+      await checkLookup("withheld");
+      await auto("on");
+      await checkLookup("confirmed-empty");
+      if (phase === "recall") {
+        await auto("off");
+        await checkLookup("withheld");
+        await auto("on");
+      }
+    }
     if (phase === "delivery" && scout) {
       await session.prompt(choicePrompt);
       await session.prompt(resourcePrompt);
     } else {
-      await session.prompt(prompt);
+      await session.prompt(toggle ? repeatWorkshop : prompt);
     }
     const last = session.messages.at(-1);
     assert.equal(
@@ -431,6 +541,7 @@ if (phaseArg) {
       rows,
       answer: decisions[0],
       runtimeErrors,
+      accessChecks,
     }),
   );
 } else {
@@ -451,6 +562,21 @@ if (phaseArg) {
       results.push(JSON.parse(child.stdout));
     }
     const [delivery, recall] = results;
+    if (toggle) {
+      assert.deepEqual(
+        delivery.accessChecks.map((x) => x.outcome),
+        ["withheld", "confirmed-empty"],
+      );
+      assert.deepEqual(
+        recall.accessChecks.map((x) => x.outcome),
+        ["withheld", "confirmed-empty", "withheld"],
+      );
+      assert.ok(
+        recall.calls.every((x) =>
+          ["bookie_search", "bookie_read"].includes(x.tool),
+        ),
+      );
+    }
     assert.notEqual(delivery.sessionId, recall.sessionId);
     assert.deepEqual(await readdir(cwd), []);
     assert.deepEqual(
@@ -489,7 +615,9 @@ if (phaseArg) {
     );
     assert.deepEqual(
       results.flatMap((result) =>
-        result.rows.filter((row) => row.error).map((row) => row.tool),
+        result.rows
+          .filter((row) => row.error && !row.expectedRefusal)
+          .map((row) => row.tool),
       ),
       [],
     );
@@ -517,6 +645,10 @@ if (phaseArg) {
               })),
           ),
           answers: results.map((result) => result.answer),
+          ...(toggle && {
+            operatorCommand: "/grants auto on|off",
+            accessChecks: results.flatMap((r) => r.accessChecks),
+          }),
         },
         null,
         2,
