@@ -1,7 +1,7 @@
-import { createHash } from "node:crypto";
+import { answeredChoiceIds, hasAnswerRecord } from "./choice-answer.js";
 import { posix } from "node:path";
 import { inspectConcept, loadConcept, searchVault } from "pi-bookie-core";
-import { choiceFromActivity } from "./open-choice.js";
+import { choiceFromActivity, safeChoiceLine } from "./open-choice.js";
 
 export interface ChoiceAccess {
   root: string;
@@ -15,6 +15,7 @@ export type ChoiceRow = {
   kind: "work";
   state: "observed";
   label: string;
+  details?: string[];
 };
 
 const maxFullReads = 7;
@@ -53,8 +54,12 @@ export async function dashboardOpenChoices(access: ChoiceAccess) {
       return { rows: [], limited: true };
     scans.unshift(indexed, legacyOpen, legacyChoice);
   }
+  // Skip settled rows in bulk, including decisions that displaced original notes
+  // in the initial page. Independently check each displayed note's exact slot.
+  const answers = await answeredChoiceIds(access);
+  if (!answers.complete) return { rows: [], limited: true };
   const rows: ChoiceRow[] = [];
-  const seen = new Set<string>();
+  let answerChecks = 0;
   const dir = posix.join(posix.dirname(project), "activities");
   let limited = scans.some((result) => result.resultsTruncated);
   const visited = new Set<string>();
@@ -69,6 +74,8 @@ export async function dashboardOpenChoices(access: ChoiceAccess) {
     )?.[1];
     if (!digest || hit.uid !== "ACT-0" + digest.slice(0, 25).toUpperCase())
       continue;
+    const id = "open-choice-" + digest;
+    if (answers.ids.has(id)) continue;
     let body = hit.excerpt;
     if (hit.matchedField !== "body" || hit.excerptTruncated) {
       if (fullReads >= maxFullReads) {
@@ -98,15 +105,25 @@ export async function dashboardOpenChoices(access: ChoiceAccess) {
       body = parsed.concept.bodyText;
     }
     const label = choiceFromActivity(body);
-    if (!label || seen.has(label)) continue;
-    seen.add(label);
-    const id =
-      "open-choice-" +
-      createHash("sha256").update(label).digest("hex").slice(0, 24);
-    const row: ChoiceRow = { id, kind: "work", state: "observed", label };
+    if (!label) continue;
+    if (answerChecks >= 14 || rows.length === 7) {
+      limited = true;
+      continue;
+    }
+    answerChecks++;
+    if (await hasAnswerRecord(access, id)) continue;
+    const row: ChoiceRow = {
+      id,
+      kind: "work",
+      state: "observed",
+      label,
+      ...(safeChoiceLine(hit.title, 120) && !hit.titleTruncated
+        ? { details: [hit.title] }
+        : {}),
+    };
     // The v1 dashboard accepts eight rows and 4 KiB including the readiness row.
     const size = Buffer.byteLength(JSON.stringify(row)) + 1;
-    if (rows.length === 7 || bytes + size > 3500) {
+    if (bytes + size > 3500) {
       limited = true;
       continue;
     }

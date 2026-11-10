@@ -415,6 +415,7 @@ export function createDisclosureAuthority(
       };
       return {
         root: selected.vault.root,
+        managedWorkspace: selected.managed !== undefined,
         scope: selected.scope,
         classes: [...selected.classes],
         controls: controls.state,

@@ -9,7 +9,10 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { localWorkshopProvider } from "./workshop-provider.mjs";
 
-const [modulesArg, daddyArg] = process.argv.slice(2);
+import { choiceTurn, verifyAnswers } from "./workshop-choice-journey.mjs";
+
+const [modulesArg, daddyArg, profile] = process.argv.slice(2);
+const answerChoices = profile === "--answer";
 assert.ok(modulesArg, "Pass the Pi installation's node_modules directory");
 const modules = resolve(modulesArg);
 const daddy = resolve(daddyArg ?? join(modules, "pi-daddy"));
@@ -22,6 +25,30 @@ const cwd = join(root, "workshop"),
 const witness = join(root, "dashboard-observer.ts");
 const packagePath = (name) => JSON.stringify(join(daddy, name));
 // Real permission owner, snapshot request and terminal renderer. No synthetic dashboard rows.
+const controlsWitness = answerChoices
+  ? `
+import { createDashboardConnection } from ${packagePath("src/products/dashboard-session-client.ts")};
+import { createDashboardDisplayControls } from ${packagePath("src/products/dashboard-display-controls.ts")};
+import { inspectChoice, saveChoice } from ${packagePath("src/products/dashboard-choice-picker.ts")};
+import { pressChoice } from ${JSON.stringify(fileURLToPath(new URL("./workshop-choice-journey.mjs", import.meta.url)))};
+`
+  : "";
+const choiceCommand = answerChoices
+  ? `
+  pi.registerCommand("workshop-choice", {description: "Exercise the local dashboard picker", async handler(command, ctx) {
+    const endpoint = await ensureDashboardSessionServer(owner);
+    const connection = createDashboardConnection(action => dashboardSessionRequest(endpoint.socketPath,endpoint.token,action));
+    const display = createDashboardDisplayControls(false,true);
+    try {
+      const result = await pressChoice(command,connection,{
+        screen:display.screen,key:display.key,
+        inspect:()=>inspectChoice(display.screen,connection),save:()=>saveChoice(display.screen,connection),
+      },renderDashboardScreen);
+      ctx.ui.notify(result);
+    } catch (error) {ctx.ui.notify(String(error)); throw error;}
+  }});
+`
+  : "";
 await writeFile(
   witness,
   `
@@ -30,9 +57,11 @@ import {createGrantsSession} from ${packagePath("extensions/session.ts")};
 import {ensureDashboardSessionServer} from ${packagePath("extensions/dashboard-session-server.ts")};
 import {dashboardSessionRequest} from ${packagePath("src/products/dashboard-session-client.ts")};
 import {dashboardScreenState,renderDashboardScreen} from ${packagePath("src/products/dashboard-screen.ts")};
+${controlsWitness}
 export default function(pi) {
   const owner = createGrantsSession(undefined);
   grants(pi, owner);
+  ${choiceCommand}
   pi.registerCommand("workshop-screen", {description:"Read the connected dashboard for this test", async handler(destination, ctx) {
     const endpoint = await ensureDashboardSessionServer(owner);
     const session = await dashboardSessionRequest(endpoint.socketPath,endpoint.token,{action:"get"});
@@ -100,6 +129,10 @@ function answer(context) {
     .filter((m) => m.role === "toolResult");
   for (const result of results)
     assert.equal(result.isError, false, text(result.content));
+  if (answerChoices) {
+    const result = choiceTurn(prompt, results, { call, say, text });
+    if (result) return result;
+  }
   if (prompt === delivery) {
     if (!results.length)
       return call("bookie_remember", {
@@ -266,6 +299,9 @@ try {
   });
   assert.match(frames.now, /No pending dashboard requests/);
   assert.deepEqual(calls, ["bookie_remember", "bookie_search", "bookie_read"]);
+  const answering = answerChoices
+    ? await verifyAnswers({ host, notifications, frame, text })
+    : undefined;
   assert.deepEqual(errors, []);
   assert.equal(fetches, 0);
   console.log(
@@ -276,6 +312,7 @@ try {
         structuredUnresolvedWork: structured,
         dashboard: ["Overview: Open choices", "Tasks: Open choices"],
         attentionRequests: 0,
+        answering,
         calls,
         externalFetches: fetches,
       },

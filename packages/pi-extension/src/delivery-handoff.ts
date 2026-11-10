@@ -128,7 +128,14 @@ export function registerDeliveryHandoff(
         if (active.controller.signal.aborted) break;
         try {
           await item.scope.save(
-            replyChoice ? { ...item.note, openChoice: replyChoice } : item.note,
+            replyChoice && replyChoice !== item.note.openChoice?.trim()
+              ? {
+                  title: item.note.title,
+                  summary: item.note.summary,
+                  deliveryUrl: item.note.deliveryUrl,
+                  openChoice: replyChoice,
+                }
+              : item.note,
             active.controller.signal,
           );
         } catch {

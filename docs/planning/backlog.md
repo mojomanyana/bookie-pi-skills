@@ -69,3 +69,9 @@ BK-016 is merged and evidenced. BK-017 remains Ready/partial; SPEC-004 remains I
 BK-043 follow-up acceptance covers a nested workspace and a session that starts with Auto off. Withheld recall must remain unknown, a successful search may establish a fresh start, and after enabling Auto a new session must recover the earlier delivery.
 
 **BK-044 · Implemented and locally verified — preserve open choices across a fresh session.** SPEC-003 / ADR-0016, depends on BK-043. Save an explicitly outstanding choice in Unresolved work and show it as open after same-folder `/new`, with no dashboard permission or attention request. The [regression](../../packages/pi-extension/scripts/verify-open-choice.mjs) exercises Pi’s real new-session lifecycle and both dashboard views. Extension tests cover the earlier prose-only receipt and a project with more than fifty completed notes.
+
+**BK-045 · Implemented and locally verified — answer a saved choice.** SPEC-003, depends on BK-044. The [paired regression](../../packages/pi-extension/scripts/verify-open-choice.mjs) passes through Pi Daddy’s real choice controls. With Pi 1.4.0 it preserved both questions after deferral, recalled a selected answer with the other question still open, then recalled a custom answer across three additional fresh sessions. Reproduce from the repository root with matching builds of both extensions:
+
+```sh
+node packages/pi-extension/scripts/verify-open-choice.mjs <pi-install>/node_modules <pi-daddy-package> --answer
+```
