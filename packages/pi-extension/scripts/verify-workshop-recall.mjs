@@ -4,6 +4,7 @@
 // through Pi with synthetic data. Scout uses a fixed, offline v1 tool result.
 // Each scenario starts two Pi processes in one private temporary project.
 import assert from "node:assert/strict";
+import { localWorkshopProvider } from "./workshop-provider.mjs";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, readFile, readdir, rm } from "node:fs/promises";
@@ -255,80 +256,6 @@ function fixture(phase, context) {
   );
 }
 
-function localProvider(phase) {
-  return {
-    baseUrl: "http://workshop.invalid",
-    apiKey: "local-fixture",
-    api: "workshop-fixture-api",
-    models: [
-      {
-        id: fixtureModel,
-        name: "Workshop local fixture",
-        input: ["text"],
-        reasoning: false,
-        contextWindow: 64000,
-        maxTokens: 4096,
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      },
-    ],
-    streamSimple(selected, context) {
-      const stream = createAssistantMessageEventStream();
-      const block = fixture(phase, context);
-      const message = {
-        role: "assistant",
-        content: [block],
-        api: selected.api,
-        provider: selected.provider,
-        model: selected.id,
-        usage: {
-          input: 0,
-          output: 0,
-          cacheRead: 0,
-          cacheWrite: 0,
-          totalTokens: 0,
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-        },
-        stopReason: block.type === "toolCall" ? "toolUse" : "stop",
-        timestamp: Date.now(),
-      };
-      stream.push({
-        type: "start",
-        partial: { ...message, content: [], stopReason: "pending" },
-      });
-      if (block.type === "toolCall") {
-        stream.push({
-          type: "toolcall_start",
-          contentIndex: 0,
-          partial: message,
-        });
-        stream.push({
-          type: "toolcall_end",
-          contentIndex: 0,
-          toolCall: block,
-          partial: message,
-        });
-      } else {
-        stream.push({ type: "text_start", contentIndex: 0, partial: message });
-        stream.push({
-          type: "text_delta",
-          contentIndex: 0,
-          delta: block.text,
-          partial: message,
-        });
-        stream.push({
-          type: "text_end",
-          contentIndex: 0,
-          content: block.text,
-          partial: message,
-        });
-      }
-      stream.push({ type: "done", reason: message.stopReason, message });
-      stream.end();
-      return stream;
-    },
-  };
-}
-
 async function run(phase, prompt) {
   let trusted = true;
   if (toggle) {
@@ -360,7 +287,13 @@ async function run(phase, prompt) {
     refreshOnCreate: false,
     allowModelNetwork: false,
   });
-  const config = local && localProvider(phase);
+  const config =
+    local &&
+    localWorkshopProvider(
+      fixtureModel,
+      createAssistantMessageEventStream,
+      (context) => fixture(phase, context),
+    );
   if (local) runtime.registerProvider(provider, config);
   const loader = new DefaultResourceLoader({
     cwd,
