@@ -1,3 +1,4 @@
+import { ProjectMemoryUnavailable } from "./memory-readiness.js";
 import { createHash, randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -35,7 +36,14 @@ const safe = (v: unknown): v is string =>
   }) &&
   !containsDetectedSecret(v);
 export const DISCLOSURE_WITHHELD =
-  "Bookie output withheld: current model disclosure authority is absent or changed. Use /bookie-context.";
+  "Bookie output withheld: current model disclosure authority is absent or changed. Previous project history is unknown. Use /bookie-context to select a project manually.";
+export class WrongRecallVault extends Error {
+  static readonly detail =
+    "Bookie lookup withheld. The supplied vault does not match the selected project memory. If the request is about that project, retry once with the vault argument omitted.";
+  constructor() {
+    super(WrongRecallVault.detail);
+  }
+}
 export const MUTATION_WITHHELD =
   "Bookie local state may have changed; protected output withheld. Inspect locally before retrying.";
 async function destination(ctx: ExtensionContext) {
@@ -93,12 +101,22 @@ export function createDisclosureAuthority(
     invalidate();
   };
   async function selectedFor(ctx: ExtensionContext) {
+    if (!allowManaged && !grant) throw new ProjectMemoryUnavailable("disabled");
     if (!allowManaged || !managed) return grant;
     const revision = epoch;
-    const project = await managed.get(ctx);
-    if (!project) return;
+    const project = await managed.get(ctx).catch(() => {
+      throw new ProjectMemoryUnavailable("storage");
+    });
+    if (!project) {
+      if (!ctx.hasUI) throw new ProjectMemoryUnavailable("interactive");
+      if (ctx.isProjectTrusted?.() === false)
+        throw new ProjectMemoryUnavailable("trust");
+      throw new ProjectMemoryUnavailable("owner");
+    }
     if (grant?.managed === project) return grant;
-    const target = await destination(ctx);
+    const target = await destination(ctx).catch(() => {
+      throw new ProjectMemoryUnavailable("destination");
+    });
     await project.vault.assertCurrent();
     if (epoch !== revision || !allowManaged) throw Error(DISCLOSURE_WITHHELD);
     if (grant?.managed === project) return grant;
@@ -126,14 +144,15 @@ export function createDisclosureAuthority(
       selected.vault.root,
       selected.scope.project,
     );
-    if (
-      !current.ok ||
-      hash(current.scope) !== hash(selected.scope) ||
-      hash(await destination(ctx)) !== hash(selected.destination) ||
-      grant !== selected ||
-      epoch !== selected.revision
-    )
+    if (!current.ok || hash(current.scope) !== hash(selected.scope))
       throw Error(DISCLOSURE_WITHHELD);
+    const target = await destination(ctx).catch(() => {
+      throw new ProjectMemoryUnavailable("destination");
+    });
+    if (grant !== selected || epoch !== selected.revision)
+      throw Error(DISCLOSURE_WITHHELD);
+    if (hash(target) !== hash(selected.destination))
+      throw new ProjectMemoryUnavailable("destination");
     if (selected.managed) {
       await selected.vault.assertCurrent();
       if (grant !== selected || epoch !== selected.revision)
@@ -339,13 +358,20 @@ export function createDisclosureAuthority(
       root: string,
       ctx: ExtensionContext,
       dependency: "registry" | "canonical" = "registry",
+      explicitRecall = false,
     ) {
       if (dependency !== "registry" && dependency !== "canonical")
         throw Error(DISCLOSURE_WITHHELD);
       const selected = await selectedFor(ctx);
       if (!selected) throw Error(DISCLOSURE_WITHHELD);
-      if ((await realpath(root)) !== selected.vault.root)
-        throw Error(DISCLOSURE_WITHHELD);
+      const resolved = await realpath(root).catch(() => undefined);
+      if (resolved !== selected.vault.root) {
+        if (!explicitRecall) throw Error(DISCLOSURE_WITHHELD);
+        // Give scope guidance only while the current project is still authorized.
+        // Missing paths and other unselected vaults return the same fixed text.
+        await check(selected, ctx);
+        throw new WrongRecallVault();
+      }
       await check(selected, ctx);
       const controls = await readRecallState(root);
       const identity = (state: Awaited<ReturnType<typeof readRecallState>>) => {

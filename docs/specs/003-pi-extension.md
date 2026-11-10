@@ -220,3 +220,5 @@ Under [ADR-0016](../architecture/decisions/0016-managed-project-auto.md), verifi
 
 ### Remember delivered resources (BK-043)
 Under ADR-0016 the selected workspace's routine memory may retain a public resource shared in a completed Pi reply. Bookie may use a bounded model-selected reference or a cited Scout source, matched to an actual visible link in that reply. Store a separate Activity with the exact URL, preserving the original decision. Do not derive notes from arbitrary conversation text, ingest producer bodies, or treat a planned, withheld or interrupted reply as delivery. Session changes or revoked authority retire pending references. Fresh-session recall should compare the earlier decision with the delivery and leave the user's next choice open.
+
+A current-project lookup should omit the vault path. A refused or incomplete lookup leaves the prior history unknown. When first-time work depends on the absence of previous notes, wait for a complete lookup before taking that branch. Readiness diagnostics may identify the failed check in fixed language without disclosing protected content, paths or provider errors.

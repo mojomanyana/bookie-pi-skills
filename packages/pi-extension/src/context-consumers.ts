@@ -15,6 +15,7 @@ import {
   type PrepareContextRequest,
   type ProducerReference,
 } from "pi-bookie-core";
+import { ProjectMemoryUnavailable } from "./memory-readiness.js";
 import {
   DISCLOSURE_WITHHELD,
   type createDisclosureAuthority,
@@ -84,7 +85,8 @@ const toFailure = (error: unknown) =>
                 : "unavailable",
           error.code === "unavailable",
         )
-      : error instanceof Error && error.message === DISCLOSURE_WITHHELD
+      : error instanceof ProjectMemoryUnavailable ||
+          (error instanceof Error && error.message === DISCLOSURE_WITHHELD)
         ? new ConsumerError("denied")
         : new ConsumerError("unavailable", true);
 type Authority = ReturnType<typeof createDisclosureAuthority>;
