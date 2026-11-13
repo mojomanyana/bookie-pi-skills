@@ -83,4 +83,5 @@ This page is the stable entry point for product and engineering context.
 - Roadmap and backlog state describe delivery, not architecture authority.
 
 - [ADR-0017: managed lexical recall](architecture/decisions/0017-managed-lexical-recall.md) — additive local recall; exact search and scope authority retained.
-- [BK-047 evidence](planning/evidence/BK-047.md) — current daily-use candidate and validation status.
+- [BK-047 evidence](planning/evidence/BK-047.md) — managed project recall validation and delivery.
+- [0.4.0 public delivery](planning/evidence/public-delivery-0.4.0.md) — paired core 0.2.0 release, exact archive and installed-host verification.
