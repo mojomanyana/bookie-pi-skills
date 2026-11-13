@@ -81,3 +81,6 @@ This page is the stable entry point for product and engineering context.
 - Specifications move through `Draft`, `Ready`, `In progress`, `Implemented`, and `Verified`.
 - A specification is not `Verified` until its acceptance criteria have recorded test evidence.
 - Roadmap and backlog state describe delivery, not architecture authority.
+
+- [ADR-0017: managed lexical recall](architecture/decisions/0017-managed-lexical-recall.md) — additive local recall; exact search and scope authority retained.
+- [BK-047 evidence](planning/evidence/BK-047.md) — current daily-use candidate and validation status.

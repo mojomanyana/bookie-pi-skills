@@ -9,6 +9,7 @@ import type {
   PrepareCheckpointFailureReason,
 } from "pi-bookie-core";
 import type { createBookieContextFilter } from "./context-filter.js";
+import { managedRecall, RECALL_INPUT_ERROR } from "./managed-recall.js";
 import { resolve } from "node:path";
 import {
   ProjectMemoryUnavailable,
@@ -85,14 +86,16 @@ export function guardBookieTool<P extends TSchema, D, S>(
           suppliedVault !== undefined && recall,
         );
         entered = true;
-        const result = await tool.execute(
-          callId,
-          input,
-          signal,
-          undefined,
-          ctx,
-        );
-        const raw = payloads.get(result);
+        const managedSearch =
+          tool.name === "bookie_search" &&
+          ticket.managedWorkspace &&
+          object(values) &&
+          values.mode !== "exact";
+        const raw = managedSearch
+          ? await managedRecall(ticket, values, signal)
+          : payloads.get(
+              await tool.execute(callId, input, signal, undefined, ctx),
+            );
         if (!object(raw)) throw Error(DISCLOSURE_WITHHELD);
         let filtered: Record<string, unknown>;
         if (tool.name === "bookie_read") {
@@ -165,6 +168,21 @@ export function guardBookieTool<P extends TSchema, D, S>(
             results,
             scope: "selected project and allowed classes",
             resultsTruncated: raw.resultsTruncated === true || limited,
+            outputTruncated: raw.outputTruncated === true,
+            ...(managedSearch
+              ? {
+                  queryMode: raw.queryMode,
+                  matching: raw.matching,
+                  ordering: raw.ordering,
+                  limit: raw.limit,
+                  matchedCount: raw.matchedCount,
+                  scanComplete: raw.complete === true,
+                }
+              : {
+                  queryMode: "exact",
+                  matching: "literal-case-sensitive-substring",
+                  ordering: "path-asc",
+                }),
           };
         } else if (tool.name === "bookie_validate") {
           filtered = {
@@ -283,6 +301,8 @@ export function checkpointPreparationFailureMessage(
 }
 
 const SAFE_ERRORS = new Set([
+  RECALL_INPUT_ERROR,
+  "Bookie exact search needs a query. Recent mode is available only for managed project memory.",
   ...Object.values(AUTHORING_FEEDBACK),
   "Bookie needs a short non-sensitive project title and summary.",
   "Bookie needs a short non-sensitive project title and summary, and a safe public URL if supplied.",

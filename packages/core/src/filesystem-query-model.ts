@@ -15,6 +15,45 @@ export interface SearchVaultRequest {
   readonly filters?: FilesystemSearchFilters;
 }
 
+/** Additive recall contract; searchVault retains its exact-substring semantics. */
+export type RecallVaultRequest =
+  | {
+      readonly mode: "terms";
+      readonly query: string;
+      readonly filters?: FilesystemSearchFilters;
+    }
+  | {
+      readonly mode: "recent";
+      readonly query?: never;
+      readonly filters?: FilesystemSearchFilters;
+    };
+
+export interface RecallVaultOptions extends SearchVaultOptions {
+  /** Host-owned visibility predicate, applied before counting or top-K selection. */
+  readonly include?: (
+    record: FilesystemConceptSignals & {
+      readonly source: FilesystemConceptSource;
+    },
+  ) => boolean;
+}
+
+export interface FilesystemRecallHit extends Omit<
+  FilesystemSearchHit,
+  "matchedField"
+> {
+  readonly matchedField: "title" | "body" | "title-and-body" | null;
+  readonly recordedAt: string | null;
+  readonly recordedAtField: "bookie.occurred_at" | "generated.at" | null;
+}
+
+export interface RecallVaultResult extends Omit<SearchVaultResult, "results"> {
+  readonly results: readonly FilesystemRecallHit[];
+  readonly queryMode: "terms" | "recent";
+  readonly matching: "nfkc-lowercase-all-word-tokens" | "none";
+  readonly ordering: "recorded-time-desc-path-asc";
+  readonly limit: number;
+}
+
 export type InspectConceptSelector =
   | { readonly path: string; readonly uid?: never }
   | { readonly uid: string; readonly path?: never };

@@ -69,6 +69,82 @@ function host(cwd, enabled = true, sessionId = "root-session") {
     },
   };
 }
+test("managed recall finds reordered words, offers bounded recent notes, and preserves exact mode after a fresh session", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "bookie-managed-recall-"));
+  const old = process.env.PI_CODING_AGENT_DIR;
+  const agent = join(root, "agent"),
+    cwd = join(root, "project"),
+    other = join(root, "other");
+  process.env.PI_CODING_AGENT_DIR = agent;
+  t.after(async () => {
+    if (old === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = old;
+    await rm(root, { recursive: true, force: true });
+  });
+  await Promise.all(
+    [agent, cwd, other].map((path) => mkdir(path, { mode: 0o700 })),
+  );
+  const first = host(cwd);
+  await first.event("session_start");
+  await first.call("bookie_remember", {
+    title: "Workshop learning resource",
+    summary: "Café participants will use printed maps.",
+  });
+  await first.call("bookie_remember", {
+    title: "Workshop room",
+    summary: "The room is reserved.",
+  });
+  await first.event("session_shutdown");
+  const next = host(cwd, true, "fresh-parent");
+  await next.event("session_start");
+  const search = async (args) =>
+    JSON.parse(await next.call("bookie_search", args)).result;
+  const terms = await search({ query: "RESOURCE workshop maps CAFÉ" });
+  assert.equal(terms.complete, true);
+  assert.equal(terms.matching, "nfkc-lowercase-all-word-tokens");
+  assert.equal(terms.results.length, 1);
+  assert.equal(terms.results[0].title, "Workshop learning resource");
+  assert.equal(
+    (await search({ mode: "exact", query: "workshop resource" })).results
+      .length,
+    0,
+  );
+  assert.equal(
+    (await search({ mode: "exact", query: "Workshop learning resource" }))
+      .results.length,
+    1,
+  );
+  const recent = await search({ mode: "recent", type: "Activity", limit: 1 });
+  assert.equal(recent.results.length, 1);
+  assert.equal(recent.matchedCount, 2);
+  assert.equal(recent.resultsTruncated, true);
+  assert.equal(recent.scanComplete, true);
+  assert.equal(recent.complete, false);
+  const all = await search({ mode: "recent", type: "Activity", limit: 2 });
+  assert.equal(all.complete, true);
+  assert.equal(all.results.length, 2);
+  for (const args of [
+    { query: "!!!" },
+    { mode: "recent", query: "workshop" },
+    { mode: "recent", limit: 51 },
+    {},
+  ])
+    await assert.rejects(search(args), /needs words in query/);
+  const separate = host(other, true, "other-parent");
+  await separate.event("session_start");
+  assert.deepEqual(
+    JSON.parse(
+      await separate.call("bookie_search", {
+        mode: "recent",
+        type: "Activity",
+      }),
+    ).result.results,
+    [],
+  );
+  next.revoke();
+  await assert.rejects(search({ mode: "recent" }), /withheld/);
+});
+
 test("fresh trusted Auto workspace remembers and recalls across sessions without setup; disabled, unrelated and revoked sessions stay isolated", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "bookie-auto-project-"));
   const prev = process.env.PI_CODING_AGENT_DIR;
