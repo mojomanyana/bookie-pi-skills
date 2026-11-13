@@ -6,6 +6,14 @@ Pi can call `bookie_remember` to retain a short project note and `bookie_search`
 
 Distributable Pi package for Bookie tools. Canonical behavior belongs in `pi-bookie-core`; follow [SPEC-003](../../docs/specs/003-pi-extension.md) and the Pi-specific constraints in [AGENTS.md](../../AGENTS.md#pi-implementation-constraints).
 
+### Finding a saved note
+
+Managed project memory searches all words in the query across the title and body, ignoring case, punctuation and word order. For example, `workshop resource` can find **Workshop learning resource**. Unicode is normalized with NFKC and lowercase; tokens are whole sequences of letters/numbers. This does not infer synonyms or word stems. Use `mode: "recent"` with no query when you want to browse recent notes instead. The default is ten results; `limit` accepts 1–50. Notes sort newest recorded `bookie.occurred_at` first, falling back to `generated.at`, with canonical path as a stable tie-break; missing dates sort last. The timestamp describes the note, not independent verification of its claims.
+
+Check `complete`, `scanComplete`, `resultsTruncated` and `outputTruncated`. More matches than the cap makes `complete: false`; narrow the query or explicitly request a larger limit. Excerpts are bounded source prefixes and may omit the matching passage—read a selected note when its full contents matter. Results/counts include only the authorized project and classes, after suppression. No result can be inferred from a refused or incomplete lookup.
+
+Manually selected vaults retain literal, case-sensitive substring search and canonical-path order. Set `mode: "exact"` to request that behavior explicitly, including in managed memory. `recent` mode is not available for manually selected vaults. Returned `matching` and `ordering` identify the behavior used. The existing core `searchVault` and CLI search contracts are unchanged.
+
 BK-013 through BK-015 expose five local tools:
 
 - `bookie_read` reads one explicitly selected local concept by canonical path or UID.

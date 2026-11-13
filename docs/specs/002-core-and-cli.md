@@ -1,5 +1,9 @@
 # SPEC-002: Core library and CLI
 
+## Additive managed-recall support — BK-047
+
+[ADR-0017](../architecture/decisions/0017-managed-lexical-recall.md) adds `recallVault` beside the unchanged exact `searchVault` API. It reuses the bounded schema/sensitivity/path scanner; all normalized word tokens match title/body, or explicit recent mode lists without a query. Results use recorded occurrence/generated time descending and canonical-path ties, with ten results by default and a hard maximum of fifty. A host-owned inclusion predicate runs before counts and selection. Counts, scan/result/text limits and exact source identity remain explicit. The CLI stays exact; no canonical migration, model call, index or service is added.
+
 ## Status
 
 Verified — behavior through the reduced read/query-only BK-012 scope is merged and verified; filesystem-writing CLI commands remain deferred under ADR-0008. BK-027/BK-029 safety corrections below merged in [PR #30](https://github.com/mojomanyana/bookie-pi-skills/pull/30) with successful matching PR and [merged-main CI](https://github.com/mojomanyana/bookie-pi-skills/actions/runs/40872106782); both backlog items are Done ([BK-027](../planning/evidence/BK-027.md), [BK-029](../planning/evidence/BK-029.md)).

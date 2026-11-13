@@ -5,6 +5,7 @@ import { dirname, extname, join, normalize, resolve } from "node:path";
 import test from "node:test";
 import { ESLint } from "eslint";
 import { loadSkillsFromDir } from "@earendil-works/pi-coding-agent";
+import { parse as parseYaml } from "yaml";
 
 const root = resolve(import.meta.dirname, "..");
 
@@ -122,7 +123,8 @@ test("CI actions use Node 24-native maintained releases", () => {
     resolve(root, ".github/workflows/ci.yml"),
     "utf8",
   );
-  const actions = workflowActions(workflow);
+  const jobs = Object.entries(parseYaml(workflow).jobs);
+  assert.ok(jobs.length > 0);
 
   assert.deepEqual(
     workflowActions(
@@ -131,12 +133,23 @@ test("CI actions use Node 24-native maintained releases", () => {
     ["actions/checkout@v4"],
     "named steps must not bypass action-version checks",
   );
-  for (const action of ["actions/checkout", "actions/setup-node"]) {
-    assert.deepEqual(
-      actions.filter((value) => value.startsWith(`${action}@`)),
-      [`${action}@v5`],
-      `${action} must use its Node 24-native v5 release exactly once`,
+  for (const [name, job] of jobs) {
+    const actions = job.steps.map((step) => step.uses).filter(Boolean);
+    for (const action of ["actions/checkout", "actions/setup-node"]) {
+      assert.deepEqual(
+        actions.filter((value) => value.startsWith(`${action}@`)),
+        [`${action}@v5`],
+        `${name}: ${action} must use its Node 24-native v5 release exactly once`,
+      );
+    }
+    assert.equal(job["runs-on"], "ubuntu-latest");
+    assert.equal(
+      job.steps.find((step) => step.uses === "actions/setup-node@v5").with[
+        "node-version-file"
+      ],
+      ".nvmrc",
     );
+    assert.ok(job.steps.some((step) => step.run === "npm ci"));
   }
   assert.match(workflow, /^\s+runs-on:\s+ubuntu-latest\s*$/m);
   assert.match(workflow, /^\s+node-version-file:\s+\.nvmrc\s*$/m);
@@ -368,12 +381,12 @@ test("toolchain, workspaces, and lockfile versions stay aligned", () => {
       "packages/core": {
         name: "pi-bookie-core",
         public: true,
-        version: "0.1.0",
+        version: "0.2.0",
       },
       "packages/pi-extension": {
         name: "pi-bookie",
         public: true,
-        version: "0.3.1",
+        version: "0.4.0",
       },
       "packages/cli": { name: "@bookie/cli", public: false, version: "0.0.0" },
       "apps/service": {
@@ -397,7 +410,7 @@ test("toolchain, workspaces, and lockfile versions stay aligned", () => {
       link: true,
     });
     if (workspacePath !== "packages/core") {
-      assert.equal(manifest.dependencies["pi-bookie-core"], "0.1.0");
+      assert.equal(manifest.dependencies["pi-bookie-core"], "0.2.0");
       assert.equal(manifest.dependencies["@bookie/core"], undefined);
     }
     if (release.public) {

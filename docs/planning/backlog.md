@@ -79,3 +79,6 @@ node packages/pi-extension/scripts/verify-open-choice.mjs <pi-install>/node_modu
 Merged in [PR #53](https://github.com/mojomanyana/bookie-pi-skills/pull/53) after the [feature checks passed](https://github.com/mojomanyana/bookie-pi-skills/actions/runs/42838741857).
 
 **BK-046 · Ready — ship readable Pi update notes.** Owner-authorized packaging follow-up, SPEC-003 / ADR-0015, depends on the released 0.3.0 package. Include a root changelog in the actual npm archive, with the current version and accurate recent history. Validate packed bytes and preserve the exact core 0.1.0 dependency, extension entry and existing behavior. Candidate: pi-bookie 0.3.1; not delivered until merge and publication.
+
+
+**BK-047 · Ready — useful managed project recall.** Owner-authorized daily-use batch (2026-11-13), SPEC-002/003 and ADR-0017; depends on the released managed-memory behavior. Add case-insensitive all-word recall, recent recorded-time ordering and explicit bounded recent listing without changing exact core/CLI/manual-vault search or disclosure/project boundaries. Regression groups approved before execution. Implementation and checks are tracked in [BK-047 evidence](evidence/BK-047.md); no release is implied, and future delivery requires a paired core/extension dependency update. Shared retrieval BK-017 and folder migration remain outside this item.

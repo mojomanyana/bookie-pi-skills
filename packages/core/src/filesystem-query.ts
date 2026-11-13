@@ -17,6 +17,10 @@ import type {
   FilesystemQueryOptions,
   FilesystemSearchFilters,
   FilesystemSearchHit,
+  FilesystemRecallHit,
+  RecallVaultOptions,
+  RecallVaultRequest,
+  RecallVaultResult,
   InspectConceptFailure,
   InspectConceptOptions,
   InspectConceptResult,
@@ -47,6 +51,8 @@ export const DEFAULT_MAX_SEARCH_RESULTS = 50;
 export const DEFAULT_MAX_SEARCH_EXCERPT_BYTES = 1_024;
 export const DEFAULT_MAX_SEARCH_TEXT_BYTES = 32_768;
 export const DEFAULT_MAX_INSPECT_CONTENT_BYTES = DEFAULT_MAX_CONCEPT_BYTES;
+export const DEFAULT_MAX_RECALL_RESULTS = 10;
+export const MAX_RECALL_RESULTS = 50;
 
 const filterNames = [
   "type",
@@ -527,6 +533,170 @@ export async function searchVault(
   };
 }
 
+function recallWords(value: string): readonly string[] {
+  return [
+    ...new Set(
+      value
+        .normalize("NFKC")
+        .toLowerCase()
+        .match(/[\p{L}\p{N}]+/gu) ?? [],
+    ),
+  ];
+}
+
+function recallTimestamp(concept: ScannedQueryConcept): {
+  recordedAt: string | null;
+  recordedAtField: FilesystemRecallHit["recordedAtField"];
+  time: number;
+} {
+  const bookie = concept.frontmatter.bookie;
+  const generated = concept.frontmatter.generated;
+  const fields = [
+    ["bookie.occurred_at", isRecord(bookie) ? bookie.occurred_at : undefined],
+    ["generated.at", isRecord(generated) ? generated.at : undefined],
+  ] as const;
+  for (const [field, value] of fields) {
+    if (typeof value !== "string") continue;
+    const time = Date.parse(value);
+    if (Number.isFinite(time))
+      return { recordedAt: value, recordedAtField: field, time };
+  }
+  return {
+    recordedAt: null,
+    recordedAtField: null,
+    time: Number.NEGATIVE_INFINITY,
+  };
+}
+
+/** Bounded lexical recall. It does not change searchVault or perform semantic retrieval. */
+export async function recallVault(
+  root: string | URL,
+  request: RecallVaultRequest,
+  options: RecallVaultOptions = {},
+): Promise<RecallVaultResult> {
+  validateRoot(root);
+  if (
+    !isRecord(request) ||
+    Object.keys(request).some(
+      (key) => !["mode", "query", "filters"].includes(key),
+    )
+  )
+    throw new TypeError("recall request contains an unsupported field");
+  if (request.mode !== "terms" && request.mode !== "recent")
+    throw new TypeError("recall mode must be terms or recent");
+  if (request.mode === "recent" && request.query !== undefined)
+    throw new TypeError("recent recall does not accept a query");
+  const filters = validateSearchRequest({
+    query: request.mode === "terms" ? request.query : "recent",
+    ...(request.filters === undefined ? {} : { filters: request.filters }),
+  });
+  const terms = request.mode === "terms" ? recallWords(request.query) : [];
+  if (request.mode === "terms" && terms.length === 0)
+    throw new TypeError("recall query must contain a letter or number");
+  const limits = queryLimits({
+    ...options,
+    maxResults: options.maxResults ?? DEFAULT_MAX_RECALL_RESULTS,
+  });
+  if (limits.maxResults > MAX_RECALL_RESULTS)
+    throw new RangeError("recall maxResults must not exceed 50");
+  if (options.include !== undefined && typeof options.include !== "function")
+    throw new TypeError("recall include must be a function");
+  throwIfAborted(options.signal);
+  const pending: { hit: FilesystemRecallHit; time: number }[] = [];
+  let matchedCount = 0;
+  const compare = (
+    left: (typeof pending)[number],
+    right: (typeof pending)[number],
+  ) =>
+    (left.time === right.time ? 0 : left.time > right.time ? -1 : 1) ||
+    compareText(left.hit.source.path, right.hit.source.path);
+  const scan = await scanVaultForQuery({
+    rootPath: root,
+    limits: limits.validation,
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+    visit(concept) {
+      if (concept.excluded || !matchesFilters(concept, filters)) return;
+      const source = sourceFor(concept),
+        signals = signalsFor(concept);
+      // Visibility is checked before counts and the bounded result selection.
+      if (options.include && !options.include({ source, ...signals })) return;
+      const titleWords = new Set(recallWords(concept.title));
+      const bodyWords = new Set(recallWords(concept.bodyText));
+      if (!terms.every((term) => titleWords.has(term) || bodyWords.has(term)))
+        return;
+      matchedCount += 1;
+      const stamp = recallTimestamp(concept);
+      const matchedField =
+        request.mode === "recent"
+          ? null
+          : terms.every((term) => titleWords.has(term))
+            ? "title"
+            : terms.every((term) => bodyWords.has(term))
+              ? "body"
+              : "title-and-body";
+      const title = truncateUtf8Prefix(concept.title, limits.maxExcerptBytes);
+      // Excerpts remain exact source prefixes; normalized text is never presented as evidence.
+      const excerpt = truncateUtf8Prefix(
+        matchedField === "title" ? concept.title : concept.bodyText,
+        limits.maxExcerptBytes,
+      );
+      pending.push({
+        time: stamp.time,
+        hit: {
+          source,
+          ...signals,
+          title: title.value,
+          titleTruncated: title.truncated,
+          matchedField,
+          excerpt: excerpt.value,
+          excerptTruncated: excerpt.truncated,
+          recordedAt: stamp.recordedAt,
+          recordedAtField: stamp.recordedAtField,
+        },
+      });
+      pending.sort(compare);
+      if (pending.length > limits.maxResults) pending.pop();
+    },
+  });
+  let remaining = limits.maxTotalTextBytes;
+  let outputTruncated = false;
+  const results = scan.safeToReturn
+    ? pending.map(({ hit }) => {
+        const title = truncateUtf8Prefix(hit.title, remaining);
+        remaining -= title.byteLength;
+        const excerpt = truncateUtf8Prefix(hit.excerpt, remaining);
+        remaining -= excerpt.byteLength;
+        const titleTruncated = hit.titleTruncated || title.truncated;
+        const excerptTruncated = hit.excerptTruncated || excerpt.truncated;
+        outputTruncated ||= titleTruncated || excerptTruncated;
+        return Object.freeze({
+          ...hit,
+          title: title.value,
+          titleTruncated,
+          excerpt: excerpt.value,
+          excerptTruncated,
+        });
+      })
+    : [];
+  return {
+    mode: "filesystem",
+    root: scan.root,
+    results: Object.freeze(results),
+    queryMode: request.mode,
+    matching:
+      request.mode === "terms" ? "nfkc-lowercase-all-word-tokens" : "none",
+    ordering: "recorded-time-desc-path-asc",
+    limit: limits.maxResults,
+    matchedCount: scan.safeToReturn ? matchedCount : 0,
+    rejectedConcepts: scan.rejectedConcepts,
+    complete: scan.complete && scan.safeToReturn && scan.rejectedConcepts === 0,
+    resultsTruncated: scan.safeToReturn && matchedCount > results.length,
+    outputTruncated,
+    diagnostics: scan.diagnostics,
+    diagnosticsTruncated: scan.diagnosticsTruncated,
+  };
+}
+
 export async function inspectConcept(
   root: string | URL,
   selector: InspectConceptSelector,
@@ -644,6 +814,10 @@ export type {
   FilesystemQueryOptions,
   FilesystemSearchFilters,
   FilesystemSearchHit,
+  FilesystemRecallHit,
+  RecallVaultOptions,
+  RecallVaultRequest,
+  RecallVaultResult,
   FilesystemSensitivityClassification,
   InspectConceptFailure,
   InspectConceptOptions,

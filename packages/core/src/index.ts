@@ -107,6 +107,9 @@ export {
   inspectConcept,
   MAX_FILESYSTEM_QUERY_BYTES,
   searchVault,
+  recallVault,
+  DEFAULT_MAX_RECALL_RESULTS,
+  MAX_RECALL_RESULTS,
 } from "./filesystem-query.js";
 export type {
   FilesystemConceptSignals,
@@ -114,6 +117,10 @@ export type {
   FilesystemQueryOptions,
   FilesystemSearchFilters,
   FilesystemSearchHit,
+  FilesystemRecallHit,
+  RecallVaultOptions,
+  RecallVaultRequest,
+  RecallVaultResult,
   FilesystemSensitivityClassification,
   InspectConceptFailure,
   InspectConceptOptions,

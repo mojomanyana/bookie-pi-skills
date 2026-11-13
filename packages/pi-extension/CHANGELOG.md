@@ -1,5 +1,11 @@
 # pi-bookie release notes
 
+## [0.4.0] - 2026-11-13
+
+- Find managed project notes using all query words regardless of case or order, and explicitly browse the most recent recorded notes.
+- Show result limits and incomplete/clipped recall clearly. Exact search, project boundaries and disclosure permissions remain available and unchanged.
+- Add a scripted Pi 1.5.2 fresh-session/choice CI check. Includes the exact automatic dependency pi-bookie-core 0.2.0.
+
 ## [0.3.1] - 2026-11-10
 
 - Include these release notes in the npm package so Pi 1.5 and newer can explain subsequent updates on a fresh launch.

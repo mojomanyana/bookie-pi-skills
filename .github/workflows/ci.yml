@@ -20,3 +20,19 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+
+  pi-152-lifecycle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Install isolated pinned Pi host and released Daddy
+        run: npm install --prefix "$RUNNER_TEMP/bookie-pi-152" --no-save --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent@1.5.2 pi-daddy@0.56.3
+      - name: Exercise choices and fresh-session recall with a local scripted provider
+        run: node packages/pi-extension/scripts/verify-open-choice.mjs "$RUNNER_TEMP/bookie-pi-152/node_modules" "$RUNNER_TEMP/bookie-pi-152/node_modules/pi-daddy" --answer

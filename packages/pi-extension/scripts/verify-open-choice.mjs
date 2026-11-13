@@ -226,7 +226,11 @@ const host = await createAgentSessionRuntime(
       noTools: "builtin",
       thinkingLevel: "low",
     });
-    return { ...result, services: { cwd, agentDir }, diagnostics: [] };
+    return {
+      ...result,
+      services: { cwd, agentDir, modelRuntime },
+      diagnostics: [],
+    };
   },
   {
     cwd,
@@ -264,6 +268,7 @@ async function frame(destination, expected) {
   return value;
 }
 const timer = setTimeout(() => void host.session.abort(), 90000);
+let report;
 try {
   await bind(host.session);
   await host.session.prompt(delivery);
@@ -304,25 +309,23 @@ try {
     : undefined;
   assert.deepEqual(errors, []);
   assert.equal(fetches, 0);
-  console.log(
-    JSON.stringify(
-      {
-        status: "passed",
-        newSession: true,
-        structuredUnresolvedWork: structured,
-        dashboard: ["Overview: Open choices", "Tasks: Open choices"],
-        attentionRequests: 0,
-        answering,
-        calls,
-        externalFetches: fetches,
-      },
-      null,
-      2,
-    ),
-  );
+  report = {
+    status: "passed",
+    newSession: true,
+    structuredUnresolvedWork: structured,
+    dashboard: ["Overview: Open choices", "Tasks: Open choices"],
+    attentionRequests: 0,
+    answering,
+    calls,
+    externalFetches: fetches,
+  };
 } finally {
   clearTimeout(timer);
-  await host.dispose();
-  process.chdir(tmpdir());
-  await rm(root, { recursive: true, force: true });
+  try {
+    await host.dispose();
+  } finally {
+    process.chdir(tmpdir());
+    await rm(root, { recursive: true, force: true });
+  }
 }
+console.log(JSON.stringify({ ...report, cleanup: "completed" }, null, 2));

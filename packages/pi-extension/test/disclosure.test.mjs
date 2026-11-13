@@ -150,6 +150,35 @@ test("search strips cross-project/global diagnostics and undeclared metadata; va
   const value = JSON.parse(search.content[0].text).result;
   assert.equal(value.matchedCount, undefined);
   assert.equal(value.diagnostics, undefined);
+  assert.equal(value.queryMode, "exact");
+  assert.equal(value.matching, "literal-case-sensitive-substring");
+  const lower = await f.tools
+    .get("bookie_search")
+    .execute(
+      "lower",
+      { vault: f.vault, query: "fixture" },
+      undefined,
+      undefined,
+      f.ctx,
+    );
+  assert.notDeepEqual(
+    JSON.parse(lower.content[0].text).result.results.map(
+      (hit) => hit.source.path,
+    ),
+    value.results.map((hit) => hit.source.path),
+  );
+  await assert.rejects(
+    f.tools
+      .get("bookie_search")
+      .execute(
+        "recent",
+        { vault: f.vault, mode: "recent" },
+        undefined,
+        undefined,
+        f.ctx,
+      ),
+    /Recent mode is available only for managed project memory/,
+  );
   assert.ok(
     value.results.every(
       (x) =>
