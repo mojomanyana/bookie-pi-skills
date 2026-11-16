@@ -119,6 +119,10 @@ Both root-Git and local-subpackage manifests select the TypeScript `src/index.ts
 
 Begin with read, local search, validate, and explicit create. Add checkpoint only after the Activity schema and session-context redaction policy are verified. Keep initial rendering compact and use default Pi rendering unless a proven usability problem requires customization.
 
+### BK-051: next actions without unnecessary user choices
+
+Per ADR-0021, `bookie_remember` may retain a short `nextAction` in the existing Activity Next action section. It creates no choice row or permission request. An `openChoice` remains a concrete unresolved user-owned decision; pending work already authorized in the current conversation belongs in `nextAction`. Preserve original choice answers, unresolved choices, old-note identities, source and disclosure boundaries. Explicit tool input is not reclassified through question-text heuristics. Bounded input correction must distinguish an input rejected before saving from a write with uncertain confirmation. Verification is pending; no live model-compliance claim follows from local fixtures.
+
 ## BK-031 returning-output integration (released in 0.1.0)
 
 The Pi adapter owns trusted destination/policy selection independently of save permission. Guard read/search, validation metadata, write results and checkpoint previews before model-visible return. The actual current Pi provider/model/endpoint, selected vault/Project and allowed declared classes come from trusted host/UI state, never tool parameters. Core scope/context metadata helps enforce this boundary but is not authority. Static withheld results must not imply that mutation failed after it succeeded. Optional producer-reference synchronization uses trusted producer lookup and exact scoped references; it never reruns original work. No history-confined provider guarantee, new live disclosure choice or child inheritance is inferred.

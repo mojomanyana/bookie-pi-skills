@@ -1,5 +1,10 @@
 # pi-bookie release notes
 
+## Unreleased
+
+- Save a known next work step with `nextAction`, separately from the user's unresolved choices. Already-authorized review or build work can remain in the handoff without creating a dashboard question.
+- Clarify input limits and direct correction of rejected save arguments, while retaining read-before-retry for uncertain writes. Preserve next actions through resource delivery and fresh-session recall; existing notes and the exact core 0.3.0 dependency remain compatible.
+
 ## [0.6.0] - 2026-11-16
 
 - Show saved project-note titles, brief summaries and honest counts in a compatible Pi Daddy dashboard, including after a new chat. Keep unavailable access distinct from an empty notebook.

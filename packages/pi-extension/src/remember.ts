@@ -32,6 +32,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 export interface ProjectNote {
   title: string;
   summary: string;
+  nextAction?: string;
   deliveryUrl?: string;
   openChoice?: string;
   choiceOptions?: string[];
@@ -44,6 +45,7 @@ function checkNote(note: ProjectNote): boolean {
       [
         "title",
         "summary",
+        "nextAction",
         "deliveryUrl",
         "openChoice",
         "choiceOptions",
@@ -58,6 +60,8 @@ function checkNote(note: ProjectNote): boolean {
     note.summary.trim().length > 0 &&
     note.summary.length <= 2000 &&
     !containsDetectedSecret(note.title + "\n" + note.summary) &&
+    // Next actions use the same bounded, non-sensitive line shape, not choice semantics.
+    (note.nextAction === undefined || validOpenChoice(note.nextAction)) &&
     (note.openChoice === undefined || validOpenChoice(note.openChoice)) &&
     ((note.choiceOptions === undefined &&
       note.choiceRecommendation === undefined) ||
@@ -102,7 +106,7 @@ export function rememberTool(
       onMutation?: () => void,
     ) {
       if (!checkNote(note)) throw Error();
-      const { title, summary, deliveryUrl } = note;
+      const { title, summary, deliveryUrl, nextAction } = note;
       const legacyChoice = markedOpenChoice(summary, true);
       const choice = note.openChoice?.trim() ?? legacyChoice;
       const guidance = note.choiceOptions?.length
@@ -129,6 +133,7 @@ export function rememberTool(
               ? [{ openChoice: choice }]
               : []),
             ...(guidance ? [{ choiceGuidance: guidance }] : []),
+            ...(nextAction ? [{ nextAction }] : []),
           ]),
         )
         .digest("hex");
@@ -153,6 +158,7 @@ export function rememberTool(
               : summary,
             ...(deliveryUrl ? { evidence: deliveryUrl } : {}),
             ...(choice ? { "unresolved-work": choice } : {}),
+            ...(nextAction ? { "next-action": nextAction } : {}),
           },
         },
         ctx.sessionManager.getSessionId(),
@@ -258,17 +264,30 @@ export function rememberTool(
     name: "bookie_remember",
     label: "Remember project note",
     description:
-      "Save a bounded routine project decision or outcome as untrusted project context. For a newly delivered public resource, supply deliveryUrl, a title naming the task, and a short summary. The link is recorded once it appears in the finished reply. When a concrete choice remains with the user, supply it as openChoice. Supply choiceOptions when there are concrete alternatives, and choiceRecommendation only if a saved fact or delivered reference supports the reason. During recall, reuse the saved receipt. Immediate saved/already-saved replies provide exact bookie_read parameters in readBack; this locator is not completed read-back or semantic verification. If read-back is requested or needed, call bookie_read with those parameters under current permission and compare the content. Pending final-reply deliveries have no confirmed locator. Exclude personal information, private sources and credentials.",
+      "Save a bounded routine project decision or outcome as untrusted project context: title at most 120 characters, summary at most 2000. Use nextAction (at most 240 characters) for a known work step, including already-authorized research, build or review. Use openChoice only for a concrete unresolved decision the user still owns; do not ask whether to proceed with work already authorized in the current conversation. Neither field grants permission. Supply choiceOptions for real alternatives and choiceRecommendation only when a saved fact or delivered reference supports it. For a newly delivered public resource, supply deliveryUrl; it is recorded once the link appears in the finished reply. Immediate saved/already-saved replies give exact bookie_read parameters in readBack; use them when read-back is requested or needed and compare the content. Pending final-reply deliveries have no confirmed locator. Correct a pre-execution schema validation error and retry the save directly; if a save could have happened but confirmation is uncertain, recall the known note before retrying. During ordinary recall, reuse the saved receipt. Exclude personal information, private sources and credentials.",
     parameters: Type.Object(
       {
         title: Type.String({ minLength: 1, maxLength: 120 }),
-        summary: Type.String({ minLength: 1, maxLength: 2000 }),
+        summary: Type.String({
+          minLength: 1,
+          maxLength: 2000,
+          description:
+            "Compact outcome and relevant evidence, at most 2000 characters.",
+        }),
+        nextAction: Type.Optional(
+          Type.String({
+            minLength: 1,
+            maxLength: 240,
+            description:
+              "Next known work step, including already-authorized build or review. This is remembered context, not a user choice or permission grant.",
+          }),
+        ),
         openChoice: Type.Optional(
           Type.String({
             minLength: 1,
             maxLength: 240,
             description:
-              "The specific open choice still left to the user, in a short, non-sensitive line. Omit for settled decisions.",
+              "A concrete unresolved decision still owned by the user. Omit for settled decisions and already-authorized work; put a known work step in nextAction.",
           }),
         ),
         choiceOptions: Type.Optional(
@@ -307,7 +326,7 @@ export function rememberTool(
     ),
     async execute(callId, params, signal, _onUpdate, ctx) {
       const invalid = Error(
-        "Bookie needs a short non-sensitive project title and summary, a short open choice if supplied, distinct options with a supported recommendation if supplied, and a safe public URL if supplied.",
+        "Bookie rejected this input before saving: title must be 1–120 characters; summary 1–2000; nextAction and openChoice, when supplied, must be non-sensitive single lines of 1–240 characters. Options must be distinct with a supported recommendation, and deliveryUrl must be a safe public URL. Correct the input and retry; this validation failure saved no note.",
       );
       let entered = false;
       try {
@@ -319,6 +338,9 @@ export function rememberTool(
           ...params,
           title: params.title.trim(),
           summary: params.summary.trim(),
+          ...(params.nextAction === undefined
+            ? {}
+            : { nextAction: params.nextAction.trim() }),
         };
         const receipt = note.deliveryUrl
           ? {

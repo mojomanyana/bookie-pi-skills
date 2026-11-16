@@ -87,3 +87,6 @@ This page is the stable entry point for product and engineering context.
 - [0.4.0 public delivery](planning/evidence/public-delivery-0.4.0.md) — paired core 0.2.0 release, exact archive and installed-host verification.
 
 - [0.6.0 public delivery](planning/evidence/public-delivery-0.6.0.md) — scoped dashboard contents, current-scope resume guidance and exact immediate-save locators, with unchanged core 0.3.0.
+
+- [ADR-0021: next actions and user choices](architecture/decisions/0021-next-actions-and-user-choices.md) — additive pending-work field, separate from unanswered user decisions.
+- [BK-051 evidence](planning/evidence/BK-051.md) — approved clarity batch and local verification; model field selection remains unproven.
