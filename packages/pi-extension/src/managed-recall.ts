@@ -1,4 +1,8 @@
-import { recallVault, type FilesystemSearchFilters } from "pi-bookie-core";
+import {
+  recallVault,
+  suggestVault,
+  type FilesystemSearchFilters,
+} from "pi-bookie-core";
 import type { createDisclosureAuthority } from "./disclosure-authority.js";
 
 export const RECALL_INPUT_ERROR =
@@ -13,8 +17,12 @@ export async function managedRecall(
   signal?: AbortSignal,
 ) {
   const recent = values.mode === "recent";
+  const candidates = values.mode === "candidates";
   if (
-    (values.mode !== undefined && values.mode !== "search" && !recent) ||
+    (values.mode !== undefined &&
+      values.mode !== "search" &&
+      !recent &&
+      !candidates) ||
     (recent ? values.query !== undefined : typeof values.query !== "string") ||
     (values.limit !== undefined &&
       (typeof values.limit !== "number" ||
@@ -37,6 +45,22 @@ export async function managedRecall(
     filters[name] = values[name];
   }
   try {
+    const options = {
+      maxResults: values.limit === undefined ? 10 : (values.limit as number),
+      maxExcerptBytes: 1024,
+      maxTotalTextBytes: 32000,
+      include: ticket.allows,
+      ...(signal === undefined ? {} : { signal }),
+    };
+    if (candidates)
+      return await suggestVault(
+        ticket.root,
+        {
+          query: values.query as string,
+          filters: filters as FilesystemSearchFilters,
+        },
+        options,
+      );
     return await recallVault(
       ticket.root,
       recent
@@ -46,13 +70,7 @@ export async function managedRecall(
             query: values.query as string,
             filters: filters as FilesystemSearchFilters,
           },
-      {
-        maxResults: values.limit === undefined ? 10 : (values.limit as number),
-        maxExcerptBytes: 1024,
-        maxTotalTextBytes: 32000,
-        include: ticket.allows,
-        ...(signal === undefined ? {} : { signal }),
-      },
+      options,
     );
   } catch (error) {
     if (error instanceof TypeError || error instanceof RangeError)

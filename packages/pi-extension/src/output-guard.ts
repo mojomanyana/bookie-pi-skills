@@ -177,6 +177,24 @@ export function guardBookieTool<P extends TSchema, D, S>(
                   limit: raw.limit,
                   matchedCount: raw.matchedCount,
                   scanComplete: raw.complete === true,
+                  ...(raw.queryMode === "candidates"
+                    ? {
+                        interpretation:
+                          "Unconfirmed lexical candidates, not established identity. Offer useful possibilities and none of these or clarification; exact-read a selected source before relying on it. None of these does not establish empty history.",
+                      }
+                    : {}),
+                  ...(raw.queryMode === "terms" &&
+                  raw.complete === true &&
+                  !raw.resultsTruncated &&
+                  !raw.outputTruncated &&
+                  !limited &&
+                  raw.matchedCount === 0 &&
+                  results.length === 0
+                    ? {
+                        nextStep:
+                          "No strict word match in this complete search. Try mode=candidates or shorter key terms in the same project before concluding there is no relevant history. Do not change scope or start new research automatically.",
+                      }
+                    : {}),
                 }
               : {
                   queryMode: "exact",
@@ -303,6 +321,7 @@ export function checkpointPreparationFailureMessage(
 const SAFE_ERRORS = new Set([
   RECALL_INPUT_ERROR,
   "Bookie exact search needs a query. Recent mode is available only for managed project memory.",
+  "Bookie candidate search is unavailable. Candidate mode is available only for managed project memory.",
   ...Object.values(AUTHORING_FEEDBACK),
   "Bookie needs a short non-sensitive project title and summary.",
   "Bookie needs a short non-sensitive project title and summary, and a safe public URL if supplied.",

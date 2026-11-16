@@ -1,5 +1,9 @@
 # SPEC-002: Core library and CLI
 
+## Confirmable candidate recall — BK-048 implementation candidate
+
+[ADR-0018](../architecture/decisions/0018-confirmable-lexical-candidates.md) adds a separate `suggestVault` core API and explicit managed-only `bookie_search` candidate mode. Existing strict search, recent and exact semantics are unchanged. Candidates use partial normalized word overlap, ranked by matched-term count, title matches, recorded time and path. They retain exact source references, are explicitly unconfirmed, and require exact reading after user selection. Current scope and visibility precede counts/ranking; all existing scan and output limits remain explicit. A complete managed term search with zero matches supplies a static candidate/shorter-term next step. No lookup failure proves empty history, no candidate selection writes a decision, and no provider/JEV/service call is added. Paired core/extension delivery remains pending; local verification is recorded in BK-048 evidence.
+
 ## Additive managed-recall support — BK-047
 
 [ADR-0017](../architecture/decisions/0017-managed-lexical-recall.md) adds `recallVault` beside the unchanged exact `searchVault` API. It reuses the bounded schema/sensitivity/path scanner; all normalized word tokens match title/body, or explicit recent mode lists without a query. Results use recorded occurrence/generated time descending and canonical-path ties, with ten results by default and a hard maximum of fifty. A host-owned inclusion predicate runs before counts and selection. Counts, scan/result/text limits and exact source identity remain explicit. The CLI stays exact; no canonical migration, model call, index or service is added.

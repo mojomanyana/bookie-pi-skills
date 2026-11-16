@@ -54,6 +54,27 @@ export interface RecallVaultResult extends Omit<SearchVaultResult, "results"> {
   readonly limit: number;
 }
 
+/** Suggestions are a separate contract; lexical overlap never confirms identity. */
+export type SuggestVaultRequest = SearchVaultRequest;
+export type SuggestVaultOptions = RecallVaultOptions;
+
+export interface FilesystemSuggestionHit extends FilesystemRecallHit {
+  readonly candidateStatus: "unconfirmed";
+  readonly matchedTerms: readonly string[];
+  readonly matchedTermsTruncated: boolean;
+  readonly matchedTermCount: number;
+  readonly queryTermCount: number;
+  readonly titleMatchedTermCount: number;
+}
+
+export interface SuggestVaultResult extends Omit<SearchVaultResult, "results"> {
+  readonly results: readonly FilesystemSuggestionHit[];
+  readonly queryMode: "candidates";
+  readonly matching: "nfkc-lowercase-any-word-token";
+  readonly ordering: "matched-terms-desc-title-terms-desc-recorded-time-desc-path-asc";
+  readonly limit: number;
+}
+
 export type InspectConceptSelector =
   | { readonly path: string; readonly uid?: never }
   | { readonly uid: string; readonly path?: never };

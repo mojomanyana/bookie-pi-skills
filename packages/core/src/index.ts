@@ -108,6 +108,7 @@ export {
   MAX_FILESYSTEM_QUERY_BYTES,
   searchVault,
   recallVault,
+  suggestVault,
   DEFAULT_MAX_RECALL_RESULTS,
   MAX_RECALL_RESULTS,
 } from "./filesystem-query.js";
@@ -121,6 +122,10 @@ export type {
   RecallVaultOptions,
   RecallVaultRequest,
   RecallVaultResult,
+  FilesystemSuggestionHit,
+  SuggestVaultOptions,
+  SuggestVaultRequest,
+  SuggestVaultResult,
   FilesystemSensitivityClassification,
   InspectConceptFailure,
   InspectConceptOptions,
