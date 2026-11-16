@@ -1,8 +1,8 @@
 # SPEC-002: Core library and CLI
 
-## Confirmable candidate recall — BK-048 implementation candidate
+## Confirmable candidate recall — BK-048 delivered in 0.5.0
 
-[ADR-0018](../architecture/decisions/0018-confirmable-lexical-candidates.md) adds a separate `suggestVault` core API and explicit managed-only `bookie_search` candidate mode. Existing strict search, recent and exact semantics are unchanged. Candidates use partial normalized word overlap, ranked by matched-term count, title matches, recorded time and path. They retain exact source references, are explicitly unconfirmed, and require exact reading after user selection. Current scope and visibility precede counts/ranking; all existing scan and output limits remain explicit. A complete managed term search with zero matches supplies a static candidate/shorter-term next step. No lookup failure proves empty history, no candidate selection writes a decision, and no provider/JEV/service call is added. Paired core/extension delivery remains pending; local verification is recorded in BK-048 evidence.
+[ADR-0018](../architecture/decisions/0018-confirmable-lexical-candidates.md) adds a separate `suggestVault` core API and explicit managed-only `bookie_search` candidate mode. Existing strict search, recent and exact semantics are unchanged. Candidates use partial normalized word overlap, ranked by matched-term count, title matches, recorded time and path. They retain exact source references, are explicitly unconfirmed, and require exact reading after user selection. Current scope and visibility precede counts/ranking; all existing scan and output limits remain explicit. A complete managed term search with zero matches supplies a static candidate/shorter-term next step. No lookup failure proves empty history, no candidate selection writes a decision, and no provider/JEV/service call is added. The paired pi-bookie 0.5.0/core 0.3.0 release is recorded in [public delivery](../planning/evidence/public-delivery-0.5.0.md).
 
 ## Additive managed-recall support — BK-047
 

@@ -1,6 +1,6 @@
 # ADR-0018: Confirmable local recall candidates
 
-- Status: Accepted for the operator-authorized flexible-recall implementation on 2026-11-16; local verification is recorded in BK-048 evidence; public delivery remains pending.
+- Status: Accepted for the operator-authorized flexible-recall implementation on 2026-11-16; delivered in pi-bookie 0.5.0/core 0.3.0 with verification recorded in BK-048 and public-delivery evidence.
 - Scope: BK-048, SPEC-002/003, REQ-014/017/018/024/025/027. Extends ADR-0017 and retains ADR-0013/0016 authority boundaries.
 
 ## Decision

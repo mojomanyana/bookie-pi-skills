@@ -26,9 +26,9 @@ The bounded BK-017 integrity/policy repair and **BK-026–029 local safety incre
 
 The 0.4.0 Pi package and its exact `pi-bookie-core@0.2.0` dependency add normalized all-word recall and explicit recent-note listing for managed project memory. Exact search and manually selected vault behavior stay available. Results disclose caps and incomplete scans. See [BK-047 validation](docs/planning/evidence/BK-047.md) and [the recall contract](docs/architecture/decisions/0017-managed-lexical-recall.md); [public delivery](docs/planning/evidence/public-delivery-0.4.0.md) records the merged PR, hosted CI, exact npm archives and installed Pi 1.5.2 check.
 
-## Flexible recall candidate (unreleased)
+## Confirmable lexical recall (released in 0.5.0)
 
-BK-048 adds explicit managed lexical candidates after approximate requests miss the strict all-word search. Suggestions retain exact source references, require user confirmation and exact reading, and never become a saved decision automatically. Existing strict/recent/exact modes and permissions remain unchanged. See [ADR-0018](docs/architecture/decisions/0018-confirmable-lexical-candidates.md) and [local verification](docs/planning/evidence/BK-048.md). This source change requires paired core/extension delivery and does not activate JEV.
+BK-048 adds explicit managed lexical candidates after approximate requests miss the strict all-word search. Suggestions retain exact source references, require user confirmation and exact reading, and never become a saved decision automatically. Existing strict/recent/exact modes and permissions remain unchanged. See [ADR-0018](docs/architecture/decisions/0018-confirmable-lexical-candidates.md) and [local verification](docs/planning/evidence/BK-048.md). [Public delivery](docs/planning/evidence/public-delivery-0.5.0.md) records the compatible core 0.3.0 dependency, green CI and verified registry archives. JEV is not activated.
 
 ## Local ecosystem foundation (released in 0.1.0)
 
