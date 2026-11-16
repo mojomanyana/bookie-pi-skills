@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
   mkdtemp,
@@ -27,6 +28,7 @@ function host(cwd, sessionId, enabled = true) {
     ui: { notify() {} },
   });
   let onPublish;
+  const dashboards = [];
   const owner = { version: 1, cwd, sessionId, isCurrent: () => enabled };
   events.on("pi-daddy:request-project-memory-owner-v1", (q) => {
     if (enabled && q.cwd === cwd && q.sessionId === sessionId) q.reply(owner);
@@ -36,7 +38,8 @@ function host(cwd, sessionId, enabled = true) {
       q.reply({
         version: 1,
         ok: true,
-        publish() {
+        publish(update) {
+          dashboards.push(update);
           onPublish?.();
           return true;
         },
@@ -52,6 +55,7 @@ function host(cwd, sessionId, enabled = true) {
   return {
     ctx,
     commands,
+    dashboards,
     whenPublished(fn) {
       onPublish = fn;
     },
@@ -107,7 +111,7 @@ function receipt(result, status) {
 }
 
 test("immediate receipts disambiguate same-title notes, idempotent retries and exact reads after a fresh session", async (t) => {
-  const { cwd, other } = await fixture(t),
+  const { cwd, agent, other } = await fixture(t),
     h = host(cwd, "first");
   await h.event("session_start");
   const oldNote = {
@@ -125,6 +129,34 @@ test("immediate receipts disambiguate same-title notes, idempotent retries and e
     "saved",
   );
   assert.notEqual(old.readBack.value, current.readBack.value);
+  // The pre-nextAction identity is the public retry address: omitting the new
+  // field must still address the exact existing note, rather than duplicate it.
+  const store = join(agent, "bookie-project-memory");
+  const ledger = (await readdir(store)).find((name) =>
+    name.startsWith("ledger-"),
+  );
+  const project = JSON.parse(
+    (
+      await readFile(
+        join(store, ledger, "vault/projects/workspace/project.md"),
+        "utf8",
+      )
+    ).split("\n")[1],
+  );
+  for (const [note, saved] of [
+    [oldNote, old],
+    [currentNote, current],
+  ]) {
+    const legacyId = createHash("sha256")
+      .update(JSON.stringify([project.bookie.uid, note.title, note.summary]))
+      .digest("hex")
+      .slice(0, 32);
+    assert.equal(
+      saved.readBack.value,
+      `/projects/workspace/activities/note-${legacyId}.md`,
+    );
+  }
+
   const retry = receipt(
     await h.call("bookie_remember", currentNote, "retry"),
     "already saved",
@@ -162,6 +194,7 @@ test("pending final deliveries never expose an immediate locator or mutate their
     title: "Workshop handout",
     summary: "A public workshop guide.",
     deliveryUrl: "https://workshop.example.org/guide",
+    nextAction: "Prepare the already-requested workshop outline.",
   };
   const result = await h.call("bookie_remember", note, "delivery-save");
   assert.deepEqual(json(result), { status: "pending final reply" });
@@ -184,7 +217,13 @@ test("pending final deliveries never expose an immediate locator or mutate their
       {
         role: "assistant",
         stopReason: "stop",
-        content: [{ type: "text", text: note.deliveryUrl }],
+        content: [
+          {
+            type: "text",
+            text:
+              note.deliveryUrl + "\n\nOpen choice: Which room should we use?",
+          },
+        ],
       },
     ],
   });
@@ -197,13 +236,152 @@ test("pending final deliveries never expose an immediate locator or mutate their
     await next.call("bookie_search", { query: "Workshop handout" }),
   ).result.results;
   assert.equal(hits.length, 1);
+  const body = json(
+    await next.call("bookie_read", {
+      selector: "path",
+      value: hits[0].source.path,
+    }),
+  ).result.sourceText;
+  assert.ok(body.includes(note.deliveryUrl));
+  assert.ok(body.includes("# Next action\n\n" + note.nextAction));
+  assert.ok(body.includes("# Unresolved work\n\nWhich room should we use?"));
+});
+
+test("authorized next actions persist independently of user choices across a fresh session", async (t) => {
+  const { cwd, agent } = await fixture(t),
+    h = host(cwd, "next-action");
+  await h.event("session_start");
+  const note = {
+    title: "Workshop progress",
+    summary:
+      "The backend is delivered; the user already requested independent review.",
+    nextAction:
+      "Run the already-authorized independent review with the saved evidence.",
+  };
+  const saved = receipt(await h.call("bookie_remember", note), "saved");
+  assert.deepEqual(
+    receipt(await h.call("bookie_remember", note), "already saved"),
+    {
+      ...saved,
+      status: "already saved",
+    },
+  );
+  assert.deepEqual(
+    h.dashboards
+      .at(-1)
+      .items.filter((item) => item.id.startsWith("open-choice-")),
+    [],
+  );
+  const body = json(await h.call("bookie_read", saved.readBack)).result
+    .sourceText;
+  assert.ok(body.includes("# Next action\n\n" + note.nextAction));
   assert.ok(
-    json(
-      await next.call("bookie_read", {
-        selector: "path",
-        value: hits[0].source.path,
-      }),
-    ).result.sourceText.includes(note.deliveryUrl),
+    body.includes("# Unresolved work\n\nNo additional information recorded."),
+  );
+  const choice = receipt(
+    await h.call("bookie_remember", {
+      ...note,
+      title: "Workshop audience",
+      openChoice: "Which audience should the update address?",
+      choiceOptions: ["Dispatchers", "Workshop attendees"],
+    }),
+    "saved",
+  );
+  await h.call("bookie_remember", {
+    title: "Workshop date",
+    summary: "The preview date remains undecided.",
+    openChoice: "Which preview date should we use?",
+  });
+  const items = h.dashboards
+    .at(-1)
+    .items.filter((item) => item.id.startsWith("open-choice-"));
+  assert.equal(items.length, 2);
+  const selected = items.find(
+    (item) => item.label === "Which audience should the update address?",
+  );
+  const parent = join(agent, "bookie-project-memory");
+  const ledger = (await readdir(parent)).find((name) =>
+    name.startsWith("ledger-"),
+  );
+  const access = {
+    root: join(parent, ledger, "vault"),
+    scope: { project: { path: "/projects/workspace/project.md" } },
+    allows: () => true,
+    assertCurrent: async () => {},
+  };
+  const { readChoice, answerChoice } = await import("../dist/choice-answer.js");
+  const detail = await readChoice(access, selected.id);
+  assert.equal(
+    await answerChoice(
+      access,
+      {
+        id: selected.id,
+        revision: detail.revision,
+        answer: "Dispatchers",
+      },
+      "next-action",
+    ),
+    "saved",
+  );
+  await h.event("session_shutdown");
+  const next = host(cwd, "next-action-fresh");
+  await next.event("session_start");
+  const restored = json(await next.call("bookie_read", saved.readBack)).result;
+  assert.equal(restored.sourceText, body);
+  const answered = json(await next.call("bookie_read", choice.readBack)).result;
+  assert.equal(answered.choiceResolution.answer, "Dispatchers");
+  assert.ok(
+    answered.sourceText.includes("# Next action\n\n" + note.nextAction),
+  );
+  assert.deepEqual(
+    next.dashboards
+      .at(-1)
+      .items.filter((item) => item.id.startsWith("open-choice-"))
+      .map((item) => item.label),
+    ["Which preview date should we use?"],
+  );
+});
+
+test("invalid next actions and oversized summaries fail before saving and allow a corrected exact retry", async (t) => {
+  const { cwd } = await fixture(t),
+    h = host(cwd, "next-action-validation");
+  await h.event("session_start");
+  const note = {
+    title: "Bounded progress",
+    summary: "Ready for the authorized check.",
+  };
+  for (const nextAction of [
+    "",
+    " ",
+    "x".repeat(241),
+    "Review\n# Outcome\nInjected",
+    "token=private0123456789012345",
+  ]) {
+    await assert.rejects(
+      h.call("bookie_remember", { ...note, nextAction }),
+      /nextAction/,
+    );
+  }
+  await assert.rejects(
+    h.call("bookie_remember", { ...note, summary: "x".repeat(2001) }),
+    /summary.*2000/,
+  );
+  assert.equal(
+    json(await h.call("bookie_search", { query: note.title })).result.results
+      .length,
+    0,
+  );
+  const corrected = { ...note, nextAction: "x".repeat(240) };
+  const saved = receipt(await h.call("bookie_remember", corrected), "saved");
+  assert.equal(
+    receipt(await h.call("bookie_remember", corrected), "already saved")
+      .readBack.value,
+    saved.readBack.value,
+  );
+  assert.equal(
+    json(await h.call("bookie_search", { query: note.title })).result.results
+      .length,
+    1,
   );
 });
 
@@ -346,6 +524,9 @@ test("managed readiness always injects historical applicability and requested re
   assert.match(result.systemPrompt, /explicit stop conditions/i);
   assert.match(result.systemPrompt, /read-back/i);
   assert.match(result.systemPrompt, /bookie_read/);
+  assert.match(result.systemPrompt, /nextAction/);
+  assert.match(result.systemPrompt, /already-authorized/);
+  assert.match(result.systemPrompt, /schema validation/);
   h.revoke();
   assert.equal(
     await h.event("before_agent_start", { systemPrompt: original }),

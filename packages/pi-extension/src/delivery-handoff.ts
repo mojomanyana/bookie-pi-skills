@@ -133,6 +133,9 @@ export function registerDeliveryHandoff(
               ? {
                   title: item.note.title,
                   summary: item.note.summary,
+                  ...(item.note.nextAction
+                    ? { nextAction: item.note.nextAction }
+                    : {}),
                   deliveryUrl: item.note.deliveryUrl,
                   openChoice: replyChoice,
                 }
