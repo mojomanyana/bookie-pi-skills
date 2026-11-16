@@ -1,6 +1,6 @@
 # pi-bookie release notes
 
-## Unreleased
+## [0.7.0] - 2026-11-17
 
 - Save a known next work step with `nextAction`, separately from the user's unresolved choices. Already-authorized review or build work can remain in the handoff without creating a dashboard question.
 - Clarify input limits and direct correction of rejected save arguments, while retaining read-before-retry for uncertain writes. Preserve next actions through resource delivery and fresh-session recall; existing notes and the exact core 0.3.0 dependency remain compatible.

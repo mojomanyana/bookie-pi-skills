@@ -121,7 +121,7 @@ Begin with read, local search, validate, and explicit create. Add checkpoint onl
 
 ### BK-051: next actions without unnecessary user choices
 
-Per ADR-0021, `bookie_remember` may retain a short `nextAction` in the existing Activity Next action section. It creates no choice row or permission request. An `openChoice` remains a concrete unresolved user-owned decision; pending work already authorized in the current conversation belongs in `nextAction`. Preserve original choice answers, unresolved choices, old-note identities, source and disclosure boundaries. Explicit tool input is not reclassified through question-text heuristics. Bounded input correction must distinguish an input rejected before saving from a write with uncertain confirmation. Verification is pending; no live model-compliance claim follows from local fixtures.
+Per ADR-0021, `bookie_remember` may retain a short `nextAction` in the existing Activity Next action section. It creates no choice row or permission request. An `openChoice` remains a concrete unresolved user-owned decision; pending work already authorized in the current conversation belongs in `nextAction`. Preserve original choice answers, unresolved choices, old-note identities, source and disclosure boundaries. Explicit tool input is not reclassified through question-text heuristics. Bounded input correction must distinguish an input rejected before saving from a write with uncertain confirmation. [BK-051 evidence](../planning/evidence/BK-051.md) records passed local and native-host checks plus implementation-head CI; no live model-compliance claim follows from those fixtures.
 
 ## BK-031 returning-output integration (released in 0.1.0)
 
