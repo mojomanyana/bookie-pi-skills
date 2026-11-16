@@ -1,6 +1,6 @@
 # ADR-0019: Current scoped notes in the optional dashboard
 
-- Status: Accepted for the operator-authorized dashboard contents batch on 2026-11-16; implemented and locally verified as a candidate; merge and publication remain pending.
+- Status: Accepted for the operator-authorized dashboard contents batch on 2026-11-16; delivered in pi-bookie 0.6.0 with unchanged exact core 0.3.0; see public-delivery evidence.
 - Scope: BK-049, SPEC-003, REQ-014/024/025/027. Extends ADR-0016 and retains current capture/disclosure authority.
 
 ## Decision

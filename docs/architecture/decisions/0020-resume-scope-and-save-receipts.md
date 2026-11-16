@@ -1,6 +1,6 @@
 # ADR-0020: Current task scope and exact immediate-save locators
 
-- Status: Accepted for the operator-authorized resume/read-back batch on 2026-11-16; implemented and locally verified as a candidate; merge and delivery pending.
+- Status: Accepted for the operator-authorized resume/read-back batch on 2026-11-16; delivered in pi-bookie 0.6.0 with unchanged exact core 0.3.0; see public-delivery evidence.
 - Scope: BK-050, SPEC-003, REQ-011/014/024/025/027/034. Extends ADR-0013 and ADR-0016. BK-049/ADR-0019 belong to the independent frozen dashboard candidate and are not prerequisites.
 
 ## Decision
