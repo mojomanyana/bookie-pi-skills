@@ -74,6 +74,33 @@ async function destination(ctx: ExtensionContext) {
     endpoint: hash(endpoint.href),
   };
 }
+function allowsCanonical(
+  scope: RecallScope,
+  classes: readonly string[],
+  controls: Extract<Awaited<ReturnType<typeof readRecallState>>, { ok: true }>,
+  value: unknown,
+) {
+  if (
+    !object(value) ||
+    !object(value.sensitivity) ||
+    value.sensitivity.classification !== "declared" ||
+    typeof value.sensitivity.value !== "string" ||
+    !classes.includes(value.sensitivity.value)
+  )
+    return false;
+  if (
+    value.project !== scope.project.path &&
+    !(object(value.source) && value.source.path === scope.project.path)
+  )
+    return false;
+  return !controls.state.controls.some(
+    (c) =>
+      c.project.uid === scope.project.uid &&
+      c.target.kind === "concept" &&
+      c.target.uid === value.uid,
+  );
+}
+
 export function createDisclosureAuthority(
   pi: ExtensionAPI,
   bind: (root: string, ctx: ExtensionContext) => Promise<VaultAuthority>,
@@ -348,6 +375,59 @@ export function createDisclosureAuthority(
   return {
     reset,
     canManage: () => allowManaged,
+    // A terminal-only ticket: current Auto owner and local visibility controls,
+    // never a model grant and never provider auth/endpoint resolution.
+    async captureDashboard(project: ManagedSelection) {
+      const capturedEpoch = epoch;
+      const assertScope = async () => {
+        if (!allowManaged || epoch !== capturedEpoch)
+          throw Error(DISCLOSURE_WITHHELD);
+        await project.vault.assertCurrent();
+        const now = await inspectRecallScope(
+          project.vault.root,
+          project.scope.project,
+        );
+        if (
+          !now.ok ||
+          hash(now.scope) !== hash(project.scope) ||
+          !allowManaged ||
+          epoch !== capturedEpoch
+        )
+          throw Error(DISCLOSURE_WITHHELD);
+      };
+      await assertScope();
+      const controls = await readRecallState(project.vault.root);
+      if (
+        !controls.ok ||
+        typeof controls.controlsRevision !== "string" ||
+        !/^sha256:[a-f0-9]{64}$/u.test(controls.controlsRevision)
+      )
+        throw Error(DISCLOSURE_WITHHELD);
+      const classes = ["internal", "public"].filter(
+        (value) =>
+          project.scope.sensitivityClasses.includes(value) &&
+          !project.scope.excludedClasses.includes(value),
+      );
+      const assertCurrent = async () => {
+        await assertScope();
+        const now = await readRecallState(project.vault.root);
+        if (
+          !now.ok ||
+          now.controlsRevision !== controls.controlsRevision ||
+          !allowManaged ||
+          epoch !== capturedEpoch
+        )
+          throw Error(DISCLOSURE_WITHHELD);
+      };
+      await assertCurrent();
+      return {
+        root: project.vault.root,
+        scope: project.scope,
+        allows: (value: unknown) =>
+          allowsCanonical(project.scope, classes, controls, value),
+        assertCurrent,
+      };
+    },
     async selectedRoot(ctx: ExtensionContext) {
       const selected = await selectedFor(ctx);
       if (!selected) throw Error(DISCLOSURE_WITHHELD);
@@ -389,30 +469,8 @@ export function createDisclosureAuthority(
       if (!controls.ok || grant !== selected || epoch !== selected.revision)
         throw Error(DISCLOSURE_WITHHELD);
       const revision = identity(controls);
-      const allows = (value: unknown) => {
-        if (
-          !object(value) ||
-          !object(value.sensitivity) ||
-          value.sensitivity.classification !== "declared" ||
-          typeof value.sensitivity.value !== "string" ||
-          !selected.classes.includes(value.sensitivity.value)
-        )
-          return false;
-        if (
-          value.project !== selected.scope.project.path &&
-          !(
-            object(value.source) &&
-            value.source.path === selected.scope.project.path
-          )
-        )
-          return false;
-        return !controls.state.controls.some(
-          (c) =>
-            c.project.uid === selected.scope.project.uid &&
-            c.target.kind === "concept" &&
-            c.target.uid === value.uid,
-        );
-      };
+      const allows = (value: unknown) =>
+        allowsCanonical(selected.scope, selected.classes, controls, value);
       return {
         root: selected.vault.root,
         managedWorkspace: selected.managed !== undefined,

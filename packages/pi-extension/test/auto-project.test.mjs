@@ -15,7 +15,12 @@ import registerBookie from "../dist/index.js";
 import { modelContext } from "./disclosure-fixture.mjs";
 
 const channel = "pi-daddy:request-project-memory-owner-v1";
-function host(cwd, enabled = true, sessionId = "root-session") {
+function host(
+  cwd,
+  enabled = true,
+  sessionId = "root-session",
+  inventory = false,
+) {
   const events = new EventEmitter(),
     tools = new Map(),
     commands = new Map(),
@@ -27,10 +32,18 @@ function host(cwd, enabled = true, sessionId = "root-session") {
     sessionManager: { getSessionId: () => sessionId, getBranch: () => [] },
     ui: { notify() {} },
   });
-  const dashboards = [];
+  const dashboards = [],
+    dashboardRequests = [];
   events.on("pi-daddy:dashboard-source:v1", (q) => {
-    if (q.producer === "bookie-memory")
+    if (q.producer === "bookie-memory") {
+      dashboardRequests.push(q);
       q.reply({
+        ...(inventory
+          ? {
+              generation: "inventory-source",
+              capabilities: { inventory: 1, refresh: 1 },
+            }
+          : {}),
         version: 1,
         ok: true,
         publish: (update) => {
@@ -39,6 +52,7 @@ function host(cwd, enabled = true, sessionId = "root-session") {
         },
         close: () => dashboards.push("closed"),
       });
+    }
   });
   const owner = { version: 1, cwd, sessionId, isCurrent: () => enabled };
   events.on(channel, (q) => {
@@ -53,6 +67,7 @@ function host(cwd, enabled = true, sessionId = "root-session") {
   return {
     ctx,
     dashboards,
+    dashboardRequests,
     commands,
     async event(name, payload = {}) {
       for (const h of hooks.get(name) || []) await h(payload, ctx);
@@ -902,4 +917,186 @@ test("saving a chosen or typed answer closes only its exact note and a fresh Pi 
       );
     }
   }
+});
+
+test("dashboard inventory restores saved contents across a new session and refreshes readiness with no choices", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "bookie-inventory-session-"));
+  const previous = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = join(root, "agent");
+  const cwd = join(root, "workspace");
+  await Promise.all([mkdir(cwd), mkdir(process.env.PI_CODING_AGENT_DIR)]);
+  t.after(async () => {
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previous;
+    await rm(root, { recursive: true, force: true });
+  });
+  const first = host(cwd, true, "inventory-first", true);
+  await first.event("session_start");
+  assert.equal(first.dashboards.at(-1).inventory.state, "empty");
+  assert.equal(first.dashboards.at(-1).inventory.count, 0);
+  assert.equal(first.dashboards.at(-1).inventory.limited, false);
+  await first.call("bookie_remember", {
+    title: "Orchid workshop",
+    summary: "Participants use a printed atlas.",
+  });
+  const saved = first.dashboards.at(-1);
+  assert.equal(saved.inventory.count, 1);
+  assert.equal(saved.inventory.entries[0].title, "Orchid workshop");
+  assert.match(saved.inventory.entries[0].summary, /printed atlas/);
+  assert.equal(saved.items.length, 1);
+  assert.equal(saved.items[0].id, "project-memory");
+  const request = first.dashboardRequests.at(-1);
+  assert.equal(typeof request.refresh, "function");
+  const published = first.dashboards.length;
+  const renewed = await request.refresh({
+    signal: new AbortController().signal,
+  });
+  assert.equal(
+    first.dashboards.length,
+    published,
+    "refresh must return, never publish internally",
+  );
+  assert.equal(renewed.inventory.count, 1);
+  assert.equal(renewed.items[0].state, "observed");
+  assert.ok(renewed.sequence > saved.sequence);
+  const store = join(process.env.PI_CODING_AGENT_DIR, "bookie-project-memory");
+  const ledger = (await readdir(store)).find((name) =>
+    name.startsWith("ledger-"),
+  );
+  const broken = join(store, ledger, "vault/projects/workspace/broken.md");
+  await writeFile(broken, "---\n{ broken\n---\nUnparseable note.\n");
+  const partial = await request.refresh({
+    signal: new AbortController().signal,
+  });
+  assert.equal(partial.items[0].state, "unknown");
+  assert.equal(partial.inventory.state, "available");
+  assert.equal(partial.inventory.limited, true);
+  assert.equal(partial.inventory.count, undefined);
+  await rm(broken);
+  await first.event("session_shutdown");
+  assert.equal(
+    await request.refresh({ signal: new AbortController().signal }),
+    undefined,
+  );
+  const next = host(cwd, true, "inventory-next", true);
+  next.ctx.modelRegistry.getApiKeyAndHeaders = async () => {
+    throw Error("Dashboard must not resolve provider auth");
+  };
+  await next.event("session_start");
+  assert.equal(
+    next.dashboards.at(-1).inventory.entries[0].title,
+    "Orchid workshop",
+  );
+  assert.equal(next.dashboards.at(-1).inventory.count, 1);
+  const other = join(root, "other");
+  await mkdir(other);
+  const unrelated = host(other, true, "inventory-other", true);
+  await unrelated.event("session_start");
+  assert.equal(unrelated.dashboards.at(-1).inventory.state, "empty");
+  assert.equal(unrelated.dashboards.at(-1).inventory.count, 0);
+});
+
+test("dashboard inventories preserve open-choice slots and older hosts retain legacy updates", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "bookie-inventory-choices-"));
+  const previous = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = join(root, "agent");
+  const cwd = join(root, "workspace");
+  await Promise.all([mkdir(cwd), mkdir(process.env.PI_CODING_AGENT_DIR)]);
+  t.after(async () => {
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previous;
+    await rm(root, { recursive: true, force: true });
+  });
+  const modern = host(cwd, true, "modern", true);
+  await modern.event("session_start");
+  for (let n = 0; n < 2; n++)
+    await modern.call("bookie_remember", {
+      title: "Planning " + n,
+      summary: "A saved planning note.",
+      openChoice: "Which venue " + n + "?",
+    });
+  const update = await modern.dashboardRequests
+    .at(-1)
+    .refresh({ signal: new AbortController().signal });
+  assert.equal(update.inventory.count, 2);
+  assert.equal(
+    update.items.filter((row) => row.id.startsWith("open-choice-")).length,
+    2,
+  );
+  assert.equal(update.items.length, 3);
+  assert.ok(
+    Buffer.byteLength(
+      JSON.stringify({ sequence: update.sequence, items: update.items }),
+    ) <= 4096,
+  );
+  await modern.event("session_shutdown");
+  const legacy = host(cwd, true, "legacy");
+  await legacy.event("session_start");
+  assert.equal(legacy.dashboards.at(-1).inventory, undefined);
+  assert.deepEqual(Object.keys(legacy.dashboards.at(-1)).sort(), [
+    "items",
+    "sequence",
+  ]);
+  assert.equal(
+    legacy.dashboards
+      .at(-1)
+      .items.filter((row) => row.id.startsWith("open-choice-")).length,
+    2,
+  );
+});
+
+test("dashboard refresh refuses aborted or revoked owners and does not confuse disclosure failure with an empty store", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "bookie-inventory-revocation-"));
+  const previous = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = join(root, "agent");
+  const cwd = join(root, "workspace");
+  await Promise.all([mkdir(cwd), mkdir(process.env.PI_CODING_AGENT_DIR)]);
+  t.after(async () => {
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previous;
+    await rm(root, { recursive: true, force: true });
+  });
+  const h = host(cwd, true, "inventory-owner", true);
+  await h.event("session_start");
+  await h.call("bookie_remember", {
+    title: "Private project title",
+    summary: "Authorized local note.",
+  });
+  const request = h.dashboardRequests.at(-1);
+  const count = h.dashboards.length;
+  const controller = new AbortController();
+  controller.abort();
+  assert.equal(await request.refresh({ signal: controller.signal }), undefined);
+  assert.equal(h.dashboards.length, count);
+  let authCalls = 0;
+  h.ctx.modelRegistry.getApiKeyAndHeaders = async () => {
+    authCalls++;
+    throw Error("Dashboard must not resolve provider auth");
+  };
+  const refreshed = await request.refresh({
+    signal: new AbortController().signal,
+  });
+  assert.equal(refreshed.inventory.count, 1);
+  assert.equal(refreshed.items[0].state, "observed");
+  assert.equal(authCalls, 0);
+  const store = join(process.env.PI_CODING_AGENT_DIR, "bookie-project-memory");
+  const ledger = (await readdir(store)).find((name) =>
+    name.startsWith("ledger-"),
+  );
+  const controlsPath = join(store, ledger, "vault", "bookie-recall.json");
+  const controls = await readFile(controlsPath, "utf8");
+  await writeFile(controlsPath, "broken controls");
+  const denied = await request.refresh({
+    signal: new AbortController().signal,
+  });
+  assert.equal(denied.inventory.state, "unavailable");
+  assert.deepEqual(denied.inventory.entries, []);
+  assert.equal(denied.inventory.count, undefined);
+  assert.ok(!JSON.stringify(denied).includes("Private project title"));
+  await writeFile(controlsPath, controls);
+  const pending = request.refresh({ signal: new AbortController().signal });
+  await h.commands.get("bookie-context").handler("off", h.ctx);
+  assert.equal(await pending, undefined);
+  assert.equal(h.dashboards.at(-1), "closed");
+  assert.equal(authCalls, 0);
 });

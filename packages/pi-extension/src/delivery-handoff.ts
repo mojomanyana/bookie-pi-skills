@@ -8,7 +8,8 @@ import { mentionsDeliveryUrl } from "./delivery-url.js";
 import { scoutDeliveryUrls } from "./scout-delivery.js";
 
 interface MemoryScope {
-  save(note: ProjectNote, signal?: AbortSignal): Promise<string>;
+  // Async delivery saves consume completion only, never expose an early read-back receipt.
+  save(note: ProjectNote, signal?: AbortSignal): Promise<unknown>;
 }
 type Resource = ProjectNote & { deliveryUrl: string };
 type Pending = { note: Resource; scope: MemoryScope };

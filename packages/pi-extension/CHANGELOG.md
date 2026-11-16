@@ -1,5 +1,14 @@
 # pi-bookie release notes
 
+## [0.6.0] - 2026-11-16
+
+- Show saved project-note titles, brief summaries and honest counts in a compatible Pi Daddy dashboard, including after a new chat. Keep unavailable access distinct from an empty notebook.
+- Refresh the visible dashboard even when no choices are open. This local display uses current project permissions without requesting provider credentials; model-facing recall and choice controls retain their existing disclosure checks.
+- Preserve saved choices, older dashboard hosts and exact core 0.3.0 compatibility. No model call, JEV use or automatic saved decision is added.
+
+- Reconcile historical blockers with the current authorized task without bypassing real prerequisites, permissions or explicit stop conditions.
+- Return exact read parameters after an immediate saved or already-saved project note, so requested read-back selects the right note even when titles repeat. A successful save does not itself claim read-back or semantic verification; pending final-reply deliveries remain pending.
+
 ## [0.5.0] - 2026-11-16
 
 - Offer possible project-memory matches when approximate wording misses the strict search, with shared words and exact source references instead of confidence percentages.

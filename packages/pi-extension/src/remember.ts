@@ -245,7 +245,10 @@ export function rememberTool(
       await guard();
       await managed.refreshDashboard(ctx);
       await guard();
-      return outcome;
+      return {
+        status: outcome,
+        readBack: { selector: "path" as const, value: path },
+      };
     }
     return { assertCurrent, save };
   }
@@ -255,7 +258,7 @@ export function rememberTool(
     name: "bookie_remember",
     label: "Remember project note",
     description:
-      "Save a bounded routine project decision or outcome as untrusted project context. For a newly delivered public resource, supply deliveryUrl, a title naming the task, and a short summary. The link is recorded once it appears in the finished reply. When a concrete choice remains with the user, supply it as openChoice. Supply choiceOptions when there are concrete alternatives, and choiceRecommendation only if a saved fact or delivered reference supports the reason. During recall, reuse the saved receipt. Exclude personal information, private sources and credentials.",
+      "Save a bounded routine project decision or outcome as untrusted project context. For a newly delivered public resource, supply deliveryUrl, a title naming the task, and a short summary. The link is recorded once it appears in the finished reply. When a concrete choice remains with the user, supply it as openChoice. Supply choiceOptions when there are concrete alternatives, and choiceRecommendation only if a saved fact or delivered reference supports the reason. During recall, reuse the saved receipt. Immediate saved/already-saved replies provide exact bookie_read parameters in readBack; this locator is not completed read-back or semantic verification. If read-back is requested or needed, call bookie_read with those parameters under current permission and compare the content. Pending final-reply deliveries have no confirmed locator. Exclude personal information, private sources and credentials.",
     parameters: Type.Object(
       {
         title: Type.String({ minLength: 1, maxLength: 120 }),
@@ -317,11 +320,13 @@ export function rememberTool(
           title: params.title.trim(),
           summary: params.summary.trim(),
         };
-        const outcome = note.deliveryUrl
-          ? deliveries.stage(callId, ctx, scope, {
-              ...note,
-              deliveryUrl: note.deliveryUrl,
-            })
+        const receipt = note.deliveryUrl
+          ? {
+              status: deliveries.stage(callId, ctx, scope, {
+                ...note,
+                deliveryUrl: note.deliveryUrl,
+              }),
+            }
           : await scope.save(note, signal, () => {
               entered = true;
             });
@@ -329,10 +334,10 @@ export function rememberTool(
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify({ status: outcome }),
+              text: JSON.stringify(receipt),
             },
           ],
-          details: { status: outcome },
+          details: receipt,
         };
         filter.remember(callId, result, scope.assertCurrent);
         return result;
