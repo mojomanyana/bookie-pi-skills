@@ -125,16 +125,28 @@ async function sourceChoice(
   return { id, title, label, revision: source.sourceHash, ...suggestions };
 }
 
-async function answerRecord(access: ChoiceAccess, id: string) {
+async function answerRecord(
+  access: ChoiceAccess,
+  id: string,
+  signal?: AbortSignal,
+) {
   const { answer } = paths(access, id);
-  const record = await inspectConcept(access.root, { path: answer }, limits);
+  const record = await inspectConcept(
+    access.root,
+    { path: answer },
+    { ...limits, ...(signal ? { signal } : {}) },
+  );
   if (!record.ok && record.reason === "not-found") return;
   return record;
 }
 
-export async function hasAnswerRecord(access: ChoiceAccess, id: string) {
+export async function hasAnswerRecord(
+  access: ChoiceAccess,
+  id: string,
+  signal?: AbortSignal,
+) {
   // An unavailable or occupied answer slot must not be offered for a second decision.
-  return (await answerRecord(access, id)) !== undefined;
+  return (await answerRecord(access, id, signal)) !== undefined;
 }
 
 export async function readChoice(access: ChoiceAccess, id: string) {
@@ -285,7 +297,10 @@ export async function answerChoice(
 }
 
 /** Search metadata identifies potential receipts. Exact reads below decide what may be disclosed. */
-export async function answeredChoiceIds(access: ChoiceAccess) {
+export async function answeredChoiceIds(
+  access: ChoiceAccess,
+  signal?: AbortSignal,
+) {
   const scan = await searchVault(
     access.root,
     {
@@ -298,7 +313,11 @@ export async function answeredChoiceIds(access: ChoiceAccess) {
         tag: "choice-answer",
       },
     },
-    { maxResults: 50, maxTotalConceptBytes: limits.maxTotalConceptBytes },
+    {
+      maxResults: 50,
+      maxTotalConceptBytes: limits.maxTotalConceptBytes,
+      ...(signal ? { signal } : {}),
+    },
   );
   return {
     ids: new Set(

@@ -1,3 +1,4 @@
+import { checkDashboardAbort } from "./dashboard-memory-inventory.js";
 import { answeredChoiceIds, hasAnswerRecord } from "./choice-answer.js";
 import { posix } from "node:path";
 import { inspectConcept, loadConcept, searchVault } from "pi-bookie-core";
@@ -20,7 +21,11 @@ export type ChoiceRow = {
 
 const maxFullReads = 7;
 
-export async function dashboardOpenChoices(access: ChoiceAccess) {
+export async function dashboardOpenChoices(
+  access: ChoiceAccess,
+  signal?: AbortSignal,
+) {
+  checkDashboardAbort(signal);
   const project = access.scope.project.path;
   // Short checkpoint bodies fit in the initial query. Read longer ones by exact revision within a fixed budget.
   const filters = {
@@ -29,7 +34,11 @@ export async function dashboardOpenChoices(access: ChoiceAccess) {
     status: "stable",
     sensitivity: "internal",
   };
-  const options = { maxResults: 50, maxTotalConceptBytes: 16 * 1024 * 1024 };
+  const options = {
+    maxResults: 50,
+    maxTotalConceptBytes: 16 * 1024 * 1024,
+    ...(signal ? { signal } : {}),
+  };
   const section = "\n# Unresolved work\n";
   const search = (query: string, tag?: string) =>
     searchVault(
@@ -56,7 +65,7 @@ export async function dashboardOpenChoices(access: ChoiceAccess) {
   }
   // Skip settled rows in bulk, including decisions that displaced original notes
   // in the initial page. Independently check each displayed note's exact slot.
-  const answers = await answeredChoiceIds(access);
+  const answers = await answeredChoiceIds(access, signal);
   if (!answers.complete) return { rows: [], limited: true };
   const rows: ChoiceRow[] = [];
   let answerChecks = 0;
@@ -66,6 +75,7 @@ export async function dashboardOpenChoices(access: ChoiceAccess) {
   let fullReads = 0;
   let bytes = 0;
   for (const hit of scans.flatMap((result) => result.results)) {
+    checkDashboardAbort(signal);
     if (visited.has(hit.source.path)) continue;
     visited.add(hit.source.path);
     if (!access.allows(hit) || posix.dirname(hit.source.path) !== dir) continue;
@@ -86,7 +96,11 @@ export async function dashboardOpenChoices(access: ChoiceAccess) {
       const record = await inspectConcept(
         access.root,
         { path: hit.source.path },
-        { maxContentBytes: 16_000, maxTotalConceptBytes: 16 * 1024 * 1024 },
+        {
+          maxContentBytes: 16_000,
+          maxTotalConceptBytes: 16 * 1024 * 1024,
+          ...(signal ? { signal } : {}),
+        },
       );
       if (
         !record.ok ||
@@ -111,7 +125,7 @@ export async function dashboardOpenChoices(access: ChoiceAccess) {
       continue;
     }
     answerChecks++;
-    if (await hasAnswerRecord(access, id)) continue;
+    if (await hasAnswerRecord(access, id, signal)) continue;
     const row: ChoiceRow = {
       id,
       kind: "work",

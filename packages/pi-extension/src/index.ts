@@ -800,24 +800,42 @@ export default function registerBookie(pi: ExtensionAPI): void {
   pi.registerTool(
     rememberTool(pi, managed, authority, disclosure, contextFilter),
   );
-  managed.install(async (ctx) => {
-    if (!authority.canManage() || !disclosure.canManage()) return;
-    const selected = await managed.get(ctx);
-    if (!selected || !authority.selectManaged(selected)) return;
-    const ticket = await disclosure.capture(
-      selected.vault.root,
-      ctx,
-      "canonical",
-    );
-    await authority.assertManaged(selected);
-    return {
-      root: ticket.root,
-      scope: ticket.scope,
-      allows: ticket.allows,
-      async assertCurrent() {
-        await ticket.assertCurrent();
-        await authority.assertManaged(selected);
-      },
-    };
-  });
+  managed.install(
+    async (ctx) => {
+      if (!authority.canManage() || !disclosure.canManage()) return;
+      const selected = await managed.get(ctx);
+      if (!selected || !authority.selectManaged(selected)) return;
+      const ticket = await disclosure.capture(
+        selected.vault.root,
+        ctx,
+        "canonical",
+      );
+      await authority.assertManaged(selected);
+      return {
+        root: ticket.root,
+        scope: ticket.scope,
+        allows: ticket.allows,
+        async assertCurrent() {
+          await ticket.assertCurrent();
+          await authority.assertManaged(selected);
+        },
+      };
+    },
+    async (ctx) => {
+      if (!authority.canManage() || !disclosure.canManage()) return;
+      const selected = await managed.get(ctx);
+      if (!selected || !authority.selectManaged(selected)) return;
+      const ticket = await disclosure.captureDashboard(selected);
+      await authority.assertManaged(selected);
+      return {
+        root: ticket.root,
+        scope: ticket.scope,
+        allows: ticket.allows,
+        async assertCurrent() {
+          await ticket.assertCurrent();
+          await authority.assertManaged(selected);
+        },
+      };
+    },
+  );
 }
