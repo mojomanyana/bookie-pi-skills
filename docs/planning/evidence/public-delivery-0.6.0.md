@@ -1,0 +1,15 @@
+# Dashboard contents and resume receipts delivery, 16 November 2026
+
+BK-049/BK-050 shipped as [pi-bookie 0.6.0](https://github.com/mojomanyana/bookie-pi-skills/releases/tag/v0.6.0), retaining the exact automatic dependency pi-bookie-core 0.3.0. No core version, canonical schema or stored-note migration changed.
+
+[PR #61](https://github.com/mojomanyana/bookie-pi-skills/pull/61) merged reviewed head `b94133520458a4629056ef396b3ef788cf13d970` as `f46e5cb2d8b28ef4d8af7eddf88a40277b3a6911`; the reviewed and merged trees are identical. Tag v0.6.0 names that merged source.
+
+[Exact-head hosted CI](https://github.com/mojomanyana/bookie-pi-skills/actions/runs/43872200527) passed the full check and native Pi 1.5.2 choice/session lifecycle against the older compatible Daddy host. The full suite passes **1306 tests**, no failures/skips: repository 464, service 323, CLI 48, core 311 and Pi 160. Runtime and continuity-skill bytes match the previously qualified combined source; release metadata additionally passes formatting, all 14 repository/package/document checks and diff checks. Expected preimplementation failures remain recorded separately.
+
+The release archive contains 131 files, all matched to the merged source/build. The public npm archive and downloaded GitHub release asset match that exact qualified archive by bytes and integrity. SHA-256: `1c24b19d33fd0870fbfae1b64e1e09b3451342fc8daf0ea501699b0caf672332`. Core 0.3.0 was not republished; its registry archive remains byte-identical to the qualified earlier release, SHA-256 `f90f6d059721aa47d4fadc09dc38a4028554673a45063da07c045e41e5cc9c38`.
+
+The extracted extension archive with the retained exact public core passes native Pi 1.5.2 loading and scripted save→receipt→exact read→new session→same path/hash read. The fixture also restores one dashboard note and accepts zero-choice visible-demand refresh, source sequence 2→3, with zero external fetches and completed cleanup. The new fixture deliberately has no open choices; existing full-suite choice restoration/answer/slot cases and hosted legacy native choice lifecycle cover that compatibility. These fixtures establish mechanics, not autonomous model compliance or a demonstrated repair of a specific other-machine run.
+
+A compatible Daddy inventory/refresh capability enables the richer view. Older hosts retain legacy payloads and saved-choice controls. Terminal inventory checks current local owner/trust/scope/classes/suppression without resolving provider credentials; model-facing recall and choice controls keep destination disclosure. Immediate saved/already-saved receipts provide exact bookie_read parameters, not performed read-back or semantic verification. Pending, failed and withheld saves have no confirmed locator.
+
+Publication was invoked once after final-head CI and merged-source verification. Registry propagation was checked read-only. No model service, JEV or live research call occurred; JEV remains off. Active user installations were not changed. Scoped source, CI, package and native receipts are retained under the coordinator's `ecosystem-dashboard-resume-release-20261116/bookie` evidence archive.

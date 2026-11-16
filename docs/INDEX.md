@@ -85,3 +85,5 @@ This page is the stable entry point for product and engineering context.
 - [ADR-0017: managed lexical recall](architecture/decisions/0017-managed-lexical-recall.md) — additive local recall; exact search and scope authority retained.
 - [BK-047 evidence](planning/evidence/BK-047.md) — managed project recall validation and delivery.
 - [0.4.0 public delivery](planning/evidence/public-delivery-0.4.0.md) — paired core 0.2.0 release, exact archive and installed-host verification.
+
+- [0.6.0 public delivery](planning/evidence/public-delivery-0.6.0.md) — scoped dashboard contents, current-scope resume guidance and exact immediate-save locators, with unchanged core 0.3.0.
