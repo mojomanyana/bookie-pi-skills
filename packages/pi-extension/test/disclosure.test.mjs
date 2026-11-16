@@ -179,6 +179,20 @@ test("search strips cross-project/global diagnostics and undeclared metadata; va
       ),
     /Recent mode is available only for managed project memory/,
   );
+  await assert.rejects(
+    f.tools.get("bookie_search").execute(
+      "candidates",
+      {
+        vault: f.vault,
+        mode: "candidates",
+        query: "Fixture missing",
+      },
+      undefined,
+      undefined,
+      f.ctx,
+    ),
+    /Candidate mode is available only for managed project memory/,
+  );
   assert.ok(
     value.results.every(
       (x) =>

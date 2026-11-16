@@ -21,6 +21,10 @@ import type {
   RecallVaultOptions,
   RecallVaultRequest,
   RecallVaultResult,
+  FilesystemSuggestionHit,
+  SuggestVaultOptions,
+  SuggestVaultRequest,
+  SuggestVaultResult,
   InspectConceptFailure,
   InspectConceptOptions,
   InspectConceptResult,
@@ -697,6 +701,145 @@ export async function recallVault(
   };
 }
 
+/** Read-only lexical candidates, never a confirmed identity or semantic score. */
+export async function suggestVault(
+  root: string | URL,
+  request: SuggestVaultRequest,
+  options: SuggestVaultOptions = {},
+): Promise<SuggestVaultResult> {
+  validateRoot(root);
+  const filters = validateSearchRequest(request);
+  const terms = recallWords(request.query);
+  if (terms.length === 0)
+    throw new TypeError("suggestion query must contain a letter or number");
+  const limits = queryLimits({
+    ...options,
+    maxResults: options.maxResults ?? DEFAULT_MAX_RECALL_RESULTS,
+  });
+  if (limits.maxResults > MAX_RECALL_RESULTS)
+    throw new RangeError("suggestion maxResults must not exceed 50");
+  if (options.include !== undefined && typeof options.include !== "function")
+    throw new TypeError("suggestion include must be a function");
+  throwIfAborted(options.signal);
+  const pending: { hit: FilesystemSuggestionHit; time: number }[] = [];
+  let matchedCount = 0;
+  const compare = (
+    left: (typeof pending)[number],
+    right: (typeof pending)[number],
+  ) =>
+    right.hit.matchedTermCount - left.hit.matchedTermCount ||
+    right.hit.titleMatchedTermCount - left.hit.titleMatchedTermCount ||
+    (left.time === right.time ? 0 : left.time > right.time ? -1 : 1) ||
+    compareText(left.hit.source.path, right.hit.source.path);
+  const scan = await scanVaultForQuery({
+    rootPath: root,
+    limits: limits.validation,
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+    visit(concept) {
+      if (concept.excluded || !matchesFilters(concept, filters)) return;
+      const source = sourceFor(concept),
+        signals = signalsFor(concept);
+      // Ineligible records never influence ranking, visible counts or slots.
+      if (options.include && !options.include({ source, ...signals })) return;
+      const titleWords = new Set(recallWords(concept.title));
+      const bodyWords = new Set(recallWords(concept.bodyText));
+      const matchedTerms = terms.filter(
+        (term) => titleWords.has(term) || bodyWords.has(term),
+      );
+      if (matchedTerms.length === 0) return;
+      matchedCount += 1;
+      const stamp = recallTimestamp(concept);
+      const titleMatchedTermCount = matchedTerms.filter((term) =>
+        titleWords.has(term),
+      ).length;
+      const matchedField =
+        titleMatchedTermCount === matchedTerms.length
+          ? "title"
+          : matchedTerms.every((term) => bodyWords.has(term))
+            ? "body"
+            : "title-and-body";
+      const title = truncateUtf8Prefix(concept.title, limits.maxExcerptBytes);
+      const excerpt = truncateUtf8Prefix(
+        matchedField === "title" ? concept.title : concept.bodyText,
+        limits.maxExcerptBytes,
+      );
+      pending.push({
+        time: stamp.time,
+        hit: {
+          source,
+          ...signals,
+          title: title.value,
+          titleTruncated: title.truncated,
+          matchedField,
+          excerpt: excerpt.value,
+          excerptTruncated: excerpt.truncated,
+          recordedAt: stamp.recordedAt,
+          recordedAtField: stamp.recordedAtField,
+          candidateStatus: "unconfirmed",
+          matchedTerms: Object.freeze(matchedTerms),
+          matchedTermsTruncated: false,
+          matchedTermCount: matchedTerms.length,
+          queryTermCount: terms.length,
+          titleMatchedTermCount,
+        },
+      });
+      pending.sort(compare);
+      if (pending.length > limits.maxResults) pending.pop();
+    },
+  });
+  let remaining = limits.maxTotalTextBytes;
+  let outputTruncated = false;
+  const results = scan.safeToReturn
+    ? pending.map(({ hit }) => {
+        const title = truncateUtf8Prefix(hit.title, remaining);
+        remaining -= title.byteLength;
+        const excerpt = truncateUtf8Prefix(hit.excerpt, remaining);
+        remaining -= excerpt.byteLength;
+        const matchedTerms: string[] = [];
+        let termBytes = 0;
+        for (const term of hit.matchedTerms) {
+          const bytes = Buffer.byteLength(term, "utf8");
+          if (bytes > remaining || termBytes + bytes > limits.maxExcerptBytes)
+            break;
+          matchedTerms.push(term);
+          remaining -= bytes;
+          termBytes += bytes;
+        }
+        const titleTruncated = hit.titleTruncated || title.truncated;
+        const excerptTruncated = hit.excerptTruncated || excerpt.truncated;
+        const matchedTermsTruncated =
+          matchedTerms.length < hit.matchedTermCount;
+        outputTruncated ||=
+          titleTruncated || excerptTruncated || matchedTermsTruncated;
+        return Object.freeze({
+          ...hit,
+          title: title.value,
+          titleTruncated,
+          excerpt: excerpt.value,
+          excerptTruncated,
+          matchedTerms: Object.freeze(matchedTerms),
+          matchedTermsTruncated,
+        });
+      })
+    : [];
+  return {
+    mode: "filesystem",
+    root: scan.root,
+    results: Object.freeze(results),
+    queryMode: "candidates",
+    matching: "nfkc-lowercase-any-word-token",
+    ordering: "matched-terms-desc-title-terms-desc-recorded-time-desc-path-asc",
+    limit: limits.maxResults,
+    matchedCount: scan.safeToReturn ? matchedCount : 0,
+    rejectedConcepts: scan.rejectedConcepts,
+    complete: scan.complete && scan.safeToReturn && scan.rejectedConcepts === 0,
+    resultsTruncated: scan.safeToReturn && matchedCount > results.length,
+    outputTruncated,
+    diagnostics: scan.diagnostics,
+    diagnosticsTruncated: scan.diagnosticsTruncated,
+  };
+}
+
 export async function inspectConcept(
   root: string | URL,
   selector: InspectConceptSelector,
@@ -818,6 +961,10 @@ export type {
   RecallVaultOptions,
   RecallVaultRequest,
   RecallVaultResult,
+  FilesystemSuggestionHit,
+  SuggestVaultOptions,
+  SuggestVaultRequest,
+  SuggestVaultResult,
   FilesystemSensitivityClassification,
   InspectConceptFailure,
   InspectConceptOptions,

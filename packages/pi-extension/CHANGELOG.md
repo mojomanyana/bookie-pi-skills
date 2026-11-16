@@ -1,5 +1,11 @@
 # pi-bookie release notes
 
+## [0.5.0] - 2026-11-16
+
+- Offer possible project-memory matches when approximate wording misses the strict search, with shared words and exact source references instead of confidence percentages.
+- Explain the next step after a complete search finds no strict match. Let users select a possible match, clarify, or continue without prior context; a suggestion never becomes a saved decision automatically.
+- Preserve strict, recent and exact search, project boundaries and disclosure permissions. Includes the exact automatic dependency pi-bookie-core 0.3.0; no model or JEV call is added.
+
 ## [0.4.0] - 2026-11-13
 
 - Find managed project notes using all query words regardless of case or order, and explicitly browse the most recent recorded notes.

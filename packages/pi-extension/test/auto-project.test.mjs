@@ -114,17 +114,56 @@ test("managed recall finds reordered words, offers bounded recent notes, and pre
       .results.length,
     1,
   );
+  assert.equal(terms.nextStep, undefined);
+  const noStrictMatch = await search({ query: "workshop atlas" });
+  assert.equal(noStrictMatch.complete, true);
+  assert.equal(noStrictMatch.matchedCount, 0);
+  assert.match(noStrictMatch.nextStep, /mode=candidates/);
+  assert.match(noStrictMatch.nextStep, /shorter/);
+  const candidates = await search({
+    mode: "candidates",
+    query: "workshop atlas",
+    limit: 1,
+  });
+  assert.equal(candidates.queryMode, "candidates");
+  assert.equal(candidates.results.length, 1);
+  assert.equal(candidates.matchedCount, 2);
+  assert.equal(candidates.complete, false);
+  assert.equal(candidates.scanComplete, true);
+  assert.equal(candidates.resultsTruncated, true);
+  assert.equal(candidates.nextStep, undefined);
+  assert.equal(candidates.results[0].candidateStatus, "unconfirmed");
+  assert.deepEqual(candidates.results[0].matchedTerms, ["workshop"]);
+  assert.match(candidates.interpretation, /unconfirmed/i);
+  const selected = JSON.parse(
+    await next.call("bookie_read", {
+      selector: "path",
+      value: candidates.results[0].source.path,
+    }),
+  ).result;
+  assert.deepEqual(selected.source, candidates.results[0].source);
+  assert.equal(
+    (await search({ mode: "recent", type: "Activity", limit: 50 }))
+      .matchedCount,
+    2,
+  );
+  const noCandidates = await search({ mode: "candidates", query: "unrelated" });
+  assert.equal(noCandidates.results.length, 0);
+  assert.equal(noCandidates.nextStep, undefined);
   const recent = await search({ mode: "recent", type: "Activity", limit: 1 });
   assert.equal(recent.results.length, 1);
   assert.equal(recent.matchedCount, 2);
   assert.equal(recent.resultsTruncated, true);
   assert.equal(recent.scanComplete, true);
   assert.equal(recent.complete, false);
+  assert.equal(recent.nextStep, undefined);
   const all = await search({ mode: "recent", type: "Activity", limit: 2 });
   assert.equal(all.complete, true);
   assert.equal(all.results.length, 2);
   for (const args of [
     { query: "!!!" },
+    { mode: "candidates", query: "!!!" },
+    { mode: "candidates", query: "workshop", limit: 51 },
     { mode: "recent", query: "workshop" },
     { mode: "recent", limit: 51 },
     {},
@@ -141,8 +180,25 @@ test("managed recall finds reordered words, offers bounded recent notes, and pre
     ).result.results,
     [],
   );
+  assert.equal(
+    JSON.parse(
+      await separate.call("bookie_search", {
+        mode: "candidates",
+        query: "workshop atlas",
+      }),
+    ).result.matchedCount,
+    0,
+  );
+  await assert.rejects(
+    search({ mode: "candidates", query: "workshop", vault: cwd }),
+    /withheld/,
+  );
   next.revoke();
   await assert.rejects(search({ mode: "recent" }), /withheld/);
+  await assert.rejects(
+    search({ mode: "candidates", query: "workshop atlas" }),
+    /withheld/,
+  );
 });
 
 test("fresh trusted Auto workspace remembers and recalls across sessions without setup; disabled, unrelated and revoked sessions stay isolated", async (t) => {

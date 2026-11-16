@@ -6,7 +6,7 @@ It must not depend on Pi, Redis, an HTTP framework, or a concrete embedding prov
 
 ## Package identity
 
-The public core is `pi-bookie-core` version 0.1.0 under MIT. `pi-bookie` installs it
+The public package is `pi-bookie-core` under MIT. Version 0.3.0 adds confirmable lexical suggestions. `pi-bookie` installs it
 automatically through an exact dependency; direct Node consumers use
 `import { validateVault } from "pi-bookie-core"`. Earlier private archives used
 `@bookie/core`; their hashes and qualification remain historical. Existing API and vault formats are
@@ -65,6 +65,8 @@ Policy-bearing `createConceptWithPolicy()` / `amendConceptWithPolicy()` return `
 Absent targets publish with atomic no-replace semantics. The resource file and directory are flushed before descriptor publication, and the descriptor directory is flushed before success. Success reports both changed paths, exact descriptor source hash, resource SHA-256, and byte count. Cancellation before resource publication cleans both temporaries. After the resource becomes durable, a descriptor conflict or I/O uncertainty leaves an explicit orphan rather than risking check-then-unlink deletion of another writer's file; failure `changedPaths` identifies every canonical path that may exist. Capture does not infer identity, timestamps, media type, project, support links, actor, or body and never invokes Git or the network.
 
 ## Filesystem query
+
+`suggestVault(root, { query, filters? }, options?)` returns unconfirmed candidates sharing at least one normalized complete query word. It reuses the bounded validated scanner, applies host visibility before counts/ranking, and orders by matched-word count, title matches, recorded time and path. Results retain exact source references, bounded source prefixes, actual matched words and explicit clipping. Default limit 10, maximum 50. This is lexical overlap, not synonym search or semantic confidence; callers confirm the intended record and exact-read its current contents before relying on it. `searchVault` and `recallVault` contracts remain unchanged.
 
 `recallVault(root, { mode: "terms", query, filters? } | { mode: "recent", filters? }, options?)` is a separate bounded lexical recall API. It uses NFKC/lowercase Unicode letter/number tokens, requiring all distinct query tokens across title and body without stemming or synonyms. Recent mode accepts no query. Results sort by `bookie.occurred_at`, falling back to `generated.at`, descending; missing/unusable timestamps come last and canonical path breaks equal-time ties. Default limit 10, maximum 50. The optional host-owned `include` callback filters validated concept signals before counts and top-K selection; the caller still owns current disclosure authority. Exact source prefixes, timestamp provenance, visible match count, limit, scan completeness, result cap and text truncation remain explicit. This additive API does not change `searchVault`, and requires a new core release before a published extension can depend on it.
 

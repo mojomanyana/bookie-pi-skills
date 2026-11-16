@@ -3,7 +3,12 @@ import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import { recallVault, searchVault } from "../dist/index.js";
+import {
+  inspectConcept,
+  recallVault,
+  searchVault,
+  suggestVault,
+} from "../dist/index.js";
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), "bookie-recall-"));
@@ -198,4 +203,158 @@ test("visibility is applied before counts and selection, and bounded scans/text 
   });
   assert.equal(rejected.complete, false);
   assert.ok(rejected.rejectedConcepts > 0);
+});
+
+test("suggestions rank lexical overlap before title matches and recorded time without changing strict recall", async (t) => {
+  const { root, put } = await fixture(t);
+  const best = await put(
+    101,
+    "Orchid atlas",
+    "The retained source.",
+    "2026-11-01T00:00:00Z",
+  );
+  const body = await put(
+    102,
+    "Orchid guide",
+    "The atlas is printed.",
+    "2026-11-03T00:00:00Z",
+  );
+  const partial = await put(
+    103,
+    "Orchid note",
+    "A different subject.",
+    "2026-11-04T00:00:00Z",
+  );
+  const tied = await put(
+    104,
+    "Orchid atlas",
+    "Another source.",
+    "2026-11-01T00:00:00Z",
+  );
+  const query = "ＡＴＬＡＳ orchid missing ORCHID";
+  assert.equal(
+    (await recallVault(root, { mode: "terms", query })).matchedCount,
+    0,
+  );
+  const result = await suggestVault(root, { query });
+  assert.equal(result.complete, true);
+  assert.equal(result.queryMode, "candidates");
+  assert.equal(result.matching, "nfkc-lowercase-any-word-token");
+  assert.deepEqual(
+    result.results.map((hit) => hit.source.path),
+    [best, tied, body, partial],
+  );
+  const hit = result.results[0];
+  assert.equal(hit.candidateStatus, "unconfirmed");
+  assert.deepEqual(hit.matchedTerms, ["atlas", "orchid"]);
+  assert.equal(hit.matchedTermCount, 2);
+  assert.equal(hit.queryTermCount, 3);
+  assert.equal(hit.titleMatchedTermCount, 2);
+  assert.equal(hit.matchedTermsTruncated, false);
+  const exact = await inspectConcept(root, { path: best });
+  assert.equal(exact.ok, true);
+  assert.deepEqual(hit.source, exact.source);
+  assert.equal(hit.untrusted, true);
+  assert.equal(hit.source.commit, null);
+  assert.equal(hit.confidence, undefined);
+  assert.equal(
+    (await suggestVault(root, { query: "orchids" })).matchedCount,
+    0,
+  );
+  assert.equal(
+    (await suggestVault(root, { query: "unrelated" })).matchedCount,
+    0,
+  );
+  assert.equal(
+    (await searchVault(root, { query: "orchid atlas" })).matchedCount,
+    0,
+  );
+});
+
+test("suggestion visibility precedes ranking/counts and candidate reads respect filters, caps and partial scans", async (t) => {
+  const { root, put } = await fixture(t);
+  const visible = await put(
+    111,
+    "Orchid older",
+    "Visible original source " + "é".repeat(200),
+    "2026-11-01T00:00:00Z",
+  );
+  await put(
+    112,
+    "Orchid atlas newer",
+    "Hidden source.",
+    "2026-11-02T00:00:00Z",
+  );
+  const query = "orchid atlas missing";
+  const selected = await suggestVault(
+    root,
+    { query },
+    {
+      maxResults: 1,
+      include: (record) => record.source.path === visible,
+    },
+  );
+  assert.equal(selected.matchedCount, 1);
+  assert.equal(selected.resultsTruncated, false);
+  assert.deepEqual(
+    selected.results.map((hit) => hit.source.path),
+    [visible],
+  );
+  assert.deepEqual(
+    await suggestVault(root, { query }, { include: () => false }).then((x) => [
+      x.matchedCount,
+      x.results,
+    ]),
+    [0, []],
+  );
+  assert.equal(
+    (await suggestVault(root, { query, filters: { type: "Decision" } }))
+      .matchedCount,
+    0,
+  );
+  const capped = await suggestVault(root, { query }, { maxResults: 1 });
+  assert.equal(capped.matchedCount, 2);
+  assert.equal(capped.resultsTruncated, true);
+  const partial = await suggestVault(root, { query }, { maxEntries: 1 });
+  assert.equal(partial.complete, false);
+  const clipped = await suggestVault(
+    root,
+    { query: "visible original" },
+    { maxExcerptBytes: 20, maxTotalTextBytes: 25 },
+  );
+  assert.equal(clipped.outputTruncated, true);
+  assert.equal(clipped.results[0].matchedTermsTruncated, true);
+  assert.ok(!JSON.stringify(clipped.results).includes("�"));
+  await put(113, "Orchid malformed", "Not a valid record.", "not-a-date");
+  assert.equal((await suggestVault(root, { query })).complete, false);
+});
+
+test("suggestions reject invalid input, keep 1–50 limits and honor cancellation", async (t) => {
+  const { root, put } = await fixture(t);
+  for (let n = 200; n < 255; n++)
+    await put(n, "Orchid note", "Original source.", "2026-11-01T00:00:00Z");
+  const all = await suggestVault(
+    root,
+    { query: "orchid missing" },
+    { maxResults: 50 },
+  );
+  assert.equal(all.results.length, 50);
+  assert.equal(all.matchedCount, 55);
+  assert.equal(all.resultsTruncated, true);
+  for (const query of ["", "!!!", "x".repeat(4097)])
+    await assert.rejects(suggestVault(root, { query }), TypeError);
+  for (const maxResults of [0, -1, 1.5, 51])
+    await assert.rejects(
+      suggestVault(root, { query: "orchid" }, { maxResults }),
+    );
+  await assert.rejects(
+    suggestVault(root, { query: "orchid" }, { include: "all" }),
+    TypeError,
+  );
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(
+    suggestVault(root, { query: "orchid" }, { signal: controller.signal }),
+    { name: "AbortError" },
+  );
 });
