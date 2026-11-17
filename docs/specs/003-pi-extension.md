@@ -1,5 +1,9 @@
 # SPEC-003: Pi extension
 
+## Moved-folder re-attach — BK-052, not released
+
+[ADR-0022](../architecture/decisions/0022-reattach-moved-project-memory.md) adds the human-only `/bookie-reattach` command (REQ-035). Each managed open records the folder's real path, directory identity and Git `HEAD`/prefix beside the sealed binding, outside the canonical vault; lookup never depends on it. The command needs the interactive terminal and a trusted folder, and refuses when this folder's memory holds anything beyond the untouched automatic seed. It offers only other bound memories whose recorded folder no longer exists; a still-existing folder is a copy or fork and is excluded with its reason. A recorded commit must be an ancestor of, or equal to, the current `HEAD` at the same repository prefix, or the candidate is excluded; same device/inode/creation time is shown as same-folder evidence; otherwise the candidate is labelled unverified. The terminal shows old and new paths, evidence, note/open-choice counts and times, and the confirmation names both paths; anything but yes changes nothing. Re-binding uses the creation primitives under an exclusive store lock with one atomic commit rename; an interrupted attempt fails closed and is rolled back by the next run, and the move is appended to the location record. It is never registered as a tool, appears in no model-facing text, never runs at session start and grants no capture or disclosure authority. Memories saved before location records existed cannot be matched (OQ-016).
+
 ## Scoped dashboard contents — BK-049 delivered in 0.6.0
 
 [ADR-0019](../architecture/decisions/0019-dashboard-memory-inventory.md) adds an optional capability-negotiated note inventory and generic authorized refresh callback. Inventory uses current-project visible Activity notes, bounded titles/source summaries and honest complete or partial counts; empty is distinct from denied or unknown. Callback results are returned to the host for timeout/generation acceptance, never published inside the callback. Existing contribution slots and saved-choice controls remain unchanged; older hosts receive only legacy payloads. The separate terminal-local ticket preserves current owner, trust, Auto, class/exclusion, suppression and disabled-state checks without resolving provider credentials; model-facing and choice-control disclosure retain their destination checks. No provider/JEV/network call, new memory write or canonical migration is added. [BK-049 evidence](../planning/evidence/BK-049.md) records local verification; [public delivery](../planning/evidence/public-delivery-0.6.0.md) verifies pi-bookie 0.6.0.
@@ -45,7 +49,7 @@ Provide a distributable Pi package that exposes safe Bookie read, search, write,
 ## Requirements
 
 1. Register these stable tools: `bookie_read`, `bookie_search`, `bookie_write`, `bookie_checkpoint`, `bookie_validate`, and `bookie_export`.
-2. Register human commands for capture, checkpoint, search, validation, status, and export.
+2. Register human commands for capture, checkpoint, search, validation, status, and export, plus the terminal-only `/bookie-reattach` for moved managed memory (ADR-0022).
 3. Resolve configuration only after project trust and support a vault outside the current code repository.
 4. Use Pi's `StringEnum` for string enum schemas and strict TypeBox inputs.
 5. Queue the complete mutation window with Pi's file mutation queue using the resolved absolute path.
@@ -97,6 +101,7 @@ Both root-Git and local-subpackage manifests select the TypeScript `src/index.ts
 - Tool outputs truncate at documented byte/line limits and point to a retrievable full artifact where appropriate.
 - Session shutdown releases all resources and remains safe when called twice.
 - Source inspection confirms no commit or push invocation exists.
+- `/bookie-reattach` re-attaches a moved folder's memory only after terminal confirmation, refuses without the terminal, trust or with saved memory present, excludes existing old folders and contradicting Git history, and appears in no tool or model-facing text.
 
 ## Test strategy
 

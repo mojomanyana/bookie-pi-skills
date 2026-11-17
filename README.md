@@ -10,6 +10,10 @@ The local ledger foundation, BK-030–037, is released in `pi-bookie` and `pi-bo
 
 Start Pi in the folder for your project and describe a choice to remember. In a trusted parent session with Auto enabled, Bookie creates its private workspace memory on first use, saves short project notes, and can retrieve them in a later session opened in that folder. The extension keeps these records in Pi's user directory. Standalone Bookie retains manual vault and destination selection. See [automatic project memory](docs/architecture/decisions/0016-managed-project-auto.md).
 
+### Moving or renaming a project folder (unreleased)
+
+Automatic memory belongs to the exact folder, so after a move or rename Bookie starts a new, empty memory there. In the moved folder, type `/bookie-reattach` in the Pi terminal. Bookie lists earlier projects whose folder no longer exists and whose recorded Git commit is in this folder's history (or that are the same renamed folder), with old and new paths and note counts. It re-attaches only after you confirm. A folder that still exists is treated as a copy and is not offered; other matches without Git evidence are labelled unverified. It never runs automatically and Pi's model cannot use it. Memory saved before this version recorded folder locations cannot be matched yet. See [ADR-0022](docs/architecture/decisions/0022-reattach-moved-project-memory.md).
+
 ## Current status
 
 | Area | Available now | Remaining work |
