@@ -36,10 +36,12 @@ function git(cwd: string, args: readonly string[]) {
         "core.fsmonitor=false",
         "-c",
         "core.hooksPath=/dev/null",
+        // As core's reader: the folder is an argument, not the child's working directory.
+        "-C",
+        cwd,
         ...args,
       ],
       {
-        cwd,
         env: environment(),
         encoding: "utf8",
         timeout: 5_000,

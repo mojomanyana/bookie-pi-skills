@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { constants } from "node:fs";
+import { constants, type BigIntStats } from "node:fs";
 import {
   lstat,
   realpath,
@@ -60,19 +60,11 @@ async function put(path: string, value: string) {
 }
 const SEED_INDEX =
   '---\nokf_version: "0.2"\n---\n\n# Workspace memory\n\n[Project](projects/workspace/project.md)\n';
-async function seed(root: string, assertCurrent: () => Promise<void>) {
-  const generated = new Date().toISOString();
-  await mkdir(root, { mode: 0o700 });
-  for (const dir of [
-    "projects/workspace/activities",
-    "projects/workspace/decisions",
-    "references/files",
-  ]) {
-    await mkdir(join(root, dir), { recursive: true, mode: 0o700 });
-  }
-  const manifest = {
+// The exact seed texts; re-attach compares against them to tell an untouched seed.
+const seedManifest = (vaultUid: string) =>
+  JSON.stringify({
     profile: "1.0",
-    vault: { uid: uid("VLT"), title: "Workspace memory" },
+    vault: { uid: vaultUid, title: "Workspace memory" },
     allowed_concept_types: [
       "Project",
       "Task",
@@ -92,26 +84,36 @@ async function seed(root: string, assertCurrent: () => Promise<void>) {
       },
       attachment_max_bytes: 1048576,
     },
-  };
-  const record = {
+  }) + "\n";
+const seedProject = (projectUid: string, generated: string) =>
+  "---\n" +
+  JSON.stringify({
     type: "Project",
     title: "Workspace memory",
     status: "stable",
     generated: { by: "process:pi-bookie", at: generated },
     bookie: {
       profile: "1.0",
-      uid: uid("PRJ"),
+      uid: projectUid,
       state: "active",
       created_at: generated,
       sensitivity: "internal",
     },
-  };
-  await put(join(root, "bookie.yaml"), JSON.stringify(manifest) + "\n");
+  }) +
+  "\n---\n\n# Workspace memory\n";
+async function seed(root: string, assertCurrent: () => Promise<void>) {
+  const generated = new Date().toISOString();
+  await mkdir(root, { mode: 0o700 });
+  for (const dir of [
+    "projects/workspace/activities",
+    "projects/workspace/decisions",
+    "references/files",
+  ]) {
+    await mkdir(join(root, dir), { recursive: true, mode: 0o700 });
+  }
+  await put(join(root, "bookie.yaml"), seedManifest(uid("VLT")));
   await put(join(root, "index.md"), SEED_INDEX);
-  await put(
-    join(root, project.slice(1)),
-    "---\n" + JSON.stringify(record) + "\n---\n\n# Workspace memory\n",
-  );
+  await put(join(root, project.slice(1)), seedProject(uid("PRJ"), generated));
   const result = await initializeRecallState(root, {
     assertAuthority: assertCurrent,
   });
@@ -200,7 +202,7 @@ export interface WorkspaceMove {
   readonly from: string;
   readonly to: string;
   readonly at: string;
-  readonly evidence: "git" | "folder" | "git+folder" | "unverified";
+  readonly evidence: "git" | "folder" | "git+folder";
 }
 interface WorkspaceRecord {
   readonly version: 1;
@@ -269,13 +271,17 @@ function parseRecord(value: unknown): WorkspaceRecord | undefined {
       !textPath(move.from) ||
       !textPath(move.to) ||
       !instant(move.at) ||
-      !["git", "folder", "git+folder", "unverified"].includes(
-        move.evidence as string,
-      )
+      !["git", "folder", "git+folder"].includes(move.evidence as string)
     )
       return;
   return value as unknown as WorkspaceRecord;
 }
+// A record describes a binding only if that binding's key is the hash of the
+// record's own path and folder identity; anything else is stale or forged.
+const boundTo = (record: WorkspaceRecord | undefined, key: string) =>
+  record?.key === key && keyFor(record.path, record.directory) === key
+    ? record
+    : undefined;
 async function readRecord(base: string) {
   try {
     const { st, text } = await readBounded(join(base, RECORD), 65_536);
@@ -288,10 +294,11 @@ async function writeRecord(
   base: string,
   record: WorkspaceRecord,
   assertCurrent: () => Promise<void>,
+  prefix = ".workspace-",
 ) {
   const temporary = join(
     base,
-    ".workspace-" + randomBytes(8).toString("hex") + ".tmp",
+    prefix + randomBytes(8).toString("hex") + ".tmp",
   );
   await put(temporary, JSON.stringify(record) + "\n");
   try {
@@ -386,7 +393,10 @@ export async function openManagedVault(
         key,
         path: cwd,
         directory: cwdId,
-        git: await readGitEvidence(cwd),
+        // Only a successful probe replaces a recorded commit: a missing, slow or
+        // refusing Git says nothing about this folder's history.
+        git:
+          (await readGitEvidence(cwd)) ?? boundTo(previous, key)?.git ?? null,
         seen: new Date().toISOString(),
         moves: previous?.moves ?? [],
       },
@@ -412,9 +422,24 @@ const SEED_ENTRIES = new Map([
   ["references", "dir"],
   ["references/files", "dir"],
 ]);
+const json = (text: string): unknown => {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+};
 // True only for the exact automatic seed: no notes, decisions, evidence,
-// controls, registrations, project edits or any other entry.
+// controls, registrations, manifest or project edits, or any other entry.
+// Anything unreadable counts as content, so callers refuse.
 async function untouchedSeed(root: string) {
+  try {
+    return await seedOnly(root);
+  } catch {
+    return false;
+  }
+}
+async function seedOnly(root: string) {
   const found = new Map<string, string>();
   async function walk(dir: string, prefix: string): Promise<boolean> {
     for (const entry of await readdir(dir, { withFileTypes: true })) {
@@ -431,14 +456,27 @@ async function untouchedSeed(root: string) {
   if (!(await walk(root, "")) || found.size !== SEED_ENTRIES.size) return false;
   if ((await readBounded(join(root, "index.md"), 4096)).text !== SEED_INDEX)
     return false;
-  const project = /^---\n(\{[^\n]*\})\n---\n\n# Workspace memory\n$/u.exec(
-    (await readBounded(join(root, "projects/workspace/project.md"), 4096)).text,
-  );
-  const record: unknown = project ? JSON.parse(project[1]!) : undefined;
+  const manifest = (await readBounded(join(root, "bookie.yaml"), 4096)).text;
+  const parsed = json(manifest);
+  if (
+    !own(parsed) ||
+    !own(parsed.vault) ||
+    typeof parsed.vault.uid !== "string" ||
+    manifest !== seedManifest(parsed.vault.uid)
+  )
+    return false;
+  const text = (
+    await readBounded(join(root, "projects/workspace/project.md"), 4096)
+  ).text;
+  const front = /^---\n(\{[^\n]*\})\n---\n/u.exec(text);
+  const record = front ? json(front[1]!) : undefined;
   if (
     !own(record) ||
-    record.type !== "Project" ||
-    record.title !== "Workspace memory"
+    !own(record.bookie) ||
+    !own(record.generated) ||
+    typeof record.bookie.uid !== "string" ||
+    typeof record.generated.at !== "string" ||
+    text !== seedProject(record.bookie.uid, record.generated.at)
   )
     return false;
   const state = await readRecallState(root);
@@ -452,61 +490,39 @@ async function untouchedSeed(root: string) {
 export type CurrentMemory =
   | { readonly state: "none" }
   | { readonly state: "empty"; readonly binding: Binding }
-  | {
-      readonly state: "interrupted";
-      readonly mapping: { dev: bigint; ino: bigint };
-      readonly pending: string;
-    }
   | { readonly state: "memory" }
   | { readonly state: "unverified" };
 async function currentMemory(
   store: string,
   key: string,
 ): Promise<CurrentMemory> {
-  const mapping = join(store, key + ".json");
-  let st;
   try {
-    st = await lstat(mapping, { bigint: true });
+    await lstat(join(store, key + ".json"));
   } catch (error) {
     if (hasCode(error, "ENOENT")) return { state: "none" };
     throw error;
   }
+  let binding: Binding;
   try {
-    const binding = await readBinding(store, key);
-    return (await untouchedSeed(binding.root))
-      ? { state: "empty", binding }
-      : { state: "memory" };
+    binding = await readBinding(store, key);
   } catch {
-    // An interrupted re-attach leaves this folder's mapping on a pending binding.
+    // Includes a mapping on the pending binding of a re-attach still running elsewhere.
+    return { state: "unverified" };
   }
-  try {
-    const record: unknown = JSON.parse((await readBounded(mapping, 256)).text);
-    if (
-      st.isFile() &&
-      st.nlink === 2n &&
-      Array.isArray(record) &&
-      record[0] === key &&
-      typeof record[1] === "string" &&
-      /^ledger-[A-Za-z0-9]{6}$/u.test(record[1])
-    ) {
-      const pending = join(store, record[1], "binding.next");
-      const next = await lstat(pending, { bigint: true });
-      if (next.isFile() && next.dev === st.dev && next.ino === st.ino)
-        return {
-          state: "interrupted",
-          mapping: { dev: st.dev, ino: st.ino },
-          pending,
-        };
-    }
-  } catch {
-    /* Unverifiable state is refused below. */
-  }
-  return { state: "unverified" };
+  return (await untouchedSeed(binding.root))
+    ? { state: "empty", binding }
+    : { state: "memory" };
 }
 
 export interface MovedProject {
   readonly key: string;
   readonly previous: string;
+  /**
+   * Why the earlier folder counts as gone from its recorded path: nothing is
+   * there, a different folder is there now, or the path now leads to this
+   * folder under another name (a case-only rename, or a link left by a move).
+   */
+  readonly earlier: "missing" | "replaced" | "aliased";
   readonly root: string;
   readonly evidence: { readonly git: boolean; readonly folder: boolean };
   readonly recordedGit: GitEvidence | null;
@@ -517,7 +533,8 @@ export interface MovedProject {
 }
 export interface ExcludedProject {
   readonly previous: string;
-  readonly reason: "still-exists" | "unknown-location" | "git-mismatch";
+  readonly reason:
+    "still-exists" | "unknown-location" | "git-mismatch" | "no-evidence";
 }
 export interface MovedProjectSurvey {
   readonly workspace: string;
@@ -538,7 +555,9 @@ const sameFile = (
 
 /**
  * Human re-attach only: earlier project memories whose recorded folder is gone
- * and whose recorded evidence does not contradict this folder. Read-only.
+ * and that Git history or the same folder identity links to this folder.
+ * Read-only. Memories unrelated to this folder are not listed unless their
+ * folder is gone.
  */
 export async function surveyMovedProjects(
   workspace: string,
@@ -589,39 +608,60 @@ export async function surveyMovedProjects(
     } catch {
       continue;
     }
-    const record = await readRecord(binding.base);
-    if (!record || record.key !== key) {
+    const record = boundTo(await readRecord(binding.base), key);
+    if (!record) {
       unrecorded++;
       continue;
     }
     const previous = record.path;
+    // The earlier folder is gone when nothing is at its path, when a different
+    // folder is there now (re-created, re-cloned or restored, possibly this one),
+    // or when that path now leads to this folder, whose real path differs.
+    let earlier: MovedProject["earlier"] | "present" | "unknown";
     try {
-      await lstat(previous);
-      excluded.push({ previous, reason: "still-exists" });
-      continue;
+      const st = await lstat(previous, { bigint: true });
+      const there = [st.dev, st.ino, st.birthtimeNs].join(":");
+      earlier =
+        there !== record.directory
+          ? "replaced"
+          : there === at.cwdId
+            ? "aliased"
+            : "present";
     } catch (error) {
-      if (!hasCode(error, "ENOENT") && !hasCode(error, "ENOTDIR")) {
-        excluded.push({ previous, reason: "unknown-location" });
-        continue;
-      }
+      earlier =
+        hasCode(error, "ENOENT") || hasCode(error, "ENOTDIR")
+          ? "missing"
+          : "unknown";
     }
-    if (
-      record.git &&
-      (!git ||
-        git.prefix !== record.git.prefix ||
-        !(await isAncestorOfHead(at.cwd, record.git.head)))
-    ) {
+    const folder = record.directory === at.cwdId;
+    const history =
+      record.git !== null &&
+      git !== null &&
+      git.prefix === record.git.prefix &&
+      (await isAncestorOfHead(at.cwd, record.git.head));
+    if (earlier === "present" || earlier === "unknown") {
+      // Only a related folder is worth a reason; unrelated live projects are not listed.
+      if (history || folder)
+        excluded.push({
+          previous,
+          reason: earlier === "present" ? "still-exists" : "unknown-location",
+        });
+      continue;
+    }
+    if (record.git && !history) {
       excluded.push({ previous, reason: "git-mismatch" });
+      continue;
+    }
+    if (!history && !folder) {
+      excluded.push({ previous, reason: "no-evidence" });
       continue;
     }
     candidates.push({
       key,
       previous,
+      earlier,
       root: binding.root,
-      evidence: {
-        git: record.git !== null,
-        folder: record.directory === at.cwdId,
-      },
+      evidence: { git: history, folder },
       recordedGit: record.git,
       lastOpened: record.seen,
       binding,
@@ -649,22 +689,13 @@ async function unlinkSame(
   await unlink(path);
 }
 
-/**
- * Move one surveyed project's binding to the surveyed folder after the human
- * confirmed it. Uses the creation primitives (exclusive files, hard-link seal,
- * atomic rename). The ledger's binding rename is the single commit point; before
- * it the earlier mapping still resolves and this folder's mapping cannot.
- */
-export async function reattachMovedProject(
-  surveyed: MovedProjectSurvey,
-  chosen: MovedProject,
-  assertCurrent: () => Promise<void>,
-  agentDirectory = getAgentDir(),
-) {
-  const at = await locate(surveyed.workspace, agentDirectory);
-  if (at.cwd !== surveyed.workspace || at.key !== surveyed.key) throw changed();
-  await directory(at.store, "private");
-  const lock = join(at.store, "reattach.lock");
+// Only re-attach creates these, and only while it holds the store lock.
+const TEMPORARY = /^reattach-[0-9a-f]{16}\.tmp$/u;
+const LEDGER = /^ledger-[A-Za-z0-9]{6}$/u;
+const MAPPING = /^[0-9a-f]{64}\.json$/u;
+async function withStoreLock<T>(store: string, run: () => Promise<T>) {
+  await directory(store, "private");
+  const lock = join(store, "reattach.lock");
   let handle;
   try {
     handle = await open(
@@ -694,7 +725,140 @@ export async function reattachMovedProject(
     await handle.close();
   }
   try {
-    // Everything shown before confirmation must still hold under the store lock.
+    return await run();
+  } finally {
+    // A lock left behind only blocks the next re-attach, which explains how to recover.
+    await lstat(lock, { bigint: true })
+      .then(
+        (st) => (sameFile(st, owned) ? unlink(lock) : undefined),
+        () => undefined,
+      )
+      .catch(() => undefined);
+  }
+}
+
+/**
+ * Under the store lock: undo what an interrupted re-attach can leave, so a crash
+ * at any step is recovered by the next run. Before the commit rename the earlier
+ * mapping still resolves, so dropping the pending files restores it; after the
+ * commit only the earlier mapping, which can no longer resolve, is left. A state
+ * that does not match one of these exactly is left in place and fails closed.
+ * Returns the number of files removed.
+ */
+async function sweep(store: string) {
+  let removed = 0;
+  const KEY = /^[0-9a-f]{64}$/u;
+  const first = (text: string) => {
+    const record = json(text);
+    return Array.isArray(record) ? (record as unknown[]) : [];
+  };
+  async function drop(path: string, only?: (st: BigIntStats) => boolean) {
+    try {
+      const st = await lstat(path, { bigint: true });
+      if (st.isFile() && (only?.(st) ?? true)) {
+        await unlinkSame(path, st);
+        removed++;
+        return true;
+      }
+    } catch {
+      /* Left in place; later steps fail closed on it. */
+    }
+    return false;
+  }
+  // A pending binding that some folder's mapping points at: that mapping fails
+  // closed until both are gone; nothing was committed.
+  async function uncommitted(pending: string) {
+    try {
+      const { st, text } = await readBounded(pending, 256);
+      const key = first(text)[0];
+      if (st.nlink !== 2n || typeof key !== "string" || !KEY.test(key)) return;
+      if (await drop(join(store, key + ".json"), (m) => sameFile(m, st)))
+        await drop(pending, (p) => p.nlink === 1n);
+    } catch {
+      /* Left in place. */
+    }
+  }
+  // An earlier mapping a committed re-attach did not remove: one link, and its
+  // ledger's seal now resolves for a different folder.
+  async function superseded(name: string) {
+    const key = name.slice(0, -5),
+      mapping = join(store, name);
+    try {
+      const { st, text } = await readBounded(mapping, 256);
+      const [named, ledger] = first(text);
+      if (
+        st.nlink !== 1n ||
+        named !== key ||
+        typeof ledger !== "string" ||
+        !LEDGER.test(ledger)
+      )
+        return;
+      const owner = first(
+        (await readBounded(join(store, ledger, "binding"), 256)).text,
+      )[0];
+      if (typeof owner !== "string" || owner === key || !KEY.test(owner))
+        return;
+      if ((await readBinding(store, owner)).ledger === ledger)
+        await drop(mapping, (now) => sameFile(now, st) && now.nlink === 1n);
+    } catch {
+      /* Left in place. */
+    }
+  }
+  const names = await readdir(store);
+  for (const name of names)
+    if (TEMPORARY.test(name)) await drop(join(store, name));
+  for (const name of names) {
+    if (!LEDGER.test(name)) continue;
+    const base = join(store, name);
+    const entries = await readdir(base).catch(() => [] as string[]);
+    for (const entry of entries)
+      if (TEMPORARY.test(entry))
+        await drop(join(base, entry), (st) => st.nlink === 1n);
+    if (!entries.includes("binding.next")) continue;
+    const pending = join(base, "binding.next");
+    if (!(await drop(pending, (st) => st.nlink === 1n)))
+      await uncommitted(pending);
+  }
+  for (const name of names) if (MAPPING.test(name)) await superseded(name);
+  return removed;
+}
+
+/**
+ * Human re-attach only: under the store lock, clean up after an earlier
+ * re-attach that did not finish. Moves nothing; returns the files removed.
+ */
+export async function recoverReattach(
+  workspace: string,
+  agentDirectory = getAgentDir(),
+) {
+  const { store } = await locate(workspace, agentDirectory);
+  try {
+    await lstat(store);
+  } catch (error) {
+    if (hasCode(error, "ENOENT")) return 0;
+    throw error;
+  }
+  return withStoreLock(store, () => sweep(store));
+}
+
+/**
+ * Move one surveyed project's binding to the surveyed folder after the human
+ * confirmed it. Uses the creation primitives (exclusive files, hard-link seal,
+ * atomic rename). The ledger's binding rename is the single commit point; before
+ * it the earlier mapping still resolves and this folder's mapping cannot.
+ */
+export async function reattachMovedProject(
+  surveyed: MovedProjectSurvey,
+  chosen: MovedProject,
+  assertCurrent: () => Promise<void>,
+  agentDirectory = getAgentDir(),
+) {
+  const at = await locate(surveyed.workspace, agentDirectory);
+  if (at.cwd !== surveyed.workspace || at.key !== surveyed.key) throw changed();
+  return withStoreLock(at.store, async () => {
+    // Leftovers of an interrupted attempt must not block this one. Then everything
+    // shown before confirmation must still hold under the store lock.
+    await sweep(at.store);
     const again = await surveyMovedProjects(surveyed.workspace, agentDirectory);
     const now = again.candidates.find((c) => c.key === chosen.key);
     const before = surveyed.current,
@@ -704,33 +868,32 @@ export async function reattachMovedProject(
       !now ||
       now.binding.id !== chosen.binding.id ||
       now.previous !== chosen.previous ||
+      now.earlier !== chosen.earlier ||
       now.evidence.git !== chosen.evidence.git ||
       now.evidence.folder !== chosen.evidence.folder ||
       current.state !== before.state ||
       (current.state === "empty" &&
         before.state === "empty" &&
-        current.binding.id !== before.binding.id) ||
-      (current.state === "interrupted" &&
-        before.state === "interrupted" &&
-        !sameFile(current.mapping, before.mapping))
+        current.binding.id !== before.binding.id)
     )
       throw changed();
     await assertCurrent();
     const mapping = join(at.store, at.key + ".json");
-    if (current.state === "interrupted") {
-      // Roll back the earlier attempt; its ledger never stopped resolving for its old mapping.
-      await unlinkSame(mapping, current.mapping);
-      await unlinkSame(current.pending, current.mapping);
-    }
     const binding = now.binding;
     const pending = join(binding.base, "binding.next");
-    try {
-      const stray = await lstat(pending, { bigint: true });
-      if (!stray.isFile() || stray.nlink !== 1n) throw changed();
-      await unlink(pending);
-    } catch (error) {
-      if (!hasCode(error, "ENOENT")) throw error;
-    }
+    // The sweep removed every pending binding it could account for.
+    await lstat(pending).then(
+      () => {
+        throw Error(
+          "Bookie found an unfinished re-attach file it could not clean up: " +
+            JSON.stringify(pending) +
+            ". Nothing was changed.",
+        );
+      },
+      (error: unknown) => {
+        if (!hasCode(error, "ENOENT")) throw error;
+      },
+    );
     await put(
       pending,
       JSON.stringify([at.key, binding.ledger, binding.baseId, binding.rootId]),
@@ -777,7 +940,7 @@ export async function reattachMovedProject(
         }
         await rm(pending, { force: true });
       } catch {
-        /* A leftover pending seal is detected and rolled back by the next run. */
+        /* Whatever is left is removed by the next run's sweep. */
       }
       throw error;
     }
@@ -792,9 +955,7 @@ export async function reattachMovedProject(
       ? now.evidence.folder
         ? "git+folder"
         : "git"
-      : now.evidence.folder
-        ? "folder"
-        : "unverified";
+      : "folder";
     let recorded = true;
     try {
       await writeRecord(
@@ -817,6 +978,7 @@ export async function reattachMovedProject(
           ].slice(-MAX_MOVES),
         },
         async () => {},
+        "reattach-",
       );
     } catch {
       recorded = false;
@@ -833,19 +995,10 @@ export async function reattachMovedProject(
       ...(current.state === "empty"
         ? {
             setAside: current.binding.base,
-            setAsideChanged: !(await untouchedSeed(current.binding.root).catch(
-              () => false,
-            )),
+            // Sampled once: a save that lands in the set-aside memory later is not reported here.
+            setAsideChanged: !(await untouchedSeed(current.binding.root)),
           }
         : {}),
     };
-  } finally {
-    // A lock left behind only blocks the next re-attach, which explains how to recover.
-    await lstat(lock, { bigint: true })
-      .then(
-        (st) => (sameFile(st, owned) ? unlink(lock) : undefined),
-        () => undefined,
-      )
-      .catch(() => undefined);
-  }
+  });
 }

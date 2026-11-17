@@ -13,6 +13,7 @@ import { allowsCanonical } from "./disclosure-authority.js";
 import { dashboardOpenChoices } from "./dashboard-open-choices.js";
 import {
   reattachMovedProject,
+  recoverReattach,
   surveyMovedProjects,
   type ExcludedProject,
   type MovedProject,
@@ -22,6 +23,8 @@ const TERMINAL_ONLY =
   "Bookie re-attach needs the interactive Pi terminal so you can confirm it. It is unavailable in print, JSON and RPC modes. Nothing was changed.";
 const UNTRUSTED =
   "Bookie re-attach needs a folder Pi trusts in this session. Nothing was changed.";
+const BUSY =
+  "Bookie re-attach runs only while Pi is idle, so no note is saved during the move. Wait for the current response to finish, then run /bookie-reattach again. Nothing was changed.";
 const HAS_MEMORY =
   "This folder already has Bookie project memory with saved content. Re-attaching would merge or replace it, so nothing was changed.";
 const UNVERIFIABLE =
@@ -39,10 +42,12 @@ const shown = (path: string) =>
   ) +
   '"';
 const why: Record<ExcludedProject["reason"], string> = {
-  "still-exists": "still exists, so this folder is a copy or fork, not a move",
+  "still-exists":
+    "still exists and matches this folder's Git history or identity, so this folder looks like a copy or fork, not a move",
   "unknown-location": "could not be confirmed as gone",
   "git-mismatch":
-    "recorded a Git commit that is not in this folder's current history",
+    "has a recorded Git commit that Git did not confirm in this folder's current history",
+  "no-evidence": "has no Git or same-folder evidence linking it to this folder",
 };
 
 // Terminal-only counts for the human; nothing here reaches the model.
@@ -110,18 +115,22 @@ function evidence(candidate: MovedProject) {
     lines.push(
       "Git: the commit Bookie recorded there (" +
         candidate.recordedGit!.head.slice(0, 12) +
-        ") is in this folder's current history.",
+        ") is in this folder's current history. A clone or fork with the same history also matches.",
     );
   if (candidate.evidence.folder)
     lines.push(
       "Same folder: its device, inode and creation time match this folder.",
     );
-  if (!lines.length)
-    lines.push(
-      "UNVERIFIED: Bookie recorded no Git commit for the earlier folder and this is a different folder. Continue only if you know it is the same project.",
-    );
   return lines;
 }
+const earlier: Record<MovedProject["earlier"], string> = {
+  missing:
+    "Earlier folder (not found: deleted, moved, or on a disconnected drive or unmounted volume, in which case this folder is a copy): ",
+  replaced:
+    "Earlier folder (a different folder is at that path now, for example re-created, re-cloned or restored): ",
+  aliased:
+    "Earlier folder (that path now leads to this folder under another name, for example after a case-only rename or through a link left by a move): ",
+};
 
 export function registerReattachCommand(
   pi: ExtensionAPI,
@@ -139,7 +148,10 @@ export function registerReattachCommand(
       if (args.trim() !== "")
         throw Error("Use /bookie-reattach without arguments.");
       if (ctx.isProjectTrusted?.() !== true) throw Error(UNTRUSTED);
+      if (ctx.isIdle?.() !== true) throw Error(BUSY);
       const agent = getAgentDir();
+      // Finishing an interrupted earlier attempt moves nothing; it only removes its leftovers.
+      const recovered = await recoverReattach(ctx.cwd, agent);
       const survey = await surveyMovedProjects(ctx.cwd, agent);
       if (survey.current.state === "memory") throw Error(HAS_MEMORY);
       if (survey.current.state === "unverified") throw Error(UNVERIFIABLE);
@@ -147,6 +159,10 @@ export function registerReattachCommand(
         (item) =>
           "Not offered: " + shown(item.previous) + " " + why[item.reason] + ".",
       );
+      if (recovered)
+        notes.unshift(
+          "Bookie cleaned up after an earlier re-attach that was interrupted.",
+        );
       if (survey.unrecorded)
         notes.push(
           survey.unrecorded +
@@ -178,10 +194,10 @@ export function registerReattachCommand(
           shown(survey.workspace) +
           " | " +
           (candidate.evidence.git
-            ? "Git history matches"
-            : candidate.evidence.folder
-              ? "same folder"
-              : "UNVERIFIED") +
+            ? candidate.evidence.folder
+              ? "Git history matches, same folder"
+              : "Git history matches"
+            : "same folder") +
           " | " +
           (counts
             ? counts.notes + " notes, " + counts.choices + " open choices"
@@ -201,13 +217,10 @@ export function registerReattachCommand(
       }
       const chosen = survey.candidates[index]!,
         counts = described[index];
-      const unverified = !chosen.evidence.git && !chosen.evidence.folder;
       const approved = await ctx.ui.confirm(
-        unverified
-          ? "Re-attach UNVERIFIED Bookie project memory?"
-          : "Re-attach Bookie project memory?",
+        "Re-attach Bookie project memory?",
         [
-          "Earlier folder (no longer exists): " + shown(chosen.previous),
+          earlier[chosen.earlier] + shown(chosen.previous),
           "This folder: " + shown(survey.workspace),
           ...evidence(chosen),
           counts
@@ -225,12 +238,7 @@ export function registerReattachCommand(
                 "The empty memory Bookie created for this folder has no saved notes. It is set aside, not deleted.",
               ]
             : []),
-          ...(survey.current.state === "interrupted"
-            ? [
-                "An earlier re-attach into this folder did not finish. It is rolled back first.",
-              ]
-            : []),
-          "Afterwards the earlier folder no longer finds this memory. Re-attaching grants no model or save permission; Bookie's normal checks apply.",
+          "Afterwards the earlier folder no longer finds this memory. Re-attaching grants nothing new, but with Pi Daddy Auto on, the model in this folder can recall these notes right away, as in any project with Bookie memory.",
         ].join("\n"),
       );
       if (approved !== true) {
@@ -242,6 +250,7 @@ export function registerReattachCommand(
         chosen,
         async () => {
           if (ctx.isProjectTrusted?.() !== true) throw Error(UNTRUSTED);
+          if (ctx.isIdle?.() !== true) throw Error(BUSY);
         },
         agent,
       );

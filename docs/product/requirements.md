@@ -31,7 +31,7 @@ These requirements are authoritative. Specifications may refine them but may not
 | REQ-013 | Bookie tools and hooks shall never commit or push automatically. |
 | REQ-014 | Pi shall expose stable read, search, write, checkpoint, validate, and export capabilities through a custom extension. |
 | REQ-015 | File mutations shall be atomic with respect to concurrent Pi tool mutations of the same target. |
-| REQ-035 | Automatic project memory shall be re-bound to a different workspace only by a human command in the interactive terminal that names the earlier and current folders and receives explicit confirmation; never automatically, never through a model-facing tool, and never by merging into or replacing memory that holds saved content (ADR-0022). |
+| REQ-035 | Automatic project memory shall be re-bound to a different workspace only by a human command in the interactive terminal that names the earlier and current folders and receives explicit confirmation; only for an earlier memory whose recorded folder is gone and that recorded Git history or the same folder identity links to the current workspace; never automatically, never through a model-facing tool, and never by merging into or replacing memory that holds saved content (ADR-0022). |
 
 ## Retrieval
 
