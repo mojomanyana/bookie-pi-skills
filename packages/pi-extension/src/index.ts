@@ -1,4 +1,5 @@
 import { createManagedMemory } from "./managed-memory.js";
+import { registerReattachCommand } from "./reattach.js";
 import { rememberTool } from "./remember.js";
 import { wrapUntrustedSource } from "./untrusted-text.js";
 import { registerWorkMapConsumer } from "./work-map-consumer.js";
@@ -685,6 +686,7 @@ export default function registerBookie(pi: ExtensionAPI): void {
   const managed = createManagedMemory(pi);
   const authority = createCaptureAuthority(pi, managed.hide);
   const disclosure = createDisclosureAuthority(pi, authority.bind, managed);
+  registerReattachCommand(pi, managed);
   const contextFilter = createBookieContextFilter(pi);
   registerContextConsumers(pi, disclosure, contextFilter);
   registerWorkMapConsumer(pi, disclosure, contextFilter);

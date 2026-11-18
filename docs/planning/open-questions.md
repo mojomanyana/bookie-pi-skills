@@ -130,3 +130,12 @@ Open questions are not permission to guess. Resolve them by the listed deadline,
 - **Decision:** `pi-bookie` and `pi-bookie-core`, both MIT0.1.0; only these two manifests become public. Root, CLI and service stay private. Registry ownership, exact archive qualification and publication remain separate steps.
 - **Historical direction:** Private candidates used `@bookie/pi-extension` and `@bookie/core`; retain those names in their historical receipts and accepted ADR text.
 - **Owner:** Repository owner.
+
+## OQ-016: Moved memories saved before location records
+
+- **State:** Open; does not block BK-052 for memories opened at least once by a version that records locations.
+- **Question:** Should `/bookie-reattach` also help with memories whose folder moved before Bookie recorded readable locations, and how?
+- **Evidence:** Earlier versions keep only `sha256([1, realpath, "dev:ino:birthtimeNs"])` as the mapping name, no readable path and no Git commit (ADR-0022). Without the earlier path Bookie cannot show it, cannot confirm that it no longer exists, and cannot exclude copies. Such memories are counted as unmatchable and their notes stay on disk.
+- **Options:** (1) Leave them unmatchable; users re-open the folder once at its original location with the new version before moving it. (2) Let the human type the earlier path in the terminal; Bookie accepts it only if it no longer exists and `sha256([1, typed path, this folder's identity])` names an existing binding, which proves a same-volume rename of this exact folder but cannot help a copy across volumes. (3) Derive earlier paths from Pi's own session storage; this depends on Pi's private file layout and reads files Bookie does not own.
+- **Decision deadline:** Before BK-052 release notes describe moved-folder recovery as complete.
+- **Owner:** Repository owner.

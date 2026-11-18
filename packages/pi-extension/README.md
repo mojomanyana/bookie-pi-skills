@@ -6,6 +6,17 @@ Pi can call `bookie_remember` to retain a short project note and `bookie_search`
 
 Distributable Pi package for Bookie tools. Canonical behavior belongs in `pi-bookie-core`; follow [SPEC-003](../../docs/specs/003-pi-extension.md) and the Pi-specific constraints in [AGENTS.md](../../AGENTS.md#pi-implementation-constraints).
 
+### Moving or renaming a project folder
+
+Memory belongs to the exact folder. After you move or rename a project, the next Pi session there starts an empty memory; your earlier notes are still on disk. Open Pi in the moved folder and, while Pi is not responding, type `/bookie-reattach`:
+
+- Bookie lists earlier project memories whose recorded folder is no longer at its path, with the old and new paths, the evidence, the number of saved notes and open choices, and when they were last used. "Not found" includes a folder on a disconnected drive or unmounted volume; if that is the case, this folder is a copy. A folder deleted and re-cloned or restored at the same path also counts as gone, so its memory can come back, as does an earlier path that now leads to this folder under another name (a case-only rename, or a link left by a move).
+- Bookie offers a memory only with evidence: Git (the commit Bookie last recorded there is in this folder's current history) or the same folder (same device, inode and creation time after a rename). A clone or fork with the same history also matches Git evidence, so check the paths. A memory with neither is never offered.
+- An earlier folder that still exists is a copy or fork and is never offered. Recorded Git history that does not match this folder excludes a memory. Bookie lists what it did not offer and why; projects unrelated to this folder that still exist are not listed.
+- Nothing changes until you confirm the dialog that names both folders. Afterwards the old folder no longer finds the memory, and running the command again finds nothing to move. If Pi stopped in the middle of an earlier re-attach, the next run cleans up first; if it reports a leftover lock file, remove that file as the message says and run the command again.
+
+The command works only in the interactive terminal of a trusted folder; print, JSON and RPC modes refuse. It refuses when this folder already has saved notes or edits, so memories are never merged or overwritten. The empty memory Auto created after the move is set aside, not deleted. Re-attaching grants nothing new and the model can neither run nor see this command, but with Pi Daddy Auto on, the model in this folder can recall the attached notes right away, as in any project with Bookie memory. Bookie records each folder's location and Git commit when it opens the memory, so memory last used by an older version cannot be matched until that folder is opened once at its original location.
+
 ### Finding a saved note
 
 Managed project memory searches all words in the query across the title and body, ignoring case, punctuation and word order. For example, `workshop resource` can find **Workshop learning resource**. Unicode is normalized with NFKC and lowercase; tokens are whole sequences of letters/numbers. This does not infer synonyms or word stems. Use `mode: "recent"` with no query when you want to browse recent notes instead. The default is ten results; `limit` accepts 1–50. Notes sort newest recorded `bookie.occurred_at` first, falling back to `generated.at`, with canonical path as a stable tie-break; missing dates sort last. The timestamp describes the note, not independent verification of its claims.

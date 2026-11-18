@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { findPackageJSON } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { localWorkshopProvider } from "./workshop-provider.mjs";
 
@@ -15,6 +15,17 @@ const [modulesArg, daddyArg, ...profile] = process.argv.slice(2);
 const answerChoices = profile.includes("--answer");
 // Fail on a host without saved-note contents instead of accepting its legacy update.
 const requireInventory = profile.includes("--inventory");
+// Test-only composition hook: the standard lifecycle still loads just Daddy and Bookie.
+const extraExtensions = JSON.parse(
+  process.env.BOOKIE_WORKSHOP_EXTRA_EXTENSIONS ?? "[]",
+);
+assert.ok(
+  Array.isArray(extraExtensions) &&
+    extraExtensions.every(
+      (path) => typeof path === "string" && isAbsolute(path),
+    ),
+  "BOOKIE_WORKSHOP_EXTRA_EXTENSIONS must be a JSON array of absolute extension paths",
+);
 assert.ok(modulesArg, "Pass the Pi installation's node_modules directory");
 const modules = resolve(modulesArg);
 const daddy = resolve(daddyArg ?? join(modules, "pi-daddy"));
@@ -223,7 +234,7 @@ const host = await createAgentSessionRuntime(
       noPromptTemplates: true,
       noThemes: true,
       noContextFiles: true,
-      additionalExtensionPaths: [witness, bookie],
+      additionalExtensionPaths: [witness, bookie, ...extraExtensions],
       extensionFactories: [(pi) => pi.registerProvider(provider, config)],
     });
     await resourceLoader.reload();
@@ -317,6 +328,45 @@ async function verifyContents(frames) {
     frames.now,
     /1 saved note\. Recent notes shown\.\n\s*• Workshop guide/,
   );
+  return verifyRefresh(first);
+}
+async function verifyNoChoicesContents() {
+  const first = await memory();
+  if (!first.hostValidatesInventory) {
+    assert.ok(!requireInventory, "This host has no saved-note contents");
+    assert.equal(first.inventory, null, "Older hosts keep the legacy update");
+    return "not offered by this dashboard host";
+  }
+  assert.ok(
+    first.inventory,
+    "Saved-note contents disappeared with the last open choice",
+  );
+  assert.deepEqual(
+    {
+      scope: first.inventory.scope,
+      state: first.inventory.state,
+      count: first.inventory.count,
+      limited: first.inventory.limited,
+    },
+    {
+      scope: "Current workspace",
+      state: "available",
+      count: 4,
+      limited: false,
+    },
+  );
+  assert.equal(first.inventory.entries.length, 4);
+  for (const title of ["Workshop guide", "Map Room materials"])
+    assert.ok(first.inventory.entries.some((entry) => entry.title === title));
+  const rendered = await frame("now", "4 saved notes. Recent notes shown.");
+  assert.match(rendered, /4 saved notes\. Recent notes shown\./);
+  assert.doesNotMatch(
+    rendered,
+    /Open choices|Needs attention|Needs your (?:decision|permission|input)/i,
+  );
+  return verifyRefresh(first);
+}
+async function verifyRefresh(first) {
   // The host calls Bookie's refresh callback, then validates and publishes its return value.
   const asked = await memory("refresh");
   assert.deepEqual(
@@ -386,7 +436,13 @@ try {
   assert.match(frames.now, /No pending dashboard requests/);
   assert.deepEqual(calls, ["bookie_remember", "bookie_search", "bookie_read"]);
   const answering = answerChoices
-    ? await verifyAnswers({ host, notifications, frame, text })
+    ? await verifyAnswers({
+        host,
+        notifications,
+        frame,
+        text,
+        verifyNoChoicesContents,
+      })
     : undefined;
   assert.deepEqual(errors, []);
   assert.equal(fetches, 0);
@@ -400,6 +456,7 @@ try {
     answering,
     calls,
     externalFetches: fetches,
+    extraExtensions,
   };
 } finally {
   clearTimeout(timer);

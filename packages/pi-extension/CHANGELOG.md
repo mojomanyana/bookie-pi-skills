@@ -1,5 +1,12 @@
 # pi-bookie release notes
 
+## [0.8.0] - 2026-11-18
+
+- Reconnect saved project memory after a folder moves with the terminal-only `/bookie-reattach` command. It shows matching evidence, old/new paths and saved contents, and reconnects only after confirmation. Existing notes, decisions and disclosure permissions are preserved.
+- Recover interrupted reattachment safely, protect nonempty destination memories, and retain previously recorded Git evidence when a later Git probe cannot answer. Memories without recorded matching evidence are not silently adopted.
+- Verify dashboard memory inventory and refresh even with no open choices, including fresh-session recall and selected, custom and deferred answers. The relocation fixture now runs without administrator privileges.
+- Keep the extension compatible with the exact released `pi-bookie-core` 0.3.0 dependency; no core update or JEV call is required.
+
 ## [0.7.0] - 2026-11-17
 
 - Save a known next work step with `nextAction`, separately from the user's unresolved choices. Already-authorized review or build work can remain in the handoff without creating a dashboard question.

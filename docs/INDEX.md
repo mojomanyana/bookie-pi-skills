@@ -90,3 +90,5 @@ This page is the stable entry point for product and engineering context.
 
 - [ADR-0021: next actions and user choices](architecture/decisions/0021-next-actions-and-user-choices.md) — additive pending-work field, separate from unanswered user decisions.
 - [BK-051 evidence](planning/evidence/BK-051.md) — approved clarity batch and local verification; model field selection remains unproven.
+
+- [ADR-0022: human re-attach of moved project memory](architecture/decisions/0022-reattach-moved-project-memory.md) — terminal-only `/bookie-reattach`, location records beside the binding; legacy moves are OQ-016.

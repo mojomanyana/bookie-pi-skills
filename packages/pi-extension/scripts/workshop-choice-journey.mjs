@@ -111,7 +111,13 @@ export async function pressChoice(command, connection, controls, render) {
   return "saved";
 }
 
-export async function verifyAnswers({ host, notifications, frame, text }) {
+export async function verifyAnswers({
+  host,
+  notifications,
+  frame,
+  text,
+  verifyNoChoicesContents,
+}) {
   const fresh = async () => {
     const id = host.session.sessionManager.getSessionId();
     assert.deepEqual(await host.newSession(), { cancelled: false });
@@ -155,6 +161,9 @@ export async function verifyAnswers({ host, notifications, frame, text }) {
   await press("custom", "saved");
   await fresh();
   await visible([]);
+  // Inventory must remain available and refreshable while idle after /new,
+  // before any new prompt, even when every saved choice has been answered.
+  const noChoicesContents = await verifyNoChoicesContents?.();
   await host.session.prompt("Recall our Workshop guide decision.");
   assert.equal(text(host.session.messages.at(-1).content), ownAnswer);
   return {
@@ -163,5 +172,6 @@ export async function verifyAnswers({ host, notifications, frame, text }) {
     writtenAnswer: ownAnswer,
     freshSessions: 3,
     attentionRequests: 0,
+    ...(noChoicesContents === undefined ? {} : { noChoicesContents }),
   };
 }

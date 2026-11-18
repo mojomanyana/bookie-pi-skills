@@ -74,7 +74,7 @@ async function destination(ctx: ExtensionContext) {
     endpoint: hash(endpoint.href),
   };
 }
-function allowsCanonical(
+export function allowsCanonical(
   scope: RecallScope,
   classes: readonly string[],
   controls: Extract<Awaited<ReturnType<typeof readRecallState>>, { ok: true }>,

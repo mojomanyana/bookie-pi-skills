@@ -427,5 +427,11 @@ export function createManagedMemory(pi: ExtensionAPI) {
       if (active) void refreshDashboard(active);
     });
   }
-  return { get, install, hide, refreshDashboard };
+  // After a human re-attach the next access resolves the binding again through the
+  // normal owner, trust and destination checks; no permission carries over.
+  function forget() {
+    slot = undefined;
+    hide();
+  }
+  return { get, install, hide, refreshDashboard, forget };
 }
