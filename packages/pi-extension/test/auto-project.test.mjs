@@ -750,7 +750,7 @@ test("saving a chosen or typed answer closes only its exact note and a fresh Pi 
     await rm(root, { recursive: true, force: true });
   });
   await Promise.all([agent, cwd].map((p) => mkdir(p, { mode: 0o700 })));
-  const first = host(cwd);
+  const first = host(cwd, true, "root-session", true);
   await first.event("session_start");
   const note = {
     title: "Orion workshop",
@@ -863,10 +863,14 @@ test("saving a chosen or typed answer closes only its exact note and a fresh Pi 
   );
   assert.equal(await readChoice(access, selected.id), undefined);
   assert.ok(await readChoice(access, other.id));
-  const typed = { id: other.id, revision: otherInfo.revision, answer: "None" };
+  const typed = {
+    id: other.id,
+    revision: otherInfo.revision,
+    answer: "Large tactile controls",
+  };
   assert.equal(await answerChoice(access, typed, "root-session"), "saved");
   await first.event("session_shutdown");
-  const next = host(cwd, true, "fresh-parent");
+  const next = host(cwd, true, "fresh-parent", true);
   await next.event("session_start");
   assert.deepEqual(
     next.dashboards
@@ -881,7 +885,30 @@ test("saving a chosen or typed answer closes only its exact note and a fresh Pi 
   const source = hits.find((h) => h.source.path.includes("/note-"));
   const receipt = hits.find((h) => h.source.path.includes("/answer-"));
   assert.ok(receipt);
+  assert.equal(receipt.choiceResolution.answer, "Printed chart");
+  assert.equal(receipt.choiceResolution.question, note.openChoice);
   assert.equal(source.choiceResolution.answer, "Printed chart");
+  // These words occur only in the typed answer, not in either question/title.
+  const discovered = JSON.parse(
+    await next.call("bookie_search", { query: "tactile controls" }),
+  ).result;
+  assert.equal(discovered.complete, true);
+  assert.equal(discovered.results.length, 1);
+  assert.equal(discovered.results[0].choiceResolution.answer, typed.answer);
+  assert.equal(
+    discovered.results[0].choiceResolution.question,
+    otherInfo.label,
+  );
+  const inventory = next.dashboards.at(-1).inventory;
+  assert.equal(inventory.count, 5);
+  assert.ok(
+    inventory.entries.some(
+      (row) => row.summary === "Answered: " + typed.answer,
+    ),
+  );
+  assert.ok(
+    inventory.entries.some((row) => row.summary === "Answered: Printed chart"),
+  );
   const topicHit = JSON.parse(
     await next.call("bookie_search", {
       query: "Participants already have a printed chart.",
@@ -898,6 +925,126 @@ test("saving a chosen or typed answer closes only its exact note and a fresh Pi 
     ).result;
   assert.equal((await read(source)).choiceResolution.answer, "Printed chart");
   assert.match((await read(receipt)).sourceText, /Printed chart/);
+  assert.equal((await read(receipt)).choiceResolution.answer, "Printed chart");
+  assert.equal(
+    (await read(discovered.results[0])).choiceResolution.answer,
+    typed.answer,
+  );
+  const { dashboardMemoryInventory, createMemoryAnswerCache } =
+    await import("../dist/dashboard-memory-inventory.js");
+  const previewCache = createMemoryAnswerCache();
+  let fullRecordChecks = 0;
+  const countedAccess = {
+    ...access,
+    allows: (record) => {
+      if ("sourceText" in record) fullRecordChecks++;
+      return true;
+    },
+  };
+  const coldPreview = await dashboardMemoryInventory(
+    countedAccess,
+    undefined,
+    previewCache,
+  );
+  assert.equal(
+    fullRecordChecks,
+    4,
+    "cold preview verifies both question/answer pairs",
+  );
+  fullRecordChecks = 0;
+  assert.deepEqual(
+    await dashboardMemoryInventory(countedAccess, undefined, previewCache),
+    coldPreview,
+  );
+  assert.equal(
+    fullRecordChecks,
+    0,
+    "unchanged warm preview uses fresh scan metadata, not four repeated inspections",
+  );
+  const hiddenOriginal = await dashboardMemoryInventory(
+    {
+      ...access,
+      allows: (record) => record.uid !== source.uid,
+    },
+    undefined,
+    previewCache,
+  );
+  assert.equal(hiddenOriginal.limited, true);
+  assert.equal(
+    hiddenOriginal.entries.find((row) => row.id === receipt.uid).summary,
+    "Saved answer unavailable in this preview.",
+  );
+  let accessChecks = 0;
+  await assert.rejects(
+    dashboardMemoryInventory(
+      {
+        ...access,
+        assertCurrent: async () => {
+          if (++accessChecks === 3) throw Error("revoked during answer read");
+        },
+      },
+      undefined,
+      previewCache,
+    ),
+    /revoked during answer read/,
+  );
+  assert.equal(
+    previewCache.answers.size,
+    0,
+    "access loss clears derived previews",
+  );
+  await dashboardMemoryInventory(access, undefined, previewCache);
+  const answerFile = join(access.root, receipt.source.path.slice(1));
+  const originalBytes = await readFile(answerFile);
+  try {
+    await writeFile(
+      answerFile,
+      originalBytes.toString().replace("Question: ", "Changed question: "),
+    );
+    const damaged = await dashboardMemoryInventory(
+      access,
+      undefined,
+      previewCache,
+    );
+    assert.equal(damaged.limited, true);
+    assert.equal(
+      damaged.entries.find((row) => row.id === receipt.uid).summary,
+      "Saved answer unavailable in this preview.",
+    );
+    const damagedSearch = JSON.parse(
+      await next.call("bookie_search", { query: note.title }),
+    ).result;
+    assert.equal(damagedSearch.complete, false);
+    assert.ok(
+      !damagedSearch.results.some((hit) => hit.choiceResolution?.answer),
+    );
+  } finally {
+    await writeFile(answerFile, originalBytes);
+  }
+  assert.deepEqual(await readFile(answerFile), originalBytes);
+  await dashboardMemoryInventory(access, undefined, previewCache);
+  for (let n = 0; n < 11; n++)
+    await next.call("bookie_remember", {
+      title: "Later progress " + n,
+      summary: "Recorded a later project update.",
+    });
+  fullRecordChecks = 0;
+  const page = await dashboardMemoryInventory(
+    countedAccess,
+    undefined,
+    previewCache,
+  );
+  assert.equal(page.entries.length, 12);
+  assert.ok(!page.entries.some((row) => row.reference === source.source.path));
+  assert.ok(
+    page.entries.some((row) => row.summary === "Answered: " + typed.answer),
+  );
+  assert.equal(
+    fullRecordChecks,
+    0,
+    "fresh scan checks the original even outside the displayed page",
+  );
+  assert.ok(previewCache.answers.size <= 12);
   const { historyChoice, projectChoiceHistory } =
     await import("../dist/choice-answer.js");
   for (const hit of [source, receipt]) {

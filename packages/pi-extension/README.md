@@ -6,6 +6,8 @@ Pi can call `bookie_remember` to retain a short project note and `bookie_search`
 
 Distributable Pi package for Bookie tools. Canonical behavior belongs in `pi-bookie-core`; follow [SPEC-003](../../docs/specs/003-pi-extension.md) and the Pi-specific constraints in [AGENTS.md](../../AGENTS.md#pi-implementation-constraints).
 
+Saved dashboard answers are separate project notes. Memory previews show **Answered: your choice** after checking the original question and its answer. Ask Pi using a few words from the topic or answer; it can read the matching record and report the verified question/answer even if the older question note still says it was open. An unavailable preview is not an unanswered question. Routine choices do not depend on a selected work map or task list.
+
 ### Moving or renaming a project folder
 
 Memory belongs to the exact folder. After you move or rename a project, the next Pi session there starts an empty memory; your earlier notes are still on disk. Open Pi in the moved folder and, while Pi is not responding, type `/bookie-reattach`:

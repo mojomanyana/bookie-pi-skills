@@ -1,5 +1,16 @@
+import { historyChoice, projectChoiceHistory } from "./choice-answer.js";
 import { recallVault } from "pi-bookie-core";
 import type { ChoiceAccess } from "./dashboard-open-choices.js";
+
+type VerifiedAnswer = NonNullable<
+  Awaited<ReturnType<typeof projectChoiceHistory>>
+>;
+// Derived display values only. Fresh canonical metadata and current access are
+// always required before reuse; this object carries no permission or scan count.
+export function createMemoryAnswerCache() {
+  return { scope: "", answers: new Map<string, VerifiedAnswer>() };
+}
+export type MemoryAnswerCache = ReturnType<typeof createMemoryAnswerCache>;
 
 // Optional dashboard v1 metadata. Kept local so standalone Pi needs no host dependency.
 export interface MemoryInventory {
@@ -43,9 +54,35 @@ export function unavailableInventory(
 export async function dashboardMemoryInventory(
   access: ChoiceAccess,
   signal?: AbortSignal,
+  cache?: MemoryAnswerCache,
+): Promise<MemoryInventory> {
+  try {
+    return await readMemoryInventory(access, signal, cache);
+  } catch (error) {
+    if (cache) {
+      cache.scope = "";
+      cache.answers.clear();
+    }
+    throw error;
+  }
+}
+async function readMemoryInventory(
+  access: ChoiceAccess,
+  signal?: AbortSignal,
+  cache?: MemoryAnswerCache,
 ): Promise<MemoryInventory> {
   checkDashboardAbort(signal);
   await access.assertCurrent();
+  const scope = JSON.stringify([access.root, access.scope.project.path]);
+  if (cache && cache.scope !== scope) {
+    cache.scope = scope;
+    cache.answers.clear();
+  }
+  // Capture a bounded previous generation. Concurrent refreshes cannot expand
+  // this invocation's wanted records while its scan is in flight.
+  const previous = new Map(cache?.answers);
+  const fresh = new Set<string>();
+  const next = new Map<string, VerifiedAnswer>();
   const scan = await recallVault(
     access.root,
     {
@@ -61,7 +98,15 @@ export async function dashboardMemoryInventory(
       maxExcerptBytes: 1024,
       maxTotalTextBytes: 16 * 1024,
       maxTotalConceptBytes: 16 * 1024 * 1024,
-      include: access.allows,
+      include: (record) => {
+        if (!access.allows(record)) return false;
+        // Core calls this for each visible matching concept before top-K, so an
+        // older question outside the twelve displayed notes is still checked.
+        const ref = historyChoice(access, { ...record });
+        if (ref && previous.has(ref.id))
+          fresh.add(JSON.stringify([ref.id, ref.kind, ref.revision]));
+        return true;
+      },
       ...(signal ? { signal } : {}),
     },
   );
@@ -84,8 +129,34 @@ export async function dashboardMemoryInventory(
     entries: [],
   };
   for (const hit of scan.results) {
-    const outcome =
+    checkDashboardAbort(signal);
+    let outcome =
       hit.excerpt.replace(/^# Outcome\s*\n/u, "").split(/\n# /u)[0] ?? "";
+    const ref = historyChoice(access, { ...hit });
+    if (ref?.kind === "answer") {
+      try {
+        const cached = previous.get(ref.id);
+        const resolution =
+          scan.complete &&
+          cached &&
+          cached.source.sourceHash === ref.revision &&
+          fresh.has(
+            JSON.stringify([ref.id, "answer", cached.source.sourceHash]),
+          ) &&
+          fresh.has(JSON.stringify([ref.id, "note", cached.questionRevision]))
+            ? cached
+            : await projectChoiceHistory(access, ref, signal);
+        if (!resolution) throw Error("Saved answer unavailable");
+        next.set(ref.id, resolution);
+        outcome = "Answered: " + resolution.answer;
+      } catch {
+        checkDashboardAbort(signal);
+        inventory.limited = true;
+        outcome = "Saved answer unavailable in this preview.";
+      }
+      await access.assertCurrent();
+      checkDashboardAbort(signal);
+    }
     const title = line(hit.title, 160) || "Saved project note";
     const summary =
       line(outcome, 240) || "No summary available in this bounded preview.";
@@ -108,5 +179,8 @@ export async function dashboardMemoryInventory(
       break;
     }
   }
+  await access.assertCurrent();
+  checkDashboardAbort(signal);
+  if (cache?.scope === scope) cache.answers = next;
   return inventory;
 }
