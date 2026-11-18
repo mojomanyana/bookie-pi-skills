@@ -5,14 +5,27 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { findPackageJSON } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { localWorkshopProvider } from "./workshop-provider.mjs";
 
 import { choiceTurn, verifyAnswers } from "./workshop-choice-journey.mjs";
 
-const [modulesArg, daddyArg, profile] = process.argv.slice(2);
-const answerChoices = profile === "--answer";
+const [modulesArg, daddyArg, ...profile] = process.argv.slice(2);
+const answerChoices = profile.includes("--answer");
+// Fail on a host without saved-note contents instead of accepting its legacy update.
+const requireInventory = profile.includes("--inventory");
+// Test-only composition hook: the standard lifecycle still loads just Daddy and Bookie.
+const extraExtensions = JSON.parse(
+  process.env.BOOKIE_WORKSHOP_EXTRA_EXTENSIONS ?? "[]",
+);
+assert.ok(
+  Array.isArray(extraExtensions) &&
+    extraExtensions.every(
+      (path) => typeof path === "string" && isAbsolute(path),
+    ),
+  "BOOKIE_WORKSHOP_EXTRA_EXTENSIONS must be a JSON array of absolute extension paths",
+);
 assert.ok(modulesArg, "Pass the Pi installation's node_modules directory");
 const modules = resolve(modulesArg);
 const daddy = resolve(daddyArg ?? join(modules, "pi-daddy"));
@@ -57,6 +70,7 @@ import {createGrantsSession} from ${packagePath("extensions/session.ts")};
 import {ensureDashboardSessionServer} from ${packagePath("extensions/dashboard-session-server.ts")};
 import {dashboardSessionRequest} from ${packagePath("src/products/dashboard-session-client.ts")};
 import {dashboardScreenState,renderDashboardScreen} from ${packagePath("src/products/dashboard-screen.ts")};
+import * as sourceContract from ${packagePath("src/kernel/dashboard-observation.ts")};
 ${controlsWitness}
 export default function(pi) {
   const owner = createGrantsSession(undefined);
@@ -68,6 +82,17 @@ export default function(pi) {
     if (session.observation?.sessionId !== ctx.sessionManager.getSessionId()) throw Error("Wrong dashboard owner");
     const frame = renderDashboardScreen({width:88,height:32,connected:true,items:[],session,screen:{...dashboardScreenState(),destination}});
     ctx.ui.notify(frame);
+  }});
+  pi.registerCommand("workshop-memory", {description:"Read what the dashboard host holds for Bookie's source", async handler(demand, ctx) {
+    const endpoint = await ensureDashboardSessionServer(owner);
+    const session = await dashboardSessionRequest(endpoint.socketPath,endpoint.token,{action:"get",...(demand === "refresh" ? {refreshSources:true} : {})});
+    if (session.observation?.sessionId !== ctx.sessionManager.getSessionId()) throw Error("Wrong dashboard owner");
+    const source = session.observation.sources.find(s => s.producer === "bookie-memory");
+    ctx.ui.notify(JSON.stringify({
+      hostValidatesInventory: typeof sourceContract.validDashboardInventory === "function",
+      refreshRequested: session.sourceRefreshRequested === true,
+      sequence: source?.sequence, refresh: source?.refresh, inventory: source?.inventory ?? null,
+    }));
   }});
 }
 `,
@@ -209,7 +234,7 @@ const host = await createAgentSessionRuntime(
       noPromptTemplates: true,
       noThemes: true,
       noContextFiles: true,
-      additionalExtensionPaths: [witness, bookie],
+      additionalExtensionPaths: [witness, bookie, ...extraExtensions],
       extensionFactories: [(pi) => pi.registerProvider(provider, config)],
     });
     await resourceLoader.reload();
@@ -267,6 +292,111 @@ async function frame(destination, expected) {
   } while (Date.now() < until);
   return value;
 }
+async function memory(demand = "") {
+  notifications.length = 0;
+  await host.session.prompt("/workshop-memory " + demand);
+  return JSON.parse(notifications.at(-1));
+}
+// Saved-note contents and visible-demand refresh need a host with the inventory contract.
+async function verifyContents(frames) {
+  const first = await memory();
+  if (!first.hostValidatesInventory) {
+    assert.ok(!requireInventory, "This host has no saved-note contents");
+    assert.equal(first.inventory, null, "Older hosts keep the legacy update");
+    return "not offered by this dashboard host";
+  }
+  assert.ok(first.inventory, "The host holds no saved-note contents");
+  const shown = ({ entries, ...rest }) => ({
+    ...rest,
+    entries: entries.map(({ title, summary }) => ({ title, summary })),
+  });
+  assert.deepEqual(shown(first.inventory), {
+    scope: "Current workspace",
+    state: "available",
+    summary: "1 saved note. Recent notes shown.",
+    count: 1,
+    limited: false,
+    entries: [
+      {
+        title: "Workshop guide",
+        summary:
+          "Pi shared this resource with the user. Shared the printed chart guide.",
+      },
+    ],
+  });
+  assert.match(
+    frames.now,
+    /1 saved note\. Recent notes shown\.\n\s*• Workshop guide/,
+  );
+  return verifyRefresh(first);
+}
+async function verifyNoChoicesContents() {
+  const first = await memory();
+  if (!first.hostValidatesInventory) {
+    assert.ok(!requireInventory, "This host has no saved-note contents");
+    assert.equal(first.inventory, null, "Older hosts keep the legacy update");
+    return "not offered by this dashboard host";
+  }
+  assert.ok(
+    first.inventory,
+    "Saved-note contents disappeared with the last open choice",
+  );
+  assert.deepEqual(
+    {
+      scope: first.inventory.scope,
+      state: first.inventory.state,
+      count: first.inventory.count,
+      limited: first.inventory.limited,
+    },
+    {
+      scope: "Current workspace",
+      state: "available",
+      count: 4,
+      limited: false,
+    },
+  );
+  assert.equal(first.inventory.entries.length, 4);
+  for (const title of ["Workshop guide", "Map Room materials"])
+    assert.ok(first.inventory.entries.some((entry) => entry.title === title));
+  const rendered = await frame("now", "4 saved notes. Recent notes shown.");
+  assert.match(rendered, /4 saved notes\. Recent notes shown\./);
+  assert.doesNotMatch(
+    rendered,
+    /Open choices|Needs attention|Needs your (?:decision|permission|input)/i,
+  );
+  return verifyRefresh(first);
+}
+async function verifyRefresh(first) {
+  // The host calls Bookie's refresh callback, then validates and publishes its return value.
+  const asked = await memory("refresh");
+  assert.deepEqual(
+    [asked.refreshRequested, asked.refresh?.state],
+    [true, "checking"],
+  );
+  let renewed;
+  const until = Date.now() + 6000;
+  do {
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    renewed = await memory();
+  } while (renewed.refresh?.state === "checking" && Date.now() < until);
+  assert.deepEqual(
+    {
+      state: renewed.refresh?.state,
+      attemptedAt: renewed.refresh?.attemptedAt,
+      inventory: renewed.inventory,
+    },
+    {
+      state: "idle",
+      attemptedAt: asked.refresh.attemptedAt,
+      inventory: first.inventory,
+    },
+  );
+  assert.ok(renewed.sequence > first.sequence, "Refresh was not published");
+  return {
+    savedNotes: first.inventory.count,
+    refreshSequence: [first.sequence, renewed.sequence],
+  };
+}
 const timer = setTimeout(() => void host.session.abort(), 90000);
 let report;
 try {
@@ -282,6 +412,7 @@ try {
   for (const destination of ["now", "work"]) {
     frames[destination] = await frame(destination, "Open choices");
   }
+  const dashboardContents = await verifyContents(frames);
   await host.session.prompt(recall);
   const structured = text(host.session.messages.at(-1).content);
   const observed = { structured, dashboard: {} };
@@ -305,7 +436,13 @@ try {
   assert.match(frames.now, /No pending dashboard requests/);
   assert.deepEqual(calls, ["bookie_remember", "bookie_search", "bookie_read"]);
   const answering = answerChoices
-    ? await verifyAnswers({ host, notifications, frame, text })
+    ? await verifyAnswers({
+        host,
+        notifications,
+        frame,
+        text,
+        verifyNoChoicesContents,
+      })
     : undefined;
   assert.deepEqual(errors, []);
   assert.equal(fetches, 0);
@@ -314,10 +451,12 @@ try {
     newSession: true,
     structuredUnresolvedWork: structured,
     dashboard: ["Overview: Open choices", "Tasks: Open choices"],
+    dashboardContents,
     attentionRequests: 0,
     answering,
     calls,
     externalFetches: fetches,
+    extraExtensions,
   };
 } finally {
   clearTimeout(timer);

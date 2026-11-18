@@ -3,7 +3,6 @@ import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync, readdirSync, writeFileSync } from "node:fs";
 import {
-  chown,
   cp,
   link,
   lstat,
@@ -251,12 +250,19 @@ test("a later open where Git cannot answer keeps the recorded commit, so the mem
     process.env.PATH = path;
   }
   assert.deepEqual((await recorded()).git, { head, prefix: "" });
-  // Dubious ownership: Git refuses the repository.
-  await chown(project, 65534, 65534);
-  await open(project);
-  assert.deepEqual((await recorded()).git, { head, prefix: "" });
+  // A present Git can also refuse a repository. Use unsupported repository
+  // metadata rather than chown, which ordinary CI users cannot perform.
+  const configPath = join(project, ".git", "config");
+  const originalConfig = await readFile(configPath);
+  try {
+    git(project, "config", "core.repositoryformatversion", "999");
+    assert.throws(() => git(project, "rev-parse", "HEAD"));
+    await open(project);
+    assert.deepEqual((await recorded()).git, { head, prefix: "" });
+  } finally {
+    await writeFile(configPath, originalConfig);
+  }
   // A successful probe still replaces it.
-  await chown(project, process.getuid(), process.getgid());
   await writeFile(join(project, "later.txt"), "later\n");
   git(project, "add", "later.txt");
   git(project, "commit", "-q", "-m", "later");
