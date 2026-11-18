@@ -98,12 +98,13 @@ function ordinary(
 async function sourceChoice(
   access: ChoiceAccess,
   id: string,
+  signal?: AbortSignal,
 ): Promise<ChoiceDetail> {
   const target = paths(access, id);
   const found = await inspectConcept(
     access.root,
     { path: target.note },
-    limits,
+    { ...limits, ...(signal ? { signal } : {}) },
   );
   const { body, meta, title, source } = ordinary(access, found, target.noteUid);
   const label = choiceFromActivity(body);
@@ -173,11 +174,15 @@ function answerSections(choice: ChoiceDetail, answer: string, path: string) {
   };
 }
 
-export async function choiceResolution(access: ChoiceAccess, id: string) {
-  const existing = await answerRecord(access, id);
+export async function choiceResolution(
+  access: ChoiceAccess,
+  id: string,
+  signal?: AbortSignal,
+) {
+  const existing = await answerRecord(access, id, signal);
   if (!existing) return;
   const target = paths(access, id);
-  const choice = await sourceChoice(access, id);
+  const choice = await sourceChoice(access, id, signal);
   const { body, meta, source, title } = ordinary(
     access,
     existing,
@@ -209,6 +214,7 @@ export async function choiceResolution(access: ChoiceAccess, id: string) {
     throw new ChoiceRefused();
   return {
     status: "answered" as const,
+    question: choice.label,
     answer,
     source,
     questionRevision: choice.revision,
@@ -353,13 +359,14 @@ export function historyChoice(
 export async function projectChoiceHistory(
   access: ChoiceAccess,
   ref: NonNullable<ReturnType<typeof historyChoice>>,
+  signal?: AbortSignal,
 ) {
-  const saved = await choiceResolution(access, ref.id);
+  const saved = await choiceResolution(access, ref.id, signal);
   if (ref.kind === "answer") {
     if (!saved || saved.source.sourceHash !== ref.revision)
       throw new ChoiceRefused();
   } else if (saved) {
     if (saved.questionRevision !== ref.revision) throw new ChoiceRefused();
-    return saved;
   }
+  return saved;
 }

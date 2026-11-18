@@ -846,15 +846,35 @@ test("parallel amendments serialize and report a stale conflict", async (t) => {
     ),
   );
   const write = toolNamed(tools, "bookie_write");
+  // Finish both disclosure scans before either mutation starts so this test
+  // exercises the shared write queue rather than a scan racing publication.
+  let approvals = 0;
+  let releaseApprovals;
+  const bothApproved = new Promise((resolve) => {
+    releaseApprovals = resolve;
+  });
+  const parallelContext = context(repositoryRoot, {
+    ui: {
+      notify: () => {},
+      confirm: async () => {
+        approvals++;
+        if (approvals === 2) releaseApprovals();
+        await bothApproved;
+        return true;
+      },
+    },
+  });
   const settled = await Promise.allSettled(
     requests.map(({ path }) =>
-      write.execute(
-        "parallel",
-        { vault, action: "amend", requestPath: path },
-        undefined,
-        undefined,
-        context(repositoryRoot),
-      ),
+      write
+        .execute(
+          "parallel",
+          { vault, action: "amend", requestPath: path },
+          undefined,
+          undefined,
+          parallelContext,
+        )
+        .finally(() => releaseApprovals()),
     ),
   );
   const confirmed = settled.filter(({ status }) => status === "fulfilled");
@@ -868,7 +888,13 @@ test("parallel amendments serialize and report a stale conflict", async (t) => {
       value.status === "rejected" &&
       /local state may have changed/u.test(value.reason.message),
   );
-  assert.equal(conflicts.length, 1);
+  assert.equal(approvals, 2);
+  const outcomes = settled.map((result) =>
+    result.status === "fulfilled"
+      ? "fulfilled"
+      : String(result.reason?.message).slice(0, 240),
+  );
+  assert.equal(conflicts.length, 1, JSON.stringify(outcomes));
   assert.equal(
     confirmed.length + withheld.length,
     1,

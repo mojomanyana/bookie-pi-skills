@@ -16,3 +16,10 @@ Existing open-choice rows, exact answer controls and their contribution budget a
 ## Compatibility and verification
 
 This is an additive optional adapter capability and needs no core or canonical migration. Verify old-host payloads, empty and non-empty inventories, scope/exclusion before count/selection, clipping/partial scans, cancellation, stale owner and disclosure revocation, zero-choice refresh, saved-choice preservation and fresh-session content restoration. Reuse the existing local/native checks. Fixtures establish mechanics, not general semantic quality or large-vault latency. Rollback removes optional inventory/refresh while preserving saved notes.
+
+## Saved answer previews (2026-11-18)
+For a recognized canonical answer receipt, derive `Answered: <exact selected value>` from the existing paired question/answer verification, not the generic Outcome section. Recheck current access after asynchronous reads, propagate cancellation, keep the existing 12-entry and 8192-byte limits, and label unverifiable answer previews unavailable/limited. This changes only the projection; old notes and their strict canonical validation remain unchanged.
+
+Keep at most twelve derived answer previews per managed display scope. A fresh complete core recall scan must observe both the original question and answer identities/revisions under current visibility before reusing a preview, including questions outside the displayed top twelve. Changed, hidden or missing records require fresh exact paired verification; no elapsed-time grace is permitted. Clear or retire this derived cache on access/scope/session loss and errors. Counts and permissions are never cached. This avoids repeating paired full-vault inspections on unchanged idle refreshes without a core API change.
+
+Cold previews still require exact paired inspections. This optimization establishes warm-refresh reuse, not a measured large-vault latency guarantee.

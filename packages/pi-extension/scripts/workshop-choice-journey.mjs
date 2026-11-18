@@ -23,6 +23,28 @@ const chartQuestion =
 const ownAnswer = "Borrow the library's tactile chart.";
 
 export function choiceTurn(prompt, results, { call, say, text }) {
+  const clue =
+    prompt === "What did we decide about the atlas?"
+      ? "atlas"
+      : prompt === "What did I choose about tactile access?"
+        ? "tactile"
+        : undefined;
+  if (clue) {
+    // The clue is ordinary answer wording, not a stored title, path or UID.
+    if (!results.length) return call("bookie_search", { query: clue });
+    const search = JSON.parse(text(results[0].content)).result;
+    assert.equal(search.complete, true);
+    assert.equal(search.results.length, 1);
+    const hit = search.results[0];
+    assert.equal(hit.choiceResolution?.status, "answered");
+    assert.ok(hit.choiceResolution.question);
+    if (results.length === 1)
+      return call("bookie_read", { selector: "uid", value: hit.uid });
+    const read = JSON.parse(text(results[1].content)).result;
+    assert.deepEqual(read.choiceResolution, hit.choiceResolution);
+    assert.ok(read.sourceText.includes(read.choiceResolution.answer));
+    return say(read.choiceResolution.answer);
+  }
   if (prompt === "Prepare the Map Room materials decision.") {
     if (!results.length) return call("bookie_remember", materials);
     assert.equal(JSON.parse(text(results[0].content)).status, "saved");
@@ -158,6 +180,12 @@ export async function verifyAnswers({
     text(host.session.messages.at(-1).content),
     materials.choiceOptions[1],
   );
+  await host.session.prompt("What did we decide about the atlas?");
+  assert.equal(
+    text(host.session.messages.at(-1).content),
+    materials.choiceOptions[1],
+  );
+  await visible([chartQuestion]);
   await press("custom", "saved");
   await fresh();
   await visible([]);
@@ -166,7 +194,11 @@ export async function verifyAnswers({
   const noChoicesContents = await verifyNoChoicesContents?.();
   await host.session.prompt("Recall our Workshop guide decision.");
   assert.equal(text(host.session.messages.at(-1).content), ownAnswer);
+  await host.session.prompt("What did I choose about tactile access?");
+  assert.equal(text(host.session.messages.at(-1).content), ownAnswer);
   return {
+    answerTermRecall:
+      "supplied and typed answers found without known titles or IDs",
     decideLater: "both choices stayed open",
     selectedAnswer: materials.choiceOptions[1],
     writtenAnswer: ownAnswer,

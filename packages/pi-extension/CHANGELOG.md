@@ -1,5 +1,11 @@
 # pi-bookie release notes
 
+## [0.8.1] - 2026-11-18
+
+- Show the verified selected answer in saved-answer Memory previews and return the same question/answer when recall finds either the original question or its answer receipt. Historical notes remain unchanged.
+- Reuse unchanged derived answer previews only after a fresh complete scan confirms both record identities and revisions under current access; cold previews still require exact paired inspection.
+- Keep inaccessible or altered answer previews explicitly unavailable; preserve paired-record permissions, cancellation and existing bounds. Add fresh-session recall through answer-only terms alongside the existing dashboard choice checks. Core remains exactly 0.3.0; no JEV or model call is added.
+
 ## [0.8.0] - 2026-11-18
 
 - Reconnect saved project memory after a folder moves with the terminal-only `/bookie-reattach` command. It shows matching evidence, old/new paths and saved contents, and reconnects only after confirmation. Existing notes, decisions and disclosure permissions are preserved.
