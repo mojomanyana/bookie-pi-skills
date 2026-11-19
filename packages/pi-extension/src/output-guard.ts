@@ -1,8 +1,8 @@
 /* eslint-disable preserve-caught-error -- This disclosure boundary intentionally drops private provider/filesystem causes. */
 import {
-  answeredChoiceIds,
+  choiceHistoryIds,
   historyChoice,
-  projectChoiceHistory,
+  projectChoiceMetadata,
 } from "./choice-answer.js";
 import type {
   MutationDiagnostic,
@@ -112,8 +112,7 @@ export function guardBookieTool<P extends TSchema, D, S>(
           );
           const ref = historyChoice(ticket, raw);
           if (ref) {
-            const resolution = await projectChoiceHistory(ticket, ref);
-            if (resolution) filtered.choiceResolution = resolution;
+            Object.assign(filtered, await projectChoiceMetadata(ticket, ref));
           }
         } else if (tool.name === "bookie_search") {
           const results: unknown[] = [];
@@ -130,7 +129,7 @@ export function guardBookieTool<P extends TSchema, D, S>(
           // receipt index once, then spend exact reads only on linked choices.
           const index =
             candidates.filter((x) => x.ref).length > 8
-              ? await answeredChoiceIds(ticket)
+              ? await choiceHistoryIds(ticket)
               : undefined;
           for (const { hit, ref } of candidates) {
             if (
@@ -149,14 +148,15 @@ export function guardBookieTool<P extends TSchema, D, S>(
                 results.push({
                   ...hit,
                   choiceResolution: { status: "unknown" },
+                  choiceDisposition: { status: "unknown" },
                 });
               continue;
             }
             try {
-              const resolution = await projectChoiceHistory(ticket, ref);
-              results.push(
-                resolution ? { ...hit, choiceResolution: resolution } : hit,
-              );
+              results.push({
+                ...hit,
+                ...(await projectChoiceMetadata(ticket, ref)),
+              });
             } catch {
               limited = true;
             }
