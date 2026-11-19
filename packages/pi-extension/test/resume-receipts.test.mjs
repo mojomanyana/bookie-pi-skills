@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { validateToolArguments } from "@earendil-works/pi-ai";
 import registerBookie from "../dist/index.js";
 import { modelContext } from "./disclosure-fixture.mjs";
 
@@ -56,6 +57,9 @@ function host(cwd, sessionId, enabled = true) {
     ctx,
     commands,
     dashboards,
+    tool(name) {
+      return tools.get(name);
+    },
     whenPublished(fn) {
       onPublish = fn;
     },
@@ -342,6 +346,121 @@ test("authorized next actions persist independently of user choices across a fre
   );
 });
 
+test("native summary validation stays actionable and a corrected checkpoint survives a fresh session", async (t) => {
+  const { cwd } = await fixture(t),
+    h = host(cwd, "native-validation");
+  await h.event("session_start");
+  const choice = receipt(
+    await h.call("bookie_remember", {
+      title: "Export choice",
+      summary: "Export is optional and remains undecided.",
+      openChoice: "Which export format should we offer?",
+      choiceOptions: ["CSV", "JSON"],
+    }),
+    "saved",
+  );
+  const note = {
+    title: "Repair Desk progress",
+    summary: "PRIVATE_ARGUMENT " + "x".repeat(3133),
+    nextAction: "Check the browser when available.",
+  };
+  let executionCount = 0;
+  const nativeCall = async (args, id) => {
+    let result;
+    try {
+      const validated = validateToolArguments(h.tool("bookie_remember"), {
+        type: "toolCall",
+        id,
+        name: "bookie_remember",
+        arguments: args,
+      });
+      executionCount++;
+      result = await h.call("bookie_remember", validated, id);
+    } catch (error) {
+      result = {
+        isError: true,
+        content: [{ type: "text", text: error.message }],
+        details: { private: "PRIVATE_DETAILS" },
+      };
+    }
+    const message = {
+      ...result,
+      role: "toolResult",
+      toolName: "bookie_remember",
+      toolCallId: id,
+      timestamp: 1,
+    };
+    return { result, message };
+  };
+  for (const length of [3150, 2632, 2245, 2001]) {
+    const { result, message } = await nativeCall(
+      { ...note, summary: note.summary.slice(0, length) },
+      `rejected-${length}`,
+    );
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /Validation failed for tool/);
+    assert.match(result.content[0].text, /Received arguments/);
+    const filtered = await h.event("context", { messages: [message] });
+    const visible = filtered.messages[0];
+    assert.equal(visible.isError, true);
+    assert.equal(visible.toolCallId, message.toolCallId);
+    assert.equal(visible.toolName, message.toolName);
+    assert.equal(visible.details, undefined);
+    assert.match(visible.content[0].text, /summary.*2000/);
+    assert.match(visible.content[0].text, /[Cc]orrect.*retry/);
+    assert.doesNotMatch(
+      JSON.stringify(filtered),
+      /PRIVATE|reference-only|Received arguments/,
+    );
+  }
+  assert.equal(executionCount, 0);
+  assert.equal(
+    json(await h.call("bookie_search", { query: note.title })).result.results
+      .length,
+    0,
+  );
+  const corrected = {
+    ...note,
+    summary: "UI delivered; browser checks remain unrun.",
+  };
+  const { result } = await nativeCall(corrected, "corrected");
+  const saved = receipt(result, "saved");
+  assert.equal(executionCount, 1);
+  assert.equal(
+    receipt(await h.call("bookie_remember", corrected), "already saved")
+      .readBack.value,
+    saved.readBack.value,
+  );
+  const body = json(await h.call("bookie_read", saved.readBack)).result
+    .sourceText;
+  assert.ok(body.includes(corrected.summary));
+  assert.ok(body.includes(corrected.nextAction));
+  await h.event("session_shutdown");
+  const next = host(cwd, "native-validation-new");
+  await next.event("session_start");
+  assert.equal(
+    json(await next.call("bookie_read", saved.readBack)).result.sourceText,
+    body,
+  );
+  assert.equal(
+    json(await next.call("bookie_search", { query: note.title })).result.results
+      .length,
+    1,
+  );
+  assert.ok(
+    json(
+      await next.call("bookie_read", choice.readBack),
+    ).result.sourceText.includes("Which export format should we offer?"),
+  );
+  assert.deepEqual(
+    next.dashboards
+      .at(-1)
+      .items.filter((item) => item.id.startsWith("open-choice-"))
+      .map((item) => item.label),
+    ["Which export format should we offer?"],
+  );
+});
+
 test("invalid next actions and oversized summaries fail before saving and allow a corrected exact retry", async (t) => {
   const { cwd } = await fixture(t),
     h = host(cwd, "next-action-validation");
@@ -357,10 +476,27 @@ test("invalid next actions and oversized summaries fail before saving and allow 
     "Review\n# Outcome\nInjected",
     "token=private0123456789012345",
   ]) {
+    let failure;
     await assert.rejects(
       h.call("bookie_remember", { ...note, nextAction }),
-      /nextAction/,
+      (error) => {
+        failure = error.message;
+        assert.match(failure, /nextAction/);
+        return true;
+      },
     );
+    const filtered = await h.event("context", {
+      messages: [
+        {
+          role: "toolResult",
+          toolCallId: "rejected-own-input",
+          toolName: "bookie_remember",
+          isError: true,
+          content: [{ type: "text", text: failure }],
+        },
+      ],
+    });
+    assert.equal(filtered.messages[0].content[0].text, failure);
   }
   await assert.rejects(
     h.call("bookie_remember", { ...note, summary: "x".repeat(2001) }),

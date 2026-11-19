@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
-import { isStaticBookieErrorMessage } from "./output-guard.js";
+import {
+  isStaticBookieErrorMessage,
+  REMEMBER_SCHEMA_ERROR,
+} from "./output-guard.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 const digest = (value: unknown) =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -53,14 +56,29 @@ function referenceNotice(content: unknown) {
       .map((value) => JSON.parse(value) as object),
   });
 }
-function publicFailure(message: { isError?: boolean; content: unknown }) {
-  return (
-    message.isError === true &&
-    Array.isArray(message.content) &&
-    message.content.length === 1 &&
-    message.content[0]?.type === "text" &&
-    isStaticBookieErrorMessage(message.content[0].text)
-  );
+function publicFailure(message: {
+  toolName: string;
+  isError?: boolean;
+  content: unknown;
+}): string | undefined {
+  if (
+    message.isError !== true ||
+    !Array.isArray(message.content) ||
+    message.content.length !== 1 ||
+    message.content[0]?.type !== "text"
+  )
+    return;
+  const text: unknown = message.content[0].text;
+  if (isStaticBookieErrorMessage(text)) return text;
+  // Native schema rejection precedes execute(), so no live receipt exists.
+  // Its error includes received arguments and caller-controlled paths: replace
+  // the whole message with fixed guidance instead of approving the raw error.
+  if (
+    message.toolName === "bookie_remember" &&
+    typeof text === "string" &&
+    text.startsWith('Validation failed for tool "bookie_remember":\n')
+  )
+    return REMEMBER_SCHEMA_ERROR;
 }
 /** Filters only Bookie-owned tool results; quotations in other messages are outside this boundary. */
 export function createBookieContextFilter(pi: ExtensionAPI) {
@@ -102,10 +120,14 @@ export function createBookieContextFilter(pi: ExtensionAPI) {
       }
       // A fixed failure is historical status, not a returned body or permission.
       // It must remain intelligible after reset/revocation without restoring data.
-      if (publicFailure(message)) {
+      const failure = publicFailure(message);
+      if (failure) {
         const { details: _details, ...rest } = message;
         void _details;
-        messages.push(rest);
+        messages.push({
+          ...rest,
+          content: [{ type: "text" as const, text: failure }],
+        });
         continue;
       }
       const entry = live.get(message.toolCallId);

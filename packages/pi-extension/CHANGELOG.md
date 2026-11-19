@@ -1,5 +1,9 @@
 # pi-bookie release notes
 
+## [0.8.2] - 2026-11-19
+
+- Keep rejected save inputs actionable in Pi history, including the 2,000-character summary limit, while hiding private argument dumps. Preserve existing save permissions, bounds, exact receipts and uncertain-write recovery.
+
 ## [0.8.1] - 2026-11-18
 
 - Show the verified selected answer in saved-answer Memory previews and return the same question/answer when recall finds either the original question or its answer receipt. Historical notes remain unchanged.
