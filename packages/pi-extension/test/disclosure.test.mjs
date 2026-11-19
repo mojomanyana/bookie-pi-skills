@@ -614,3 +614,82 @@ test("safe failure remains when a different remembered result loses authority", 
   assert.deepEqual(result.messages[0].content, safe.content);
   assert.doesNotMatch(JSON.stringify(result), /PRIVATE BODY/);
 });
+
+test("remember native validation feedback never restores arguments or untrusted diagnostic paths", async () => {
+  const { createBookieContextFilter } =
+    await import("../dist/context-filter.js");
+  const handlers = new Map();
+  const filter = createBookieContextFilter({
+    on: (name, handler) => handlers.set(name, handler),
+  });
+  const native = {
+    role: "toolResult",
+    toolCallId: "native-input",
+    toolName: "bookie_remember",
+    isError: true,
+    content: [
+      {
+        type: "text",
+        text: 'Validation failed for tool "bookie_remember":\n  - PRIVATE_PATH: PRIVATE_RULE\n\nReceived arguments:\n{"summary":"PRIVATE_BODY"}',
+      },
+    ],
+    details: { private: "PRIVATE_DETAILS" },
+  };
+  const run = (messages) => handlers.get("context")({ messages });
+  const visible = (await run([native])).messages[0];
+  assert.equal(visible.isError, true);
+  assert.equal(visible.toolCallId, native.toolCallId);
+  assert.equal(visible.details, undefined);
+  assert.match(visible.content[0].text, /summary.*2000/);
+  assert.doesNotMatch(
+    JSON.stringify(visible),
+    /PRIVATE|Received arguments|reference-only/,
+  );
+  for (const event of ["session_start", "model_select", "session_tree"]) {
+    handlers.get(event)();
+    assert.deepEqual((await run([native])).messages[0], visible);
+  }
+  const body = {
+    ...native,
+    toolCallId: "revoked",
+    isError: false,
+    content: [{ type: "text", text: "PRIVATE_READ" }],
+  };
+  filter.remember(body.toolCallId, body, async () => {
+    throw Error("revoked");
+  });
+  const aggregate = await run([native, body]);
+  assert.deepEqual(aggregate.messages[0], visible);
+  assert.doesNotMatch(JSON.stringify(aggregate), /PRIVATE/);
+  for (const modified of [
+    { isError: false },
+    { toolName: "bookie_read" },
+    {
+      content: [
+        {
+          type: "text",
+          text: 'Validation failed for tool "bookie_read":\nPRIVATE',
+        },
+      ],
+    },
+    {
+      content: [
+        {
+          type: "text",
+          text: 'PRIVATE Validation failed for tool "bookie_remember":\n',
+        },
+      ],
+    },
+    { content: [{ type: "text", text: "PRIVATE arbitrary exception" }] },
+    {
+      content: [
+        ...native.content,
+        { type: "text", text: "PRIVATE extra content" },
+      ],
+    },
+  ]) {
+    const result = await run([{ ...native, ...modified }]);
+    assert.match(result.messages[0].content[0].text, /reference-only history/);
+    assert.doesNotMatch(JSON.stringify(result), /PRIVATE/);
+  }
+});

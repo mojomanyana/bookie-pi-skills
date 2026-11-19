@@ -27,6 +27,7 @@ import {
 } from "./open-choice.js";
 import { isDeliveryUrl } from "./delivery-url.js";
 import { registerDeliveryHandoff } from "./delivery-handoff.js";
+import { REMEMBER_INPUT_ERROR } from "./output-guard.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export interface ProjectNote {
@@ -325,9 +326,7 @@ export function rememberTool(
       { additionalProperties: false },
     ),
     async execute(callId, params, signal, _onUpdate, ctx) {
-      const invalid = Error(
-        "Bookie rejected this input before saving: title must be 1–120 characters; summary 1–2000; nextAction and openChoice, when supplied, must be non-sensitive single lines of 1–240 characters. Options must be distinct with a supported recommendation, and deliveryUrl must be a safe public URL. Correct the input and retry; this validation failure saved no note.",
-      );
+      const invalid = Error(REMEMBER_INPUT_ERROR);
       let entered = false;
       try {
         const scope = await bind(ctx);
