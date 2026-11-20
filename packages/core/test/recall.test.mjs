@@ -407,7 +407,7 @@ test("an explicit correction preserves predecessor bytes and rejects old bundle 
     binding,
   });
   assert.equal(prepared.ok, true);
-  const replacementPath = "/projects/fixture/research/Î”-findings.md";
+  const replacementPath = "/projects/fixture/research/Δ-findings.md";
   await writeFile(
     join(root, replacementPath),
     (await readFile(join(root, replacementPath), "utf8")) +
@@ -860,7 +860,7 @@ test("bounded canonical selection export returns exact full records and preserve
       end = source.indexOf("\n---\n", 4);
     const fm = JSON.parse(source.slice(4, end));
     fm.custom_export = {
-      "Unicode cafÃ©": ["line\nnext", "tab\tvalue", true, 3],
+      "Unicode café": ["line\nnext", "tab\tvalue", true, 3],
     };
     await writeFile(path, "---\n" + JSON.stringify(fm) + source.slice(end));
   });
@@ -933,7 +933,7 @@ test("bounded canonical selection export refuses partial, wrong and duplicate se
 });
 
 test("bounded canonical selection export protects decoded metadata but permits correction provenance", async (t) => {
-  const replacementPath = "/projects/fixture/research/Î”-findings.md";
+  const replacementPath = "/projects/fixture/research/Δ-findings.md";
   for (const disposition of ["suppressed", "superseded", "excluded"]) {
     await t.test(disposition, async (t) => {
       const f = await exportFixture(t, async (root) => {
