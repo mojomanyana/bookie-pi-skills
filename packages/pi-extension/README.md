@@ -1,5 +1,7 @@
 # `pi-bookie`
 
+To install Bookie alongside the dashboard and other Pi tools, follow the [Pi ecosystem quickstart](https://github.com/mojomanyana/pi-daddy#start-here).
+
 **Start with an empty folder.** Open the folder as a trusted Pi project. With Pi Daddy Auto on, Bookie provides private memory for that folder without a setup command, Git repository, or project files. Tell Pi a decision in your own words. For example: “I'll choose the theme for our community workshop. Ask me for it, then remember my answer.” In a new Pi session in the same folder ask “What workshop theme did I choose?” A different folder has its own memory.
 
 Pi can call `bookie_remember` to retain a short project note and `bookie_search` or `bookie_read` without a vault path to recall it. Auto covers routine project notes at meaningful boundaries. It does not import old vaults, record whole conversations, publish notes, or enable JEV. Bookie checks the current model destination before returning note contents. Turning off Pi Daddy Auto ends this automatic access; it does not erase saved notes. With Pi Daddy absent or Auto off, explicit Bookie project selection remains available as before.
