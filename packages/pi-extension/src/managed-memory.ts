@@ -47,7 +47,19 @@ function ownerMatches(value: unknown, ctx: ExtensionContext): value is Owner {
   );
 }
 const inactive = () => Error("Automatic Bookie project memory is unavailable.");
+type TaskSummary = {
+  taskId: string;
+  title: string;
+  observations: number;
+  lastObservation?: {
+    owner: string;
+    state: string;
+    label: string;
+    recordedAt: string;
+  };
+};
 type Observation = {
+  taskHistory?: TaskSummary;
   rows: ChoiceRow[];
   limited: boolean;
   inventory?: MemoryInventory;
@@ -58,6 +70,7 @@ type Publisher = {
   close(): void;
   sequence: number;
   inventory: boolean;
+  taskHistory: boolean;
 };
 function failedObservation(state: "unknown" | "unavailable"): Observation {
   return {
@@ -100,6 +113,9 @@ function updateFor(source: Publisher, observation?: Observation) {
       },
       ...view.rows,
     ],
+    ...(source.taskHistory && view.taskHistory
+      ? { taskHistory: view.taskHistory }
+      : {}),
     ...(source.inventory && view.inventory
       ? { inventory: view.inventory }
       : {}),
@@ -109,6 +125,34 @@ export function createManagedMemory(pi: ExtensionAPI) {
   let active: ExtensionContext | undefined;
   let slot: { owner: Owner; selection: Promise<ManagedSelection> } | undefined;
   let publisher: Publisher | undefined;
+  let standalone: Owner | undefined;
+  function enableStandalone(ctx: ExtensionContext) {
+    const here = active;
+    if (
+      !here ||
+      ctx.mode !== "tui" ||
+      !ctx.hasUI ||
+      !ctx.isProjectTrusted?.() ||
+      !ctx.sessionManager?.getSessionId?.() ||
+      ctx.cwd !== here.cwd ||
+      ctx.sessionManager.getSessionId() !== here.sessionManager.getSessionId()
+    )
+      throw inactive();
+    const lease: Owner = {
+      version: 1,
+      sessionId: ctx.sessionManager.getSessionId(),
+      cwd: ctx.cwd,
+      isCurrent: () =>
+        standalone === lease &&
+        active === here &&
+        ctx.hasUI &&
+        ctx.mode === "tui" &&
+        ctx.isProjectTrusted?.() === true &&
+        ctx.sessionManager.getSessionId() === lease.sessionId &&
+        ctx.cwd === lease.cwd,
+    };
+    standalone = lease;
+  }
   let closeChoiceControls: (() => void) | undefined;
   let answerPreviewCache = createMemoryAnswerCache();
   let displayEpoch = 0;
@@ -116,6 +160,8 @@ export function createManagedMemory(pi: ExtensionAPI) {
   let authorize:
     ((ctx: ExtensionContext) => Promise<ChoiceAccess | undefined>) | undefined;
   let displayAccess: typeof authorize;
+  let taskView:
+    ((ctx: ExtensionContext) => Promise<TaskSummary | undefined>) | undefined;
   function hide() {
     // Replace rather than clear: an older in-flight observation keeps its own
     // retired derived cache and cannot populate the new session's cache.
@@ -133,6 +179,7 @@ export function createManagedMemory(pi: ExtensionAPI) {
     }
   }
   function reset() {
+    standalone = undefined;
     slot = undefined;
     active = undefined;
     hide();
@@ -164,6 +211,8 @@ export function createManagedMemory(pi: ExtensionAPI) {
           if (ownerMatches(value, ctx)) lease = value;
         },
       });
+      if (!lease && standalone && ownerMatches(standalone, ctx))
+        lease = standalone;
       if (!lease) return;
       const owner = lease;
       const session = active;
@@ -225,6 +274,8 @@ export function createManagedMemory(pi: ExtensionAPI) {
   async function observe(
     access: ChoiceAccess,
     inventory: boolean,
+    ctx: ExtensionContext,
+    includeTask: boolean,
     signal?: AbortSignal,
   ): Promise<Observation> {
     const cache = answerPreviewCache;
@@ -234,9 +285,13 @@ export function createManagedMemory(pi: ExtensionAPI) {
       const contents = inventory
         ? await dashboardMemoryInventory(access, signal, cache)
         : undefined;
+      const taskHistory = includeTask
+        ? await taskView?.(ctx).catch(() => undefined)
+        : undefined;
       await access.assertCurrent();
       checkDashboardAbort(signal);
       return {
+        ...(taskHistory ? { taskHistory } : {}),
         ...choices,
         ...(contents ? { inventory: contents } : {}),
         readiness:
@@ -269,6 +324,7 @@ export function createManagedMemory(pi: ExtensionAPI) {
         sessionId: selected.owner.sessionId,
         cwd: ctx.cwd,
         producer: "bookie-memory",
+        capabilities: { taskHistory: 1 },
         producerVersion: (
           createRequire(import.meta.url)("../package.json") as {
             version: string;
@@ -300,7 +356,13 @@ export function createManagedMemory(pi: ExtensionAPI) {
             access = await displayAccess?.(ctx);
             if (!current()) return;
             view = access
-              ? await observe(access, source!.inventory, signal)
+              ? await observe(
+                  access,
+                  source!.inventory,
+                  ctx,
+                  source!.taskHistory,
+                  signal,
+                )
               : failedObservation("unavailable");
           } catch {
             if (!current()) return;
@@ -339,6 +401,9 @@ export function createManagedMemory(pi: ExtensionAPI) {
             publish: value.publish as (payload: unknown) => boolean,
             close: value.close as () => void,
             sequence: 0,
+            taskHistory:
+              object(value.capabilities) &&
+              value.capabilities.taskHistory === 1,
             inventory:
               object(value.capabilities) && value.capabilities.inventory === 1,
           };
@@ -378,7 +443,12 @@ export function createManagedMemory(pi: ExtensionAPI) {
         if (!publisher) show(ctx);
         // Standalone Pi does not need to enumerate notes for a dashboard.
         if (publisher) {
-          const view = await observe(access, publisher.inventory);
+          const view = await observe(
+            access,
+            publisher.inventory,
+            ctx,
+            publisher.taskHistory,
+          );
           if (revision !== refreshRevision) return false;
           show(ctx, view);
           return view.readiness === "observed";
@@ -407,7 +477,9 @@ export function createManagedMemory(pi: ExtensionAPI) {
   function install(
     warm: NonNullable<typeof authorize>,
     display: NonNullable<typeof authorize>,
+    taskHistory?: typeof taskView,
   ) {
+    taskView = taskHistory;
     authorize = warm;
     displayAccess = display;
     pi.on("session_start", async (_event, ctx) => {
@@ -443,8 +515,9 @@ export function createManagedMemory(pi: ExtensionAPI) {
   // After a human re-attach the next access resolves the binding again through the
   // normal owner, trust and destination checks; no permission carries over.
   function forget() {
+    standalone = undefined;
     slot = undefined;
     hide();
   }
-  return { get, install, hide, refreshDashboard, forget };
+  return { get, install, hide, refreshDashboard, forget, enableStandalone };
 }

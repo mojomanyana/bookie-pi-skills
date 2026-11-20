@@ -6,6 +6,7 @@ import {
   mkdtemp,
   mkdir,
   rm,
+  rename,
   readdir,
   readFile,
   writeFile,
@@ -73,6 +74,7 @@ function host(
   });
   return {
     ctx,
+    events,
     dashboards,
     dashboardRequests,
     get choiceControls() {
@@ -80,7 +82,12 @@ function host(
     },
     commands,
     async event(name, payload = {}) {
-      for (const h of hooks.get(name) || []) await h(payload, ctx);
+      let result;
+      for (const h of hooks.get(name) || []) {
+        const response = await h(payload, ctx);
+        if (response?.block) result = response;
+      }
+      return result;
     },
     revoke() {
       enabled = false;
@@ -94,6 +101,317 @@ function host(
     },
   };
 }
+test("a bounded native observation survives /new and late publishers lose authority when the task changes", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "bookie-task-parent-"));
+  const previous = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = join(root, "agent");
+  t.after(async () => {
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previous;
+    await rm(root, { recursive: true, force: true });
+  });
+  const cwd = join(root, "workspace");
+  await Promise.all(
+    [cwd, process.env.PI_CODING_AGENT_DIR].map((path) =>
+      mkdir(path, { mode: 0o700 }),
+    ),
+  );
+  const a = host(cwd);
+  await a.event("session_start");
+  await a.event("before_agent_start");
+  let publish;
+  a.events.emit("pi.task-history.v1.bind", {
+    version: 1,
+    owner: "principal",
+    cwd,
+    sessionId: "root-session",
+    accept: (p) => {
+      publish = p;
+    },
+  });
+  assert.equal(typeof publish, "function");
+  const event = {
+    version: 1,
+    owner: "principal",
+    operationId: "one",
+    kind: "workflow",
+    state: "retained",
+    label: "Result retained",
+  };
+  await publish(event);
+  await publish(event);
+  const saved = JSON.parse(
+    await a.call("bookie_remember", {
+      title: "Project decision",
+      summary: "Keep the existing project choice.",
+    }),
+  );
+  assert.equal(saved.status, "saved");
+  const before = JSON.parse(
+    await a.call("bookie_task_history", { view: "recent" }),
+  );
+  assert.equal(before.summary.observations, 1);
+  assert.equal(before.notes[0].path, saved.readBack.value);
+  await a.event("session_shutdown");
+  await assert.rejects(publish({ ...event, state: "complete" }));
+  const b = host(cwd, true, "after-new");
+  await b.event("session_start");
+  const restored = JSON.parse(
+    await b.call("bookie_task_history", { view: "recent" }),
+  );
+  assert.deepEqual(restored.summary, before.summary);
+  assert.deepEqual(restored.notes, before.notes);
+  assert.deepEqual(restored.observations, before.observations);
+  let oldPublisher;
+  b.events.emit("pi.task-history.v1.bind", {
+    version: 1,
+    owner: "principal",
+    cwd,
+    sessionId: "after-new",
+    accept: (p) => {
+      oldPublisher = p;
+    },
+  });
+  await b.commands.get("bookie-task").handler("new", {
+    ...b.ctx,
+    mode: "tui",
+    isIdle: () => true,
+    ui: { ...b.ctx.ui, input: async () => "Separate task" },
+  });
+  await assert.rejects(oldPublisher({ ...event, state: "complete" }));
+  assert.equal(
+    JSON.parse(await b.call("bookie_task_history", {})).summary.observations,
+    0,
+  );
+  b.revoke();
+  await assert.rejects(b.call("bookie_task_history", {}));
+});
+
+test("a fresh controller distinguishes positively empty folders from an enrolled task with unavailable recovery evidence", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "bookie-enrollment-"));
+  const prior = process.env.PI_CODING_AGENT_DIR;
+  const agent = join(root, "agent"),
+    cwd = join(root, "work"),
+    other = join(root, "separate");
+  process.env.PI_CODING_AGENT_DIR = agent;
+  t.after(async () => {
+    if (prior === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = prior;
+    await rm(root, { recursive: true, force: true });
+  });
+  await Promise.all([agent, cwd, other].map((p) => mkdir(p, { mode: 0o700 })));
+  function lookup(h) {
+    let result = "absent";
+    h.events.emit("pi.task-history.v1.scope", {
+      version: 1,
+      cwd: h.ctx.cwd,
+      sessionId: h.ctx.sessionManager.getSessionId(),
+      accept: (lease) => {
+        result = lease;
+      },
+      unavailable: () => {
+        result = "unavailable";
+      },
+    });
+    return result;
+  }
+  const fresh = host(other, false, "standalone");
+  await fresh.event("session_start");
+  assert.equal(lookup(fresh), "absent");
+  const first = host(cwd, true, "before-reset");
+  await first.event("session_start");
+  await first.event("before_agent_start");
+  const lease = lookup(first);
+  assert.equal(typeof lease.taskId, "string");
+  await first.event("session_shutdown");
+  const store = join(agent, "bookie-project-memory");
+  const ledger = (await readdir(store)).find((n) => n.startsWith("ledger-"));
+  const database = join(store, ledger, "task-history-v1.sqlite");
+  await rename(database, database + ".offline");
+  const recovered = host(cwd, true, "after-reset");
+  assert.equal(
+    lookup(recovered),
+    "unavailable",
+    "pending startup cannot grant standalone execution",
+  );
+  await recovered.event("session_start");
+  await recovered.event("before_agent_start");
+  assert.equal(lookup(recovered), "unavailable");
+  assert.equal(
+    existsSync(database),
+    false,
+    "no replacement task or ledger was created",
+  );
+  await recovered.event("session_shutdown");
+  await rename(database + ".offline", database);
+  const back = host(cwd, true, "restored");
+  await back.event("session_start");
+  assert.equal(lookup(back).taskId, lease.taskId);
+  const denied = host(cwd, false, "revoked");
+  await denied.event("session_start");
+  assert.equal(lookup(denied), "unavailable");
+});
+test("native edits capture an opted-in new source file before and after, and optional gaps do not refuse work", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "bookie-edit-boundaries-"));
+  const prior = process.env.PI_CODING_AGENT_DIR;
+  const cwd = join(root, "work"),
+    agent = join(root, "agent");
+  process.env.PI_CODING_AGENT_DIR = agent;
+  t.after(async () => {
+    if (prior === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = prior;
+    await rm(root, { recursive: true, force: true });
+  });
+  await Promise.all([cwd, agent].map((p) => mkdir(p, { mode: 0o700 })));
+  const h = host(cwd);
+  await h.event("session_start");
+  await h.event("before_agent_start");
+  const messages = [];
+  const cmd = {
+    ...h.ctx,
+    mode: "tui",
+    isIdle: () => true,
+    ui: {
+      ...h.ctx.ui,
+      select: async () => "Enable",
+      editor: async () => "secret.txt",
+      confirm: async () => true,
+      notify: (s) => messages.push(s),
+    },
+  };
+  const changes = (toolCallId, file) => ({
+    toolName: "write",
+    toolCallId,
+    input: { path: file },
+  });
+  const first = changes("file-1", "draft.md");
+  assert.equal(await h.event("tool_call", first), undefined);
+  assert.equal(
+    JSON.parse(await h.call("bookie_task_history", {})).summary.lastCheckpoint,
+    undefined,
+  );
+  await h.commands.get("bookie-task").handler("auto-files", cmd);
+  assert.equal(await h.event("tool_call", first), undefined);
+  await writeFile(join(cwd, "draft.md"), "Original manuscript.");
+  await h.event("tool_result", first);
+  await h.commands.get("bookie-task").handler("export", cmd);
+  const file = messages.at(-1).match(/ to (.+?\.json)(?:\.|$)/u)[1];
+  const exported = JSON.parse(await readFile(file, "utf8"));
+  const points = exported.bundles[0].checkpoints;
+  assert.deepEqual(
+    points.map((c) => c.boundary.stage),
+    ["before", "after"],
+  );
+  assert.equal(points[0].boundary.callId, points[1].boundary.callId);
+  assert.equal(points[0].manifest.entries[0].status, "missing");
+  assert.equal(
+    Buffer.from(exported.bundles[0].blobs[0].data, "base64").toString(),
+    "Original manuscript.",
+  );
+  await h.commands.get("bookie-task").handler("track", cmd);
+  await writeFile(join(cwd, "secret.txt"), Buffer.from([0, 255]));
+  assert.equal(
+    await h.event("tool_call", changes("optional", "secret.txt")),
+    undefined,
+  );
+  await h.commands.get("bookie-task").handler("protection", cmd);
+  assert.equal(
+    (await h.event("tool_call", changes("protected", "secret.txt"))).block,
+    true,
+  );
+  assert.equal(
+    await h.event("tool_call", changes("unrelated", "report.md")),
+    undefined,
+  );
+  await h.event("tool_result", changes("unrelated", "report.md"));
+  await h.event("session_shutdown");
+});
+
+test("explicit export retains linked canonical question and verified answer without including another task", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "bookie-project-pack-"));
+  const prior = process.env.PI_CODING_AGENT_DIR;
+  const agent = join(root, "agent"),
+    cwd = join(root, "workspace");
+  process.env.PI_CODING_AGENT_DIR = agent;
+  t.after(async () => {
+    if (prior === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = prior;
+    await rm(root, { recursive: true, force: true });
+  });
+  await Promise.all([agent, cwd].map((p) => mkdir(p, { mode: 0o700 })));
+  const h = host(cwd, true, "source", true);
+  await h.event("session_start");
+  await h.event("before_agent_start");
+  const ask = {
+    title: "Publication date",
+    summary: "The editor owns the publication decision.",
+    openChoice: "Which day should the issue appear?",
+    choiceOptions: ["Monday", "Friday"],
+  };
+  const receipt = JSON.parse(await h.call("bookie_remember", ask));
+  assert.equal(receipt.status, "saved");
+  const row = h.dashboards.at(-1).items.find((r) => r.label === ask.openChoice);
+  const detail = await h.choiceControls.inspect(row.id, () => {});
+  assert.equal(
+    await h.choiceControls.answer(
+      row.id,
+      detail.revision,
+      { option: "Friday" },
+      () => {},
+    ),
+    "saved",
+  );
+  const messages = [];
+  const cmd = {
+    ...h.ctx,
+    mode: "tui",
+    isIdle: () => true,
+    ui: {
+      ...h.ctx.ui,
+      confirm: async () => true,
+      input: async () => "Separate design study",
+      notify: (s) => messages.push(s),
+    },
+  };
+  await h.commands.get("bookie-task").handler("export", cmd);
+  const readLatest = async () => {
+    const message = messages.at(-1);
+    const file = message.match(/ to (.+?\.json)(?:\.|$)/u)?.[1];
+    assert.ok(file, message);
+    return JSON.parse(await readFile(file, "utf8"));
+  };
+  const first = await readLatest();
+  assert.equal(first.scope, "task");
+  assert.ok(
+    first.memory.records.some((r) => r.path === receipt.readBack.value),
+  );
+  const answers = first.memory.records.filter((r) => /\/answer-/u.test(r.path));
+  assert.equal(answers.length, 1);
+  assert.match(answers[0].sourceText, /Answer: Friday/);
+  assert.deepEqual(answers[0].tasks, [first.selectedTaskId]);
+  await h.commands.get("bookie-task").handler("new", cmd);
+  await h.call("bookie_remember", {
+    title: "Unrelated study",
+    summary: "Review public signage.",
+  });
+  await h.commands.get("bookie-task").handler("export", cmd);
+  assert.equal(
+    (await readLatest()).memory.records.some((r) =>
+      r.sourceText.includes("Answer: Friday"),
+    ),
+    false,
+  );
+  await h.commands.get("bookie-task").handler("export-project", cmd);
+  const whole = await readLatest();
+  assert.equal(whole.bundles.length, 2);
+  assert.ok(whole.memory.records.some((r) => r.path === answers[0].path));
+  assert.ok(
+    whole.memory.records.some((r) =>
+      r.sourceText.includes("Review public signage."),
+    ),
+  );
+});
+
 test("managed recall finds reordered words, offers bounded recent notes, and preserves exact mode after a fresh session", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "bookie-managed-recall-"));
   const old = process.env.PI_CODING_AGENT_DIR;

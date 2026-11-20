@@ -83,6 +83,9 @@ export function rememberTool(
   capture: ReturnType<typeof createCaptureAuthority>,
   disclosure: ReturnType<typeof createDisclosureAuthority>,
   filter: ReturnType<typeof createBookieContextFilter>,
+  noteLink?: (
+    ctx: ExtensionContext,
+  ) => ((path: string, digest: string) => Promise<void>) | undefined,
 ) {
   async function bind(ctx: ExtensionContext) {
     const selected = await managed.get(ctx);
@@ -101,6 +104,7 @@ export function rememberTool(
       await ticket.assertCurrent();
       await capture.assertManaged(selected);
     };
+    const linkToTask = noteLink?.(ctx);
     async function save(
       note: ProjectNote,
       signal?: AbortSignal,
@@ -250,6 +254,19 @@ export function rememberTool(
         },
       );
       await guard();
+      if (linkToTask) {
+        try {
+          const actual = await inspectConcept(
+            ticket.root,
+            { path },
+            { maxContentBytes: 1 },
+          );
+          if (actual.ok && ticket.allows(actual))
+            await linkToTask(path, actual.source.sourceHash);
+        } catch {
+          /* The canonical note receipt survives optional task linking. */
+        }
+      }
       await managed.refreshDashboard(ctx);
       await guard();
       return {

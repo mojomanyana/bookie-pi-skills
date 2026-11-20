@@ -1,0 +1,17 @@
+# ADR-0024. Local task history with component-owned execution
+
+## Decision
+
+Bookie retains scoped task observations, portable task identities, evidence references and captured file revisions beside each managed project's canonical vault. The OKF ledger remains authoritative for notes, decisions and choice answers. An observation from a cooperating extension never grants permission, proves execution or decides a product acceptance criterion.
+
+A trusted interactive parent can use Daddy's existing Auto grant. The operator can also select `/bookie-task enable` for a session-local standalone grant with visible save and disclosure terms. Revoking current access or changing the selected task fences older capabilities. A separate private enrollment witness binds the workspace identity to its original ledger and database. A fresh session can identify an unused folder even when task management is disabled. Missing records, withheld current access and pending restoration in an enrolled folder keep controller admission unavailable. A new session reacquires its grants and can reopen the same task. Model-supplied task IDs never widen the current selection.
+
+## Storage and recovery
+
+A private per-workspace SQLite database records the selected task revision, ordered observations, canonical note links, tracked-file selections and pending immutable checkpoint bytes. Command observations are idempotent over task, owner, kind, operation and state. Reusing that identity with different content is a conflict. Child/dependency relationships associate separately selected tasks. Cross-workspace transfer requires explicit export/import.
+
+A task can opt in once to capturing the actual eligible path of a normal Pi write or edit. Explicitly tracked relative paths also cover selected shell or delegated work. Manual, pre-action and post-action checkpoints carry distinct boundaries. The operator can separately require a before-image for an explicitly tracked direct target. Other missing evidence increments coverage gaps without preventing delivery. It records supported UTF-8 working files and missing paths, skips unsupported or protected material and checks file stability. Publication to the private bare Git repository runs after the durable capture. Independent refs keep every published checkpoint reachable, including checkpoints that finish out of order. A restarted authorized session drains the pending work. User repository refs, index and working files are never used as the history store. Distinct staged content, ignored files outside the selection and external databases are outside the capture claim.
+
+## Operation and compatibility
+
+The local `/bookie-task` control changes task or file selection and exports or imports a bounded historical bundle. Model access goes through `bookie_task_history` under a current model-disclosure ticket. Legacy notes retain their project scope. An optional dashboard projection requires support from both sides. Each child has a separate history and inherits the immutable top-level budget identity. Archive transfer includes exact authorized canonical note revisions and validated answer or classification receipts. The whole-project option includes independent roots and dependencies. Imported evidence remains in its own historical namespace. Older packages can keep reading the original OKF records, and standalone use requires no online service or JEV.

@@ -38,6 +38,10 @@ Depends on: SPEC-002, [ADR-0009](../architecture/decisions/0009-structured-check
 
 The public Pi archive includes a root CHANGELOG.md with headings matching the package version. Pi 1.5+ may display newer entries at the next fresh launch; first observation establishes a baseline. This packaging metadata changes no memory or permission behavior.
 
+## Shared local task history — BK-055 candidate
+
+[ADR-0024](../architecture/decisions/0024-local-task-history.md) specifies scoped current-task queries, authorized observation capture, working-file checkpoints, separate local Git storage, explicit task selection and portable historical bundles. This implementation awaits the consolidated regression checks and has no release verdict.
+
 ## Goal
 
 Provide a distributable Pi package that exposes safe Bookie read, search, write, checkpoint, validate, and export workflows while keeping canonical rules in core and requiring approval for durable capture.

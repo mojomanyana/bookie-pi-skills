@@ -1,6 +1,7 @@
 import { createManagedMemory } from "./managed-memory.js";
 import { registerReattachCommand } from "./reattach.js";
 import { rememberTool } from "./remember.js";
+import { registerTaskHistory } from "./task-history.js";
 import { wrapUntrustedSource } from "./untrusted-text.js";
 import { registerWorkMapConsumer } from "./work-map-consumer.js";
 import { createBookieContextFilter } from "./context-filter.js";
@@ -799,9 +800,6 @@ export default function registerBookie(pi: ExtensionAPI): void {
   pi.on("session_start", resetSession);
   pi.on("session_shutdown", resetSession);
   registerProducerBridge(pi, authority);
-  pi.registerTool(
-    rememberTool(pi, managed, authority, disclosure, contextFilter),
-  );
   managed.install(
     async (ctx) => {
       if (!authority.canManage() || !disclosure.canManage()) return;
@@ -839,5 +837,23 @@ export default function registerBookie(pi: ExtensionAPI): void {
         },
       };
     },
+    (ctx) => taskHistory.dashboard(ctx),
+  );
+  const taskHistory = registerTaskHistory(
+    pi,
+    managed,
+    authority,
+    disclosure,
+    contextFilter,
+  );
+  pi.registerTool(
+    rememberTool(
+      pi,
+      managed,
+      authority,
+      disclosure,
+      contextFilter,
+      taskHistory.noteLink,
+    ),
   );
 }

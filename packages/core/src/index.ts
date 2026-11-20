@@ -201,6 +201,9 @@ export type {
   PreparedContextBundle,
 } from "./recall-model.js";
 
+export * from "./task-history.js";
+export * from "./task-history-files.js";
+export * from "./task-history-bundle.js";
 export * from "./work-map-model.js";
 export {
   describeWorkMap,
