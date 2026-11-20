@@ -1,3 +1,9 @@
+declare const pathTrackerBrand: unique symbol;
+
+export interface PathTracker {
+  readonly [pathTrackerBrand]: true;
+}
+
 export interface ValidationLimits {
   readonly maxManifestBytes: number;
   readonly maxConceptBytes: number;

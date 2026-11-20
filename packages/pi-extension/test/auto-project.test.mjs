@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { fork } from "node:child_process";
+import { existsSync } from "node:fs";
 import {
   mkdtemp,
   mkdir,
   rm,
+  rename,
   readdir,
   readFile,
   writeFile,
@@ -20,6 +23,7 @@ function host(
   enabled = true,
   sessionId = "root-session",
   inventory = false,
+  capabilities = {},
 ) {
   const events = new EventEmitter(),
     tools = new Map(),
@@ -33,7 +37,12 @@ function host(
     ui: { notify() {} },
   });
   const dashboards = [],
-    dashboardRequests = [];
+    dashboardRequests = [],
+    choiceControls = [];
+  events.on("pi-daddy:bookie-choice-controls:v1", (q) => {
+    choiceControls.push(q);
+    q.reply({ version: 1, ok: true, close() {} });
+  });
   events.on("pi-daddy:dashboard-source:v1", (q) => {
     if (q.producer === "bookie-memory") {
       dashboardRequests.push(q);
@@ -41,7 +50,7 @@ function host(
         ...(inventory
           ? {
               generation: "inventory-source",
-              capabilities: { inventory: 1, refresh: 1 },
+              capabilities: { inventory: 1, refresh: 1, ...capabilities },
             }
           : {}),
         version: 1,
@@ -66,11 +75,20 @@ function host(
   });
   return {
     ctx,
+    events,
     dashboards,
     dashboardRequests,
+    get choiceControls() {
+      return choiceControls.at(-1);
+    },
     commands,
     async event(name, payload = {}) {
-      for (const h of hooks.get(name) || []) await h(payload, ctx);
+      let result;
+      for (const h of hooks.get(name) || []) {
+        const response = await h(payload, ctx);
+        if (response?.block) result = response;
+      }
+      return result;
     },
     revoke() {
       enabled = false;
@@ -84,6 +102,317 @@ function host(
     },
   };
 }
+test("a bounded native observation survives /new and late publishers lose authority when the task changes", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "bookie-task-parent-"));
+  const previous = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = join(root, "agent");
+  t.after(async () => {
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previous;
+    await rm(root, { recursive: true, force: true });
+  });
+  const cwd = join(root, "workspace");
+  await Promise.all(
+    [cwd, process.env.PI_CODING_AGENT_DIR].map((path) =>
+      mkdir(path, { mode: 0o700 }),
+    ),
+  );
+  const a = host(cwd);
+  await a.event("session_start");
+  await a.event("before_agent_start");
+  let publish;
+  a.events.emit("pi.task-history.v1.bind", {
+    version: 1,
+    owner: "principal",
+    cwd,
+    sessionId: "root-session",
+    accept: (p) => {
+      publish = p;
+    },
+  });
+  assert.equal(typeof publish, "function");
+  const event = {
+    version: 1,
+    owner: "principal",
+    operationId: "one",
+    kind: "workflow",
+    state: "retained",
+    label: "Result retained",
+  };
+  await publish(event);
+  await publish(event);
+  const saved = JSON.parse(
+    await a.call("bookie_remember", {
+      title: "Project decision",
+      summary: "Keep the existing project choice.",
+    }),
+  );
+  assert.equal(saved.status, "saved");
+  const before = JSON.parse(
+    await a.call("bookie_task_history", { view: "recent" }),
+  );
+  assert.equal(before.summary.observations, 1);
+  assert.equal(before.notes[0].path, saved.readBack.value);
+  await a.event("session_shutdown");
+  await assert.rejects(publish({ ...event, state: "complete" }));
+  const b = host(cwd, true, "after-new");
+  await b.event("session_start");
+  const restored = JSON.parse(
+    await b.call("bookie_task_history", { view: "recent" }),
+  );
+  assert.deepEqual(restored.summary, before.summary);
+  assert.deepEqual(restored.notes, before.notes);
+  assert.deepEqual(restored.observations, before.observations);
+  let oldPublisher;
+  b.events.emit("pi.task-history.v1.bind", {
+    version: 1,
+    owner: "principal",
+    cwd,
+    sessionId: "after-new",
+    accept: (p) => {
+      oldPublisher = p;
+    },
+  });
+  await b.commands.get("bookie-task").handler("new", {
+    ...b.ctx,
+    mode: "tui",
+    isIdle: () => true,
+    ui: { ...b.ctx.ui, input: async () => "Separate task" },
+  });
+  await assert.rejects(oldPublisher({ ...event, state: "complete" }));
+  assert.equal(
+    JSON.parse(await b.call("bookie_task_history", {})).summary.observations,
+    0,
+  );
+  b.revoke();
+  await assert.rejects(b.call("bookie_task_history", {}));
+});
+
+test("a fresh controller distinguishes positively empty folders from an enrolled task with unavailable recovery evidence", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "bookie-enrollment-"));
+  const prior = process.env.PI_CODING_AGENT_DIR;
+  const agent = join(root, "agent"),
+    cwd = join(root, "work"),
+    other = join(root, "separate");
+  process.env.PI_CODING_AGENT_DIR = agent;
+  t.after(async () => {
+    if (prior === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = prior;
+    await rm(root, { recursive: true, force: true });
+  });
+  await Promise.all([agent, cwd, other].map((p) => mkdir(p, { mode: 0o700 })));
+  function lookup(h) {
+    let result = "absent";
+    h.events.emit("pi.task-history.v1.scope", {
+      version: 1,
+      cwd: h.ctx.cwd,
+      sessionId: h.ctx.sessionManager.getSessionId(),
+      accept: (lease) => {
+        result = lease;
+      },
+      unavailable: () => {
+        result = "unavailable";
+      },
+    });
+    return result;
+  }
+  const fresh = host(other, false, "standalone");
+  await fresh.event("session_start");
+  assert.equal(lookup(fresh), "absent");
+  const first = host(cwd, true, "before-reset");
+  await first.event("session_start");
+  await first.event("before_agent_start");
+  const lease = lookup(first);
+  assert.equal(typeof lease.taskId, "string");
+  await first.event("session_shutdown");
+  const store = join(agent, "bookie-project-memory");
+  const ledger = (await readdir(store)).find((n) => n.startsWith("ledger-"));
+  const database = join(store, ledger, "task-history-v1.sqlite");
+  await rename(database, database + ".offline");
+  const recovered = host(cwd, true, "after-reset");
+  assert.equal(
+    lookup(recovered),
+    "unavailable",
+    "pending startup cannot grant standalone execution",
+  );
+  await recovered.event("session_start");
+  await recovered.event("before_agent_start");
+  assert.equal(lookup(recovered), "unavailable");
+  assert.equal(
+    existsSync(database),
+    false,
+    "no replacement task or ledger was created",
+  );
+  await recovered.event("session_shutdown");
+  await rename(database + ".offline", database);
+  const back = host(cwd, true, "restored");
+  await back.event("session_start");
+  assert.equal(lookup(back).taskId, lease.taskId);
+  const denied = host(cwd, false, "revoked");
+  await denied.event("session_start");
+  assert.equal(lookup(denied), "unavailable");
+});
+test("native edits capture an opted-in new source file before and after, and optional gaps do not refuse work", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "bookie-edit-boundaries-"));
+  const prior = process.env.PI_CODING_AGENT_DIR;
+  const cwd = join(root, "work"),
+    agent = join(root, "agent");
+  process.env.PI_CODING_AGENT_DIR = agent;
+  t.after(async () => {
+    if (prior === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = prior;
+    await rm(root, { recursive: true, force: true });
+  });
+  await Promise.all([cwd, agent].map((p) => mkdir(p, { mode: 0o700 })));
+  const h = host(cwd);
+  await h.event("session_start");
+  await h.event("before_agent_start");
+  const messages = [];
+  const cmd = {
+    ...h.ctx,
+    mode: "tui",
+    isIdle: () => true,
+    ui: {
+      ...h.ctx.ui,
+      select: async () => "Enable",
+      editor: async () => "secret.txt",
+      confirm: async () => true,
+      notify: (s) => messages.push(s),
+    },
+  };
+  const changes = (toolCallId, file) => ({
+    toolName: "write",
+    toolCallId,
+    input: { path: file },
+  });
+  const first = changes("file-1", "draft.md");
+  assert.equal(await h.event("tool_call", first), undefined);
+  assert.equal(
+    JSON.parse(await h.call("bookie_task_history", {})).summary.lastCheckpoint,
+    undefined,
+  );
+  await h.commands.get("bookie-task").handler("auto-files", cmd);
+  assert.equal(await h.event("tool_call", first), undefined);
+  await writeFile(join(cwd, "draft.md"), "Original manuscript.");
+  await h.event("tool_result", first);
+  await h.commands.get("bookie-task").handler("export", cmd);
+  const file = messages.at(-1).match(/ to (.+?\.json)(?:\.|$)/u)[1];
+  const exported = JSON.parse(await readFile(file, "utf8"));
+  const points = exported.bundles[0].checkpoints;
+  assert.deepEqual(
+    points.map((c) => c.boundary.stage),
+    ["before", "after"],
+  );
+  assert.equal(points[0].boundary.callId, points[1].boundary.callId);
+  assert.equal(points[0].manifest.entries[0].status, "missing");
+  assert.equal(
+    Buffer.from(exported.bundles[0].blobs[0].data, "base64").toString(),
+    "Original manuscript.",
+  );
+  await h.commands.get("bookie-task").handler("track", cmd);
+  await writeFile(join(cwd, "secret.txt"), Buffer.from([0, 255]));
+  assert.equal(
+    await h.event("tool_call", changes("optional", "secret.txt")),
+    undefined,
+  );
+  await h.commands.get("bookie-task").handler("protection", cmd);
+  assert.equal(
+    (await h.event("tool_call", changes("protected", "secret.txt"))).block,
+    true,
+  );
+  assert.equal(
+    await h.event("tool_call", changes("unrelated", "report.md")),
+    undefined,
+  );
+  await h.event("tool_result", changes("unrelated", "report.md"));
+  await h.event("session_shutdown");
+});
+
+test("explicit export retains linked canonical question and verified answer without including another task", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "bookie-project-pack-"));
+  const prior = process.env.PI_CODING_AGENT_DIR;
+  const agent = join(root, "agent"),
+    cwd = join(root, "workspace");
+  process.env.PI_CODING_AGENT_DIR = agent;
+  t.after(async () => {
+    if (prior === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = prior;
+    await rm(root, { recursive: true, force: true });
+  });
+  await Promise.all([agent, cwd].map((p) => mkdir(p, { mode: 0o700 })));
+  const h = host(cwd, true, "source", true);
+  await h.event("session_start");
+  await h.event("before_agent_start");
+  const ask = {
+    title: "Publication date",
+    summary: "The editor owns the publication decision.",
+    openChoice: "Which day should the issue appear?",
+    choiceOptions: ["Monday", "Friday"],
+  };
+  const receipt = JSON.parse(await h.call("bookie_remember", ask));
+  assert.equal(receipt.status, "saved");
+  const row = h.dashboards.at(-1).items.find((r) => r.label === ask.openChoice);
+  const detail = await h.choiceControls.inspect(row.id, () => {});
+  assert.equal(
+    await h.choiceControls.answer(
+      row.id,
+      detail.revision,
+      { option: "Friday" },
+      () => {},
+    ),
+    "saved",
+  );
+  const messages = [];
+  const cmd = {
+    ...h.ctx,
+    mode: "tui",
+    isIdle: () => true,
+    ui: {
+      ...h.ctx.ui,
+      confirm: async () => true,
+      input: async () => "Separate design study",
+      notify: (s) => messages.push(s),
+    },
+  };
+  await h.commands.get("bookie-task").handler("export", cmd);
+  const readLatest = async () => {
+    const message = messages.at(-1);
+    const file = message.match(/ to (.+?\.json)(?:\.|$)/u)?.[1];
+    assert.ok(file, message);
+    return JSON.parse(await readFile(file, "utf8"));
+  };
+  const first = await readLatest();
+  assert.equal(first.scope, "task");
+  assert.ok(
+    first.memory.records.some((r) => r.path === receipt.readBack.value),
+  );
+  const answers = first.memory.records.filter((r) => /\/answer-/u.test(r.path));
+  assert.equal(answers.length, 1);
+  assert.match(answers[0].sourceText, /Answer: Friday/);
+  assert.deepEqual(answers[0].tasks, [first.selectedTaskId]);
+  await h.commands.get("bookie-task").handler("new", cmd);
+  await h.call("bookie_remember", {
+    title: "Unrelated study",
+    summary: "Review public signage.",
+  });
+  await h.commands.get("bookie-task").handler("export", cmd);
+  assert.equal(
+    (await readLatest()).memory.records.some((r) =>
+      r.sourceText.includes("Answer: Friday"),
+    ),
+    false,
+  );
+  await h.commands.get("bookie-task").handler("export-project", cmd);
+  const whole = await readLatest();
+  assert.equal(whole.bundles.length, 2);
+  assert.ok(whole.memory.records.some((r) => r.path === answers[0].path));
+  assert.ok(
+    whole.memory.records.some((r) =>
+      r.sourceText.includes("Review public signage."),
+    ),
+  );
+});
+
 test("managed recall finds reordered words, offers bounded recent notes, and preserves exact mode after a fresh session", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "bookie-managed-recall-"));
   const old = process.env.PI_CODING_AGENT_DIR;
@@ -737,6 +1066,426 @@ test("a fresh dashboard restores only explicitly open choices from this project'
   assert.equal(next.dashboards.at(-1), "closed");
 });
 
+async function reclassificationFixture(t) {
+  const root = await mkdtemp(join(tmpdir(), "bookie-choice-classification-"));
+  const previous = process.env.PI_CODING_AGENT_DIR;
+  const agent = join(root, "agent"),
+    cwd = join(root, "project");
+  process.env.PI_CODING_AGENT_DIR = agent;
+  t.after(async () => {
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previous;
+    await rm(root, { recursive: true, force: true });
+  });
+  await Promise.all([agent, cwd].map((p) => mkdir(p, { mode: 0o700 })));
+  const h = host(cwd, true, "first-parent", true);
+  await h.event("session_start");
+  const inputs = [
+    {
+      title: "Budget Split browser",
+      summary: "Interface remains optional.",
+      openChoice: "Should we add a browser interface next?",
+      choiceOptions: ["Browser interface", "Keep the command line"],
+    },
+    {
+      title: "Budget Split export",
+      summary: "Export remains optional.",
+      openChoice: "CSV ou JSON; quel format convient au projet",
+      choiceOptions: ["CSV", "JSON", "No export"],
+    },
+    {
+      title: "Budget Split progress",
+      summary:
+        "Delivered and reviewed. Both decisions are already saved separately.",
+      openChoice:
+        "Keep these two decisions open: should we add a browser interface next; which export should Budget Split 19 offer first",
+    },
+  ];
+  for (const input of inputs) await h.call("bookie_remember", input);
+  const rows = h.dashboards
+    .at(-1)
+    .items.filter((item) => item.id.startsWith("open-choice-"));
+  const parent = join(agent, "bookie-project-memory");
+  const ledger = (await readdir(parent)).find((n) => n.startsWith("ledger-"));
+  const vault = join(parent, ledger, "vault");
+  const activityDir = join(vault, "projects/workspace/activities");
+  const originals = new Map(
+    await Promise.all(
+      (await readdir(activityDir)).map(async (name) => [
+        name,
+        await readFile(join(activityDir, name), "utf8"),
+      ]),
+    ),
+  );
+  return {
+    h,
+    cwd,
+    inputs,
+    rows,
+    activityDir,
+    originals,
+    vault,
+    async read(host, name) {
+      return JSON.parse(
+        await host.call("bookie_read", {
+          selector: "path",
+          value: "/projects/workspace/activities/" + name,
+        }),
+      ).result;
+    },
+    async untouched() {
+      for (const [name, text] of originals)
+        assert.equal(await readFile(join(activityDir, name), "utf8"), text);
+    },
+  };
+}
+
+test("explicit reclassification removes only the selected recap, preserves answers and is recalled after a fresh session", async (t) => {
+  const f = await reclassificationFixture(t);
+  const { h, rows } = f;
+  assert.equal(
+    rows.length,
+    3,
+    "no wording heuristic silently removes even an explicit mistaken choice",
+  );
+  const selected = rows.find((row) => row.label === f.inputs[2].openChoice);
+  const detail = await h.choiceControls.inspect(selected.id, () => {});
+  assert.equal(typeof h.choiceControls.reclassify, "function");
+  assert.equal(
+    await h.choiceControls.reclassify(selected.id, detail.revision, () => {}),
+    "saved",
+  );
+  assert.equal(
+    await h.choiceControls.reclassify(selected.id, detail.revision, () => {}),
+    "saved",
+  );
+  const remaining = h.dashboards
+    .at(-1)
+    .items.filter((row) => row.id.startsWith("open-choice-"));
+  assert.deepEqual(
+    new Set(remaining.map((row) => row.label)),
+    new Set(f.inputs.slice(0, 2).map((input) => input.openChoice)),
+  );
+  assert.equal(
+    await h.choiceControls.inspect(selected.id, () => {}),
+    undefined,
+  );
+  assert.equal(
+    await h.choiceControls.answer(
+      selected.id,
+      detail.revision,
+      { custom: "Not an answer" },
+      () => {},
+    ),
+    "refused",
+  );
+  const answered = remaining.find(
+    (row) => row.label === f.inputs[0].openChoice,
+  );
+  const answerDetail = await h.choiceControls.inspect(answered.id, () => {});
+  assert.equal(
+    await h.choiceControls.answer(
+      answered.id,
+      answerDetail.revision,
+      { option: "Browser interface" },
+      () => {},
+    ),
+    "saved",
+  );
+  assert.equal(
+    await h.choiceControls.reclassify(
+      answered.id,
+      answerDetail.revision,
+      () => {},
+    ),
+    "refused",
+  );
+  await f.untouched();
+  await h.event("session_shutdown");
+  const next = host(f.cwd, true, "after-new", true);
+  await next.event("session_start");
+  assert.deepEqual(
+    next.dashboards
+      .at(-1)
+      .items.filter((row) => row.id.startsWith("open-choice-"))
+      .map((row) => row.label),
+    [f.inputs[1].openChoice],
+  );
+  const digest = selected.id.replace("open-choice-", "");
+  const old = await f.read(next, "note-" + digest + ".md");
+  assert.equal(old.choiceDisposition.status, "not-a-decision");
+  assert.equal(old.choiceDisposition.question, selected.label);
+  assert.equal(
+    old.choiceResolution,
+    undefined,
+    "a classification must not manufacture an answer",
+  );
+  const names = await readdir(f.activityDir);
+  assert.equal(
+    names.filter((name) => name.startsWith("classification-")).length,
+    1,
+  );
+  assert.equal(names.filter((name) => name.startsWith("answer-")).length, 1);
+  const receipt = await f.read(next, "classification-" + digest + ".md");
+  assert.deepEqual(receipt.choiceDisposition, old.choiceDisposition);
+  const answer = await f.read(
+    next,
+    "answer-" + answered.id.replace("open-choice-", "") + ".md",
+  );
+  assert.equal(answer.choiceResolution.answer, "Browser interface");
+  // Force indexed general recall, which must not skip classification metadata.
+  for (let i = 0; i < 9; i++)
+    await next.call("bookie_remember", {
+      title: "Budget Split archive " + i,
+      summary: "Historical context only.",
+    });
+  const search = JSON.parse(
+    await next.call("bookie_search", { query: "Budget Split", limit: 30 }),
+  ).result;
+  assert.equal(search.complete, true);
+  assert.equal(
+    search.results.find((hit) =>
+      hit.source.path.endsWith("note-" + digest + ".md"),
+    ).choiceDisposition.status,
+    "not-a-decision",
+  );
+  const lastRow = remaining.find((row) => row.id !== answered.id);
+  const lastDetail = await next.choiceControls.inspect(lastRow.id, () => {});
+  assert.equal(
+    await next.choiceControls.reclassify(
+      lastRow.id,
+      lastDetail.revision,
+      () => {},
+    ),
+    "saved",
+  );
+  await next.event("session_shutdown");
+  const noChoices = host(f.cwd, true, "after-last-correction", true);
+  await noChoices.event("session_start");
+  const inventory = noChoices.dashboards.at(-1);
+  assert.deepEqual(
+    inventory.items.map((row) => row.id),
+    ["project-memory"],
+  );
+  assert.equal(inventory.items[0].state, "observed");
+  assert.equal(inventory.inventory.state, "available");
+  assert.equal(inventory.inventory.count, 15);
+  assert.equal(
+    inventory.inventory.limited,
+    true,
+    "the recent preview remains honestly bounded to twelve of fifteen notes",
+  );
+  assert.equal(
+    (await f.read(noChoices, "note-" + digest + ".md")).choiceDisposition
+      .status,
+    "not-a-decision",
+  );
+  await f.untouched();
+});
+
+test("reclassification refuses stale revisions, revoked access and an already answered item", async (t) => {
+  const f = await reclassificationFixture(t);
+  const row = f.rows[0],
+    controls = f.h.choiceControls;
+  const detail = await controls.inspect(row.id, () => {});
+  assert.equal(typeof controls.reclassify, "function");
+  const before = await readdir(f.activityDir);
+  for (const [id, revision, assertCurrent] of [
+    [row.id, "sha256:" + "0".repeat(64), () => {}],
+    ["../other", detail.revision, () => {}],
+    [
+      row.id,
+      detail.revision,
+      () => {
+        throw Error("PRIVATE owner changed");
+      },
+    ],
+  ])
+    assert.equal(
+      await controls.reclassify(id, revision, assertCurrent),
+      "refused",
+    );
+  assert.deepEqual(await readdir(f.activityDir), before);
+  const sourceName = "note-" + row.id.replace("open-choice-", "") + ".md";
+  await writeFile(
+    join(f.activityDir, sourceName),
+    f.originals.get(sourceName) + "\n",
+  );
+  assert.equal(
+    await controls.reclassify(row.id, detail.revision, () => {}),
+    "refused",
+  );
+  assert.deepEqual(await readdir(f.activityDir), before);
+  await writeFile(join(f.activityDir, sourceName), f.originals.get(sourceName));
+  f.h.revoke();
+  assert.equal(
+    await controls.reclassify(row.id, detail.revision, () => {}),
+    "refused",
+  );
+  assert.deepEqual(await readdir(f.activityDir), before);
+  await f.untouched();
+});
+
+test("concurrent answer and reclassification settle only one result without overwriting the source", async (t) => {
+  const f = await reclassificationFixture(t);
+  const controls = f.h.choiceControls,
+    row = f.rows[0];
+  const detail = await controls.inspect(row.id, () => {});
+  assert.equal(typeof controls.reclassify, "function");
+  const results = await Promise.all([
+    controls.reclassify(row.id, detail.revision, () => {}),
+    controls.answer(row.id, detail.revision, { custom: "My answer" }, () => {}),
+  ]);
+  assert.deepEqual(results.sort(), ["refused", "saved"]);
+  assert.equal(
+    (await readdir(f.activityDir)).filter((name) =>
+      /^(?:answer|classification)-/u.test(name),
+    ).length,
+    1,
+  );
+  assert.equal(await controls.inspect(row.id, () => {}), undefined);
+  await f.untouched();
+});
+
+test(
+  "two processes cannot both publish an answer and a classification after reading the same open source",
+  { timeout: 30000 },
+  async (t) => {
+    for (const winner of [0, 1])
+      await t.test(
+        winner === 0
+          ? "answer publishes first"
+          : "classification publishes first",
+        async (t) => {
+          const f = await reclassificationFixture(t),
+            row = f.rows[0];
+          const detail = await f.h.choiceControls.inspect(row.id, () => {});
+          const writers = ["answer", "classify"].map((action) => {
+            const child = fork(
+              new URL("./fixtures/choice-writer.mjs", import.meta.url),
+              [
+                JSON.stringify({
+                  root: f.vault,
+                  id: row.id,
+                  revision: detail.revision,
+                  action,
+                }),
+              ],
+              { stdio: ["ignore", "ignore", "pipe", "ipc"] },
+            );
+            let ready, finish, failReady, failResult;
+            const readyPromise = new Promise((resolve, reject) => {
+              ready = resolve;
+              failReady = reject;
+            });
+            const resultPromise = new Promise((resolve, reject) => {
+              finish = resolve;
+              failResult = reject;
+            });
+            child.on("message", (message) => {
+              if (message.ready) ready();
+              if (message.result) finish(message.result);
+            });
+            child.on("error", (error) => {
+              failReady(error);
+              failResult(error);
+            });
+            child.on("exit", (code) => {
+              if (code !== 0) {
+                const error = Error("Choice writer exited " + code);
+                failReady(error);
+                failResult(error);
+              }
+            });
+            t.after(() => {
+              if (child.exitCode === null) child.kill();
+            });
+            return { child, readyPromise, resultPromise };
+          });
+          await Promise.all(writers.map((writer) => writer.readyPromise));
+          writers[winner].child.send({ continue: true });
+          assert.equal(await writers[winner].resultPromise, "saved");
+          writers[1 - winner].child.send({ continue: true });
+          const results = await Promise.all(
+            writers.map((writer) => writer.resultPromise),
+          );
+          assert.deepEqual(results.sort(), ["refused", "saved"]);
+          assert.equal(
+            (await readdir(f.activityDir)).filter((name) =>
+              /^(?:answer|classification)-/u.test(name),
+            ).length,
+            1,
+          );
+          await f.untouched();
+        },
+      );
+  },
+);
+
+test("an older writer's answer after classification remains readable and the conflict is explicit", async (t) => {
+  const f = await reclassificationFixture(t),
+    row = f.rows[0],
+    controls = f.h.choiceControls;
+  const detail = await controls.inspect(row.id, () => {});
+  assert.equal(
+    await controls.answer(
+      row.id,
+      detail.revision,
+      { custom: "Original saved answer" },
+      () => {},
+    ),
+    "saved",
+  );
+  const answerName = "answer-" + row.id.replace("open-choice-", "") + ".md";
+  const answerPath = join(f.activityDir, answerName),
+    answerBytes = await readFile(answerPath);
+  // A valid receipt from the real answer writer models an older process unaware of the new slot.
+  await rm(answerPath);
+  assert.equal(
+    await controls.reclassify(row.id, detail.revision, () => {}),
+    "saved",
+  );
+  await writeFile(answerPath, answerBytes);
+  const answer = await f.read(f.h, answerName);
+  assert.equal(answer.choiceResolution.answer, "Original saved answer");
+  assert.equal(answer.choiceDisposition.status, "conflict");
+  assert.equal(
+    await controls.reclassify(row.id, detail.revision, () => {}),
+    "refused",
+  );
+  assert.deepEqual(await readFile(answerPath), answerBytes);
+  await f.untouched();
+});
+
+test("lost access after a durable classification reports unconfirmed and a fresh session can verify it", async (t) => {
+  const f = await reclassificationFixture(t),
+    row = f.rows[0],
+    controls = f.h.choiceControls;
+  const detail = await controls.inspect(row.id, () => {});
+  const path = join(
+    f.activityDir,
+    "classification-" + row.id.replace("open-choice-", "") + ".md",
+  );
+  assert.equal(
+    await controls.reclassify(row.id, detail.revision, () => {
+      if (existsSync(path))
+        throw Error("PRIVATE owner revoked after publication");
+    }),
+    "unconfirmed",
+  );
+  assert.equal(existsSync(path), true);
+  await f.h.event("session_shutdown");
+  const next = host(f.cwd, true, "after-uncertain-ack", true);
+  await next.event("session_start");
+  assert.ok(!next.dashboards.at(-1).items.some((item) => item.id === row.id));
+  const receipt = await f.read(
+    next,
+    "classification-" + row.id.replace("open-choice-", "") + ".md",
+  );
+  assert.equal(receipt.choiceDisposition.status, "not-a-decision");
+  await f.untouched();
+});
+
 test("saving a chosen or typed answer closes only its exact note and a fresh Pi reads the user's decisions", async (t) => {
   const { readChoice, answerChoice } = await import("../dist/choice-answer.js");
   const root = await mkdtemp(join(tmpdir(), "bookie-answers-"));
@@ -1246,4 +1995,139 @@ test("dashboard refresh refuses aborted or revoked owners and does not confuse d
   assert.equal(await pending, undefined);
   assert.equal(h.dashboards.at(-1), "closed");
   assert.equal(authCalls, 0);
+});
+
+test("dashboard progress requires both capabilities and a live enrolled task binding", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "bookie-dashboard-progress-"));
+  const previous = process.env.PI_CODING_AGENT_DIR,
+    agent = join(root, "agent"),
+    cwd = join(root, "project");
+  process.env.PI_CODING_AGENT_DIR = agent;
+  t.after(async () => {
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previous;
+    await rm(root, { recursive: true, force: true });
+  });
+  await Promise.all([agent, cwd].map((p) => mkdir(p, { mode: 0o700 })));
+  const a = host(cwd, true, "progress", true, {
+    taskHistory: 1,
+    taskProgress: 1,
+  });
+  await a.event("session_start");
+  await a.event("before_agent_start");
+  const scope = (h) => {
+    let lease;
+    h.events.emit("pi.task-history.v1.scope", {
+      version: 1,
+      cwd,
+      sessionId: h.ctx.sessionManager.getSessionId(),
+      accept: (value) => {
+        lease = value;
+      },
+    });
+    return lease;
+  };
+  const first = scope(a);
+  assert.ok(first);
+  await a.event("before_agent_start");
+  assert.equal(
+    scope(a).assertCurrent,
+    first.assertCurrent,
+    "current healthy grant can be reused on the next turn",
+  );
+  let emit;
+  a.events.emit("pi.task-history.v1.bind", {
+    version: 1,
+    owner: "scout",
+    cwd,
+    sessionId: "progress",
+    accept: (fn) => {
+      emit = fn;
+    },
+  });
+  for (const [index, kind, state] of [
+    [0, "phase", "retained"],
+    [1, "phase", "retained"],
+    [2, "phase", "failed"],
+    [3, "phase", "partial"],
+    [4, "phase", "retained"],
+    [5, "heartbeat", "running"],
+    [6, "poll", "heartbeat"],
+  ]) {
+    await emit({
+      version: 1,
+      owner: "scout",
+      operationId: "work-" + index,
+      kind,
+      state,
+      label: "local-step-" + index,
+    });
+  }
+  const cmd = {
+    ...a.ctx,
+    mode: "tui",
+    isIdle: () => true,
+    ui: { ...a.ctx.ui, editor: async () => "agenda.md\nabsent.md" },
+  };
+  await writeFile(join(cwd, "agenda.md"), "Public agenda");
+  await a.commands.get("bookie-task").handler("track", cmd);
+  await a.commands.get("bookie-task").handler("checkpoint", cmd);
+  const refresh = async (h) =>
+    h.dashboardRequests
+      .at(-1)
+      .refresh({ signal: new AbortController().signal });
+  const watched = (await refresh(a)).taskHistory;
+  assert.equal(watched.taskId, first.taskId);
+  assert.ok(["captured", "published"].includes(watched.lastCheckpoint.state));
+  assert.equal(watched.lastCheckpoint.files, 1);
+  assert.equal(watched.lastCheckpoint.missing, 1);
+  assert.equal(watched.lastCheckpoint.excluded, 0);
+  assert.match(watched.lastCheckpoint.capturedAt, /^\d{4}-/u);
+  assert.deepEqual(Object.keys(watched.lastCheckpoint).sort(), [
+    "capturedAt",
+    "excluded",
+    "files",
+    "missing",
+    "state",
+  ]);
+  assert.equal(watched.lastObservation.state, "heartbeat");
+  assert.deepEqual(
+    watched.recentProgress.map((p) => p.label),
+    ["local-step-4", "local-step-3", "local-step-2", "local-step-1"],
+  );
+  assert.deepEqual(
+    watched.recentProgress.map((p) => p.state),
+    ["retained", "partial", "failed", "retained"],
+  );
+  assert.ok(
+    watched.recentProgress.every(
+      (p) => p.owner === "scout" && Object.keys(p).length === 4,
+    ),
+  );
+  // A different session can select another task in the same store. Recheck
+  // the exact active revision before using a cached session binding.
+  const other = host(cwd, true, "other", true, { taskHistory: 1 });
+  await other.event("session_start");
+  const legacy = (await refresh(other)).taskHistory;
+  assert.equal(legacy.taskId, first.taskId);
+  assert.equal(legacy.lastObservation.label, "local-step-6");
+  assert.ok(!("lastCheckpoint" in legacy) && !("recentProgress" in legacy));
+  await other.commands.get("bookie-task").handler("new", {
+    ...other.ctx,
+    mode: "tui",
+    isIdle: () => true,
+    ui: { ...other.ctx.ui, input: async () => "Other project task" },
+  });
+  await a.event("before_agent_start");
+  assert.notEqual(scope(a).taskId, first.taskId);
+  assert.deepEqual((await refresh(a)).taskHistory.recentProgress, []);
+  await assert.rejects(first.assertCurrent());
+  await other.event("session_shutdown");
+  const partial = host(cwd, true, "partial", true, { taskProgress: 1 });
+  await partial.event("session_start");
+  assert.ok(!("taskHistory" in (await refresh(partial))));
+  await partial.event("session_shutdown");
+  a.revoke();
+  assert.equal(await refresh(a), undefined);
+  await a.event("session_shutdown");
 });

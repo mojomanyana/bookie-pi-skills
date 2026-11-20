@@ -34,6 +34,7 @@ test("controls bind a separate private host capability and dispose pending acces
     },
   });
   assert.equal(registration.sourceGeneration, "source");
+  assert.equal(typeof registration.reclassify, "function");
   assert.equal(authorizations, 0);
   await registration.renew();
   assert.equal(renewals, 1);
@@ -60,4 +61,9 @@ test("controls bind a separate private host capability and dispose pending acces
     undefined,
   );
   assert.equal(authorizations, 1);
+  assert.equal(
+    await registration.reclassify("open-choice-one", "revision", () => {}),
+    "refused",
+  );
+  assert.equal(authorizations, 1, "disposed controls must not reopen access");
 });

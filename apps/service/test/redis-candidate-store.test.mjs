@@ -401,7 +401,10 @@ test("inventory requires exhaustion, unique in-range records and bounded progres
   assert.equal(pages, 16384);
 });
 
-test("abort/deadline settle promptly with no late hash, continuation, retry or partial reuse", async () => {
+test("abort/deadline settle promptly with no late hash, continuation, retry or partial reuse", async (t) => {
+  // Advance the deadline only after the selected adapter call has been reached.
+  t.mock.method(performance, "now", () => 0);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   for (const stage of ["storedPage", "storedInventory", "storedFinish"]) {
     for (const cause of ["abort", "deadline", "call-cap"]) {
       let late, entered;
@@ -431,8 +434,9 @@ test("abort/deadline settle promptly with no late hash, continuation, retry or p
             error.outcome === undefined
           : code("INDEX_UNAVAILABLE")(error) && error.outcome === undefined,
       );
-      const signal = await reached;
+      const signal = await Promise.race([reached, pending]);
       if (cause === "abort") abort.abort("PRIVATE_ABORT");
+      else t.mock.timers.tick(cause === "deadline" ? 20 : 10);
       await rejected;
       assert.equal(signal.aborted, true);
       const calls = h.calls.length;

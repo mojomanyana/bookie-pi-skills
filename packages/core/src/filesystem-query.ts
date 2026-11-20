@@ -37,7 +37,7 @@ import type {
 import { throwIfAborted } from "./vault-cancellation.js";
 import { compareText, createDiagnostic } from "./vault-diagnostics.js";
 import type { VaultDiagnostic } from "./vault-diagnostics.js";
-import type { ValidationLimits } from "./vault-model.js";
+import type { PathTracker, ValidationLimits } from "./vault-model.js";
 import {
   DEFAULT_MAX_MANIFEST_BYTES,
   DEFAULT_MAX_TOTAL_CONCEPT_BYTES,
@@ -845,6 +845,16 @@ export async function inspectConcept(
   selector: InspectConceptSelector,
   options: InspectConceptOptions = {},
 ): Promise<InspectConceptResult> {
+  return inspectConceptTracked(root, selector, options);
+}
+
+// Internal scope checks can retain the identities witnessed by the exact same scan.
+export async function inspectConceptTracked(
+  root: string | URL,
+  selector: InspectConceptSelector,
+  options: InspectConceptOptions,
+  tracker?: PathTracker,
+): Promise<InspectConceptResult> {
   validateRoot(root);
   const limits = validationLimits(options);
   const maxContentBytes = positiveLimit(
@@ -868,6 +878,7 @@ export async function inspectConcept(
   const matches: ScannedQueryConcept[] = [];
   const scan = await scanVaultForQuery({
     rootPath: root,
+    ...(tracker ? { tracker } : {}),
     limits,
     ...(options.signal === undefined ? {} : { signal: options.signal }),
     visit(concept) {

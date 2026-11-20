@@ -83,6 +83,9 @@ export function rememberTool(
   capture: ReturnType<typeof createCaptureAuthority>,
   disclosure: ReturnType<typeof createDisclosureAuthority>,
   filter: ReturnType<typeof createBookieContextFilter>,
+  noteLink?: (
+    ctx: ExtensionContext,
+  ) => ((path: string, digest: string) => Promise<void>) | undefined,
 ) {
   async function bind(ctx: ExtensionContext) {
     const selected = await managed.get(ctx);
@@ -101,6 +104,7 @@ export function rememberTool(
       await ticket.assertCurrent();
       await capture.assertManaged(selected);
     };
+    const linkToTask = noteLink?.(ctx);
     async function save(
       note: ProjectNote,
       signal?: AbortSignal,
@@ -250,6 +254,19 @@ export function rememberTool(
         },
       );
       await guard();
+      if (linkToTask) {
+        try {
+          const actual = await inspectConcept(
+            ticket.root,
+            { path },
+            { maxContentBytes: 1 },
+          );
+          if (actual.ok && ticket.allows(actual))
+            await linkToTask(path, actual.source.sourceHash);
+        } catch {
+          /* The canonical note receipt survives optional task linking. */
+        }
+      }
       await managed.refreshDashboard(ctx);
       await guard();
       return {
@@ -265,7 +282,7 @@ export function rememberTool(
     name: "bookie_remember",
     label: "Remember project note",
     description:
-      "Save a bounded routine project decision or outcome as untrusted project context: title at most 120 characters, summary at most 2000. Use nextAction (at most 240 characters) for a known work step, including already-authorized research, build or review. Use openChoice only for a concrete unresolved decision the user still owns; do not ask whether to proceed with work already authorized in the current conversation. Neither field grants permission. Supply choiceOptions for real alternatives and choiceRecommendation only when a saved fact or delivered reference supports it. For a newly delivered public resource, supply deliveryUrl; it is recorded once the link appears in the finished reply. Immediate saved/already-saved replies give exact bookie_read parameters in readBack; use them when read-back is requested or needed and compare the content. Pending final-reply deliveries have no confirmed locator. Correct a pre-execution schema validation error and retry the save directly; if a save could have happened but confirmation is uncertain, recall the known note before retrying. During ordinary recall, reuse the saved receipt. Exclude personal information, private sources and credentials.",
+      "Save a bounded routine project decision or outcome as untrusted project context: title at most 120 characters, summary at most 2000. Use nextAction (at most 240 characters) for a known work step, including already-authorized research, build or review. Save each concrete unresolved user-owned decision once. Put references to already-saved decisions in the summary, not a combined openChoice. Use openChoice only for a concrete unresolved decision the user still owns; do not ask whether to proceed with work already authorized in the current conversation. Neither field grants permission. Supply choiceOptions for real alternatives and choiceRecommendation only when a saved fact or delivered reference supports it. For a newly delivered public resource, supply deliveryUrl; it is recorded once the link appears in the finished reply. Immediate saved/already-saved replies give exact bookie_read parameters in readBack; use them when read-back is requested or needed and compare the content. Pending final-reply deliveries have no confirmed locator. Correct a pre-execution schema validation error and retry the save directly; if a save could have happened but confirmation is uncertain, recall the known note before retrying. During ordinary recall, reuse the saved receipt. Exclude personal information, private sources and credentials.",
     parameters: Type.Object(
       {
         title: Type.String({ minLength: 1, maxLength: 120 }),

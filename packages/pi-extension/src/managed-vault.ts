@@ -198,6 +198,109 @@ async function readBinding(store: string, key: string) {
 // It is the only place Bookie keeps a readable folder path and Git commit, and is
 // used solely by the human re-attach command; lookup still uses the exact binding.
 const RECORD = "workspace.json";
+// An enrollment witness lives outside the managed ledger. A missing or
+// replaced database must never turn a controlled task into standalone work.
+async function pathExists(path: string) {
+  try {
+    await lstat(path);
+    return true;
+  } catch (e) {
+    if (hasCode(e, "ENOENT")) return false;
+    throw e;
+  }
+}
+async function enrollmentEvidence(workspace: string, agentDirectory: string) {
+  const location = await locate(workspace, agentDirectory);
+  const folder = join(location.agent, "bookie-task-enrollments"),
+    marker = join(folder, location.key + ".json");
+  let saved: string | undefined;
+  if (await pathExists(folder)) {
+    await directory(folder, "private");
+    if (await pathExists(marker)) {
+      const { text, st } = await readBounded(marker, 512);
+      if (
+        st.nlink !== 1n ||
+        (typeof process.getuid === "function" &&
+          (st.uid !== BigInt(process.getuid()) || (st.mode & 0o077n) !== 0n))
+      )
+        throw denied();
+      saved = text;
+    }
+  }
+  const empty = () => {
+    if (saved !== undefined) throw denied();
+    return { folder, marker, saved: undefined, expected: undefined };
+  };
+  if (!(await pathExists(location.store))) return empty();
+  await directory(location.store, "private");
+  if (!(await pathExists(join(location.store, location.key + ".json"))))
+    return empty();
+  const binding = await readBinding(location.store, location.key);
+  const database = join(binding.base, "task-history-v1.sqlite");
+  if (!(await pathExists(database))) return empty();
+  const st = await lstat(database, { bigint: true });
+  if (
+    !st.isFile() ||
+    st.nlink !== 1n ||
+    st.ino <= 0n ||
+    st.birthtimeNs <= 0n ||
+    (typeof process.getuid === "function" &&
+      (st.uid !== BigInt(process.getuid()) || (st.mode & 0o077n) !== 0n))
+  )
+    throw denied();
+  const expected = JSON.stringify([
+    1,
+    location.key,
+    binding.baseId,
+    String(st.dev),
+    String(st.ino),
+    String(st.birthtimeNs),
+  ]);
+  if (saved !== undefined && saved !== expected) throw denied();
+  return { folder, marker, saved, expected };
+}
+export async function taskEnrollment(
+  workspace: string,
+  agentDirectory = getAgentDir(),
+): Promise<"absent" | "existing" | "attached" | "unavailable"> {
+  try {
+    const state = await enrollmentEvidence(workspace, agentDirectory);
+    return state.saved ? "attached" : state.expected ? "existing" : "absent";
+  } catch {
+    return "unavailable";
+  }
+}
+export async function attestTaskEnrollment(
+  workspace: string,
+  guard: () => Promise<void>,
+  agentDirectory = getAgentDir(),
+) {
+  await guard();
+  const state = await enrollmentEvidence(workspace, agentDirectory);
+  if (!state.expected) throw denied();
+  if (state.saved === state.expected) return;
+  try {
+    await mkdir(state.folder, { mode: 0o700 });
+  } catch (e) {
+    if (!hasCode(e, "EEXIST")) throw e;
+  }
+  await directory(state.folder, "private");
+  const temp = join(state.folder, "pending-" + randomBytes(12).toString("hex"));
+  await put(temp, state.expected);
+  try {
+    await guard();
+    try {
+      await link(temp, state.marker);
+    } catch (e) {
+      if (!hasCode(e, "EEXIST")) throw e;
+    }
+  } finally {
+    await unlink(temp);
+  }
+  const again = await enrollmentEvidence(workspace, agentDirectory);
+  if (again.saved !== state.expected) throw denied();
+  await guard();
+}
 export interface WorkspaceMove {
   readonly from: string;
   readonly to: string;
@@ -351,6 +454,8 @@ export async function openManagedVault(
     exists = false;
   }
   if (!exists) {
+    if ((await taskEnrollment(workspace, agentDirectory)) !== "absent")
+      throw denied();
     await checkStore();
     const base = await mkdtemp(join(store, "ledger-"));
     let published = false;

@@ -1,5 +1,10 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { answerChoice, ChoiceRefused, readChoice } from "./choice-answer.js";
+import {
+  answerChoice,
+  ChoiceRefused,
+  readChoice,
+  reclassifyChoice,
+} from "./choice-answer.js";
 import type { ChoiceAccess } from "./dashboard-open-choices.js";
 import { safeChoiceLine } from "./open-choice.js";
 
@@ -100,6 +105,29 @@ export function registerDashboardChoiceControls(
           await selected.refresh();
         } catch {
           /* optional display */
+        }
+        return "saved";
+      },
+      async reclassify(
+        id: string,
+        revision: string,
+        assertCurrent: () => void,
+      ) {
+        let saving = false;
+        try {
+          const scoped = await access(assertCurrent);
+          if (!scoped) return "refused";
+          saving = true;
+          await reclassifyChoice(scoped, { id, revision }, selected.sessionId);
+        } catch (error) {
+          return saving && !(error instanceof ChoiceRefused)
+            ? "unconfirmed"
+            : "refused";
+        }
+        try {
+          await selected.refresh();
+        } catch {
+          /* A failed redraw cannot undo a durable classification. */
         }
         return "saved";
       },

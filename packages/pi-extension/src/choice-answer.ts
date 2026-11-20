@@ -50,16 +50,22 @@ function paths(access: ChoiceAccess, id: string) {
     noteUid: uid(digest),
     answer: posix.join(dir, "answer-" + digest + ".md"),
     answerUid: uid(createHash("sha256").update(id).digest("hex")),
+    classification: posix.join(dir, "classification-" + digest + ".md"),
+    classificationUid: uid(
+      createHash("sha256")
+        .update("classification:" + id)
+        .digest("hex"),
+    ),
   };
 }
 
 export function idForRecord(
   access: ChoiceAccess,
   path: string,
-  kind: "note" | "answer",
+  kind: "note" | "answer" | "classification",
 ) {
   if (posix.dirname(path) !== directory(access)) return;
-  const match = /^(note|answer)-([a-f0-9]{32})\.md$/u.exec(
+  const match = /^(note|answer|classification)-([a-f0-9]{32})\.md$/u.exec(
     posix.basename(path),
   );
   return match?.[1] === kind ? "open-choice-" + match[2] : undefined;
@@ -141,6 +147,81 @@ async function answerRecord(
   return record;
 }
 
+async function classificationRecord(
+  access: ChoiceAccess,
+  id: string,
+  signal?: AbortSignal,
+) {
+  const record = await inspectConcept(
+    access.root,
+    { path: paths(access, id).classification },
+    { ...limits, ...(signal ? { signal } : {}) },
+  );
+  if (!record.ok && record.reason === "not-found") return;
+  return record;
+}
+
+function classificationSections(choice: ChoiceDetail, path: string) {
+  return {
+    outcome:
+      "The user marked this saved item as not a separate decision. Original item: " +
+      choice.label,
+    evidence: "[Original project note](" + path + ")",
+  };
+}
+
+/** An explicit human classification, never an inferred answer or a rewrite of the source. */
+export async function choiceDisposition(
+  access: ChoiceAccess,
+  id: string,
+  signal?: AbortSignal,
+) {
+  const existing = await classificationRecord(access, id, signal);
+  if (!existing) return;
+  const target = paths(access, id),
+    choice = await sourceChoice(access, id, signal);
+  const { body, meta, source, title } = ordinary(
+    access,
+    existing,
+    target.classificationUid,
+  );
+  const link = meta.choice_classification;
+  if (
+    !object(link) ||
+    Object.keys(link).length !== 3 ||
+    link.kind !== "context" ||
+    link.source !== target.note ||
+    link.revision !== choice.revision ||
+    title !== choice.title
+  )
+    throw new ChoiceRefused();
+  const sections = activitySections(body),
+    expected = classificationSections(choice, target.note);
+  if (
+    sections?.Outcome !== expected.outcome ||
+    sections.Evidence !== expected.evidence ||
+    sections["Source session"] !== undefined ||
+    [
+      "Changed artifacts",
+      "Decisions",
+      "Validation",
+      "Unresolved work",
+      "Next action",
+    ].some((name) => sections[name] !== "No additional information recorded.")
+  )
+    throw new ChoiceRefused();
+  // Old extension writers do not know this new slot. Do not hide a real answer or
+  // silently pick a winner if one was subsequently written by an older process.
+  return {
+    status: (await hasAnswerRecord(access, id, signal))
+      ? ("conflict" as const)
+      : ("not-a-decision" as const),
+    question: choice.label,
+    source,
+    questionRevision: choice.revision,
+  };
+}
+
 export async function hasAnswerRecord(
   access: ChoiceAccess,
   id: string,
@@ -154,6 +235,10 @@ export async function readChoice(access: ChoiceAccess, id: string) {
   await access.assertCurrent();
   if (!digestPattern.test(id)) return;
   if (await hasAnswerRecord(access, id)) {
+    await access.assertCurrent();
+    return;
+  }
+  if (await choiceDisposition(access, id)) {
     await access.assertCurrent();
     return;
   }
@@ -251,6 +336,7 @@ export async function answerChoice(
           throw new ChoiceRefused();
         const source = await sourceChoice(access, id);
         if (source.revision !== revision) throw new ChoiceRefused();
+        if (await classificationRecord(access, id)) throw new ChoiceRefused();
         await access.assertCurrent();
         return source;
       };
@@ -291,12 +377,101 @@ export async function answerChoice(
           (await alreadySaved())
         )
           return "already saved";
+        if (
+          !result.changedPaths.length &&
+          (await classificationRecord(access, id))
+        )
+          throw new ChoiceRefused();
         throw Error("Bookie could not confirm saving the decision.");
       }
       // Once the canonical file exists, losing access or seeing new bytes can
       // only mean the acknowledgment is uncertain.
       if (result.redacted || !(await alreadySaved().catch(() => false)))
         throw Error("Bookie could not confirm saving the decision.");
+      return "saved";
+    },
+  );
+}
+
+/** Host-only correction. The answer queue and core vault lock arbitrate both kinds of disposition. */
+export async function reclassifyChoice(
+  access: ChoiceAccess,
+  input: { id: string; revision: string },
+  sessionId: string,
+): Promise<"saved" | "already saved"> {
+  if (
+    !object(input) ||
+    Object.keys(input).some((key) => !["id", "revision"].includes(key)) ||
+    typeof input.id !== "string" ||
+    typeof input.revision !== "string" ||
+    !digestPattern.test(input.id) ||
+    !/^sha256:[a-f0-9]{64}$/u.test(input.revision)
+  )
+    throw new ChoiceRefused();
+  const { id, revision } = input,
+    target = paths(access, id);
+  return withFileMutationQueue(
+    resolve(access.root, target.answer.slice(1)),
+    async () => {
+      const verified = async () => {
+        await access.assertCurrent();
+        if (
+          !access.allows({
+            uid: target.classificationUid,
+            project: access.scope.project.path,
+            sensitivity: { classification: "declared", value: "internal" },
+          })
+        )
+          throw new ChoiceRefused();
+        const choice = await sourceChoice(access, id);
+        if (choice.revision !== revision || (await hasAnswerRecord(access, id)))
+          throw new ChoiceRefused();
+        await access.assertCurrent();
+        return choice;
+      };
+      const choice = await verified();
+      const alreadySaved = async () => {
+        const saved = await choiceDisposition(access, id);
+        await access.assertCurrent();
+        if (saved && saved.status !== "not-a-decision")
+          throw new ChoiceRefused();
+        return !!saved;
+      };
+      if (await alreadySaved()) return "already saved";
+      const prepared = await prepareManagedActivity(
+        access.root,
+        {
+          path: target.classification,
+          uid: target.classificationUid,
+          project: access.scope.project.path,
+          title: choice.title,
+          tags: ["choice-reclassification"],
+          fields: {
+            choice_classification: {
+              source: target.note,
+              revision,
+              kind: "context",
+            },
+          },
+          sections: classificationSections(choice, target.note),
+        },
+        sessionId,
+      );
+      if (!prepared.ok) throw new ChoiceRefused();
+      const result = await createCheckpointWithPolicy(prepared.publication, {
+        assertAuthority: async () => {
+          await verified();
+        },
+      });
+      if (!result.ok) {
+        if (!result.changedPaths.length) {
+          await verified();
+          if (await alreadySaved()) return "already saved";
+        }
+        throw Error("Bookie could not confirm saving the classification.");
+      }
+      if (result.redacted || !(await alreadySaved().catch(() => false)))
+        throw Error("Bookie could not confirm saving the classification.");
       return "saved";
     },
   );
@@ -334,6 +509,42 @@ export async function answeredChoiceIds(
   };
 }
 
+/** Lookup hints only; exact reads still verify each linked record and source. */
+export async function choiceHistoryIds(
+  access: ChoiceAccess,
+  signal?: AbortSignal,
+) {
+  const answers = await answeredChoiceIds(access, signal);
+  const scan = await searchVault(
+    access.root,
+    {
+      query: "The user marked this saved item as not a separate decision.",
+      filters: {
+        project: access.scope.project.path,
+        type: "Activity",
+        status: "stable",
+        sensitivity: "internal",
+        tag: "choice-reclassification",
+      },
+    },
+    {
+      maxResults: 50,
+      maxTotalConceptBytes: limits.maxTotalConceptBytes,
+      ...(signal ? { signal } : {}),
+    },
+  );
+  return {
+    ids: new Set([
+      ...answers.ids,
+      ...scan.results.map((hit) =>
+        idForRecord(access, hit.source.path, "classification"),
+      ),
+    ]),
+    complete: answers.complete && scan.complete,
+    truncated: answers.truncated || scan.resultsTruncated,
+  };
+}
+
 export function historyChoice(
   access: ChoiceAccess & { managedWorkspace?: boolean },
   hit: Record<string, unknown>,
@@ -344,13 +555,19 @@ export function historyChoice(
     typeof hit.source.sourceHash !== "string"
   )
     return;
-  for (const kind of ["note", "answer"] as const) {
+  for (const kind of ["note", "answer", "classification"] as const) {
     const id = idForRecord(access, hit.source.path, kind);
     if (
       id &&
-      ((kind === "answer" && access.managedWorkspace) ||
+      ((kind !== "note" && access.managedWorkspace) ||
         hit.uid ===
-          paths(access, id)[kind === "note" ? "noteUid" : "answerUid"])
+          paths(access, id)[
+            kind === "note"
+              ? "noteUid"
+              : kind === "answer"
+                ? "answerUid"
+                : "classificationUid"
+          ])
     )
       return { id, kind, revision: hit.source.sourceHash };
   }
@@ -361,6 +578,7 @@ export async function projectChoiceHistory(
   ref: NonNullable<ReturnType<typeof historyChoice>>,
   signal?: AbortSignal,
 ) {
+  if (ref.kind === "classification") return;
   const saved = await choiceResolution(access, ref.id, signal);
   if (ref.kind === "answer") {
     if (!saved || saved.source.sourceHash !== ref.revision)
@@ -369,4 +587,28 @@ export async function projectChoiceHistory(
     if (saved.questionRevision !== ref.revision) throw new ChoiceRefused();
   }
   return saved;
+}
+
+export async function projectChoiceMetadata(
+  access: ChoiceAccess,
+  ref: NonNullable<ReturnType<typeof historyChoice>>,
+  signal?: AbortSignal,
+) {
+  const resolution = await projectChoiceHistory(access, ref, signal);
+  const disposition = await choiceDisposition(access, ref.id, signal);
+  if (
+    ref.kind === "classification" &&
+    (!disposition || disposition.source.sourceHash !== ref.revision)
+  )
+    throw new ChoiceRefused();
+  if (
+    ref.kind === "note" &&
+    disposition &&
+    disposition.questionRevision !== ref.revision
+  )
+    throw new ChoiceRefused();
+  return {
+    ...(resolution ? { choiceResolution: resolution } : {}),
+    ...(disposition ? { choiceDisposition: disposition } : {}),
+  };
 }

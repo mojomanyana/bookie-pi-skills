@@ -1,5 +1,9 @@
 import { checkDashboardAbort } from "./dashboard-memory-inventory.js";
-import { answeredChoiceIds, hasAnswerRecord } from "./choice-answer.js";
+import {
+  answeredChoiceIds,
+  choiceDisposition,
+  hasAnswerRecord,
+} from "./choice-answer.js";
 import { posix } from "node:path";
 import { inspectConcept, loadConcept, searchVault } from "pi-bookie-core";
 import { choiceFromActivity, safeChoiceLine } from "./open-choice.js";
@@ -126,6 +130,13 @@ export async function dashboardOpenChoices(
     }
     answerChecks++;
     if (await hasAnswerRecord(access, id, signal)) continue;
+    try {
+      if (await choiceDisposition(access, id, signal)) continue;
+    } catch {
+      checkDashboardAbort(signal);
+      limited = true;
+      continue;
+    }
     const row: ChoiceRow = {
       id,
       kind: "work",

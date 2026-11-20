@@ -166,6 +166,7 @@ test("extension registers the BK-013 read-only tool contracts", () => {
       "bookie_validate",
       "bookie_write",
       "bookie_checkpoint",
+      "bookie_task_history",
       "bookie_remember",
     ],
   );
@@ -661,6 +662,7 @@ test("local and Git package manifests expose the built extension", async (t) => 
       "bookie_validate",
       "bookie_write",
       "bookie_checkpoint",
+      "bookie_task_history",
       "bookie_remember",
     ],
   );

@@ -1,5 +1,13 @@
 # pi-bookie release notes
 
+## [0.9.0] — 2026-11-20
+
+- Read and resume a selected local task, retain observations, track selected working files in separate Git history, and move historical evidence between workspaces. Requires pi-bookie-core 0.4.0.
+
+- Correct a mistaken Open choices item through a compatible dashboard's **Not a separate decision** action. The original note stays intact, no answer is invented, and other choices remain open after a new session.
+- Keep corrections separate from saved answers in recall. Updated writers arbitrate answers and corrections under the existing vault lock; a conflicting answer from an older writer remains readable with an explicit conflict. The extension pins its compatible core version.
+- Save each genuine decision once. Progress summaries can refer to existing choices without creating another combined question.
+
 ## [0.8.2] - 2026-11-19
 
 - Keep rejected save inputs actionable in Pi history, including the 2,000-character summary limit, while hiding private argument dumps. Preserve existing save permissions, bounds, exact receipts and uncertain-write recovery.
