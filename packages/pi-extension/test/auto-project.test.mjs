@@ -23,6 +23,7 @@ function host(
   enabled = true,
   sessionId = "root-session",
   inventory = false,
+  capabilities = {},
 ) {
   const events = new EventEmitter(),
     tools = new Map(),
@@ -49,7 +50,7 @@ function host(
         ...(inventory
           ? {
               generation: "inventory-source",
-              capabilities: { inventory: 1, refresh: 1 },
+              capabilities: { inventory: 1, refresh: 1, ...capabilities },
             }
           : {}),
         version: 1,
@@ -1994,4 +1995,141 @@ test("dashboard refresh refuses aborted or revoked owners and does not confuse d
   assert.equal(await pending, undefined);
   assert.equal(h.dashboards.at(-1), "closed");
   assert.equal(authCalls, 0);
+});
+
+test("dashboard progress requires both capabilities and a live enrolled task binding", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "bookie-dashboard-progress-"));
+  const previous = process.env.PI_CODING_AGENT_DIR,
+    agent = join(root, "agent"),
+    cwd = join(root, "project");
+  process.env.PI_CODING_AGENT_DIR = agent;
+  t.after(async () => {
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previous;
+    await rm(root, { recursive: true, force: true });
+  });
+  await Promise.all([agent, cwd].map((p) => mkdir(p, { mode: 0o700 })));
+  const a = host(cwd, true, "progress", true, {
+    taskHistory: 1,
+    taskProgress: 1,
+  });
+  await a.event("session_start");
+  await a.event("before_agent_start");
+  const scope = (h) => {
+    let lease;
+    h.events.emit("pi.task-history.v1.scope", {
+      version: 1,
+      cwd,
+      sessionId: h.ctx.sessionManager.getSessionId(),
+      accept: (value) => {
+        lease = value;
+      },
+    });
+    return lease;
+  };
+  const first = scope(a);
+  assert.ok(first);
+  await a.event("before_agent_start");
+  assert.equal(
+    scope(a).assertCurrent,
+    first.assertCurrent,
+    "current healthy grant can be reused on the next turn",
+  );
+  let emit;
+  a.events.emit("pi.task-history.v1.bind", {
+    version: 1,
+    owner: "scout",
+    cwd,
+    sessionId: "progress",
+    accept: (fn) => {
+      emit = fn;
+    },
+  });
+  for (const [index, kind, state] of [
+    [0, "phase", "retained"],
+    [1, "phase", "retained"],
+    [2, "phase", "failed"],
+    [3, "phase", "partial"],
+    [4, "phase", "retained"],
+    [5, "heartbeat", "running"],
+    [6, "poll", "heartbeat"],
+  ]) {
+    await emit({
+      version: 1,
+      owner: "scout",
+      operationId: "work-" + index,
+      kind,
+      state,
+      label: "local-step-" + index,
+    });
+  }
+  const cmd = {
+    ...a.ctx,
+    mode: "tui",
+    isIdle: () => true,
+    ui: { ...a.ctx.ui, editor: async () => "agenda.md\nabsent.md" },
+  };
+  await writeFile(join(cwd, "agenda.md"), "Public agenda");
+  await a.commands.get("bookie-task").handler("track", cmd);
+  await a.commands.get("bookie-task").handler("checkpoint", cmd);
+  const refresh = async (h) =>
+    h.dashboardRequests
+      .at(-1)
+      .refresh({ signal: new AbortController().signal });
+  const watched = (await refresh(a)).taskHistory;
+  assert.equal(watched.taskId, first.taskId);
+  assert.ok(["captured", "published"].includes(watched.lastCheckpoint.state));
+  assert.equal(watched.lastCheckpoint.files, 1);
+  assert.equal(watched.lastCheckpoint.missing, 1);
+  assert.equal(watched.lastCheckpoint.excluded, 0);
+  assert.match(watched.lastCheckpoint.capturedAt, /^\d{4}-/u);
+  assert.deepEqual(Object.keys(watched.lastCheckpoint).sort(), [
+    "capturedAt",
+    "excluded",
+    "files",
+    "missing",
+    "state",
+  ]);
+  assert.equal(watched.lastObservation.state, "heartbeat");
+  assert.deepEqual(
+    watched.recentProgress.map((p) => p.label),
+    ["local-step-4", "local-step-3", "local-step-2", "local-step-1"],
+  );
+  assert.deepEqual(
+    watched.recentProgress.map((p) => p.state),
+    ["retained", "partial", "failed", "retained"],
+  );
+  assert.ok(
+    watched.recentProgress.every(
+      (p) => p.owner === "scout" && Object.keys(p).length === 4,
+    ),
+  );
+  // A different session can select another task in the same store. Recheck
+  // the exact active revision before using a cached session binding.
+  const other = host(cwd, true, "other", true, { taskHistory: 1 });
+  await other.event("session_start");
+  const legacy = (await refresh(other)).taskHistory;
+  assert.equal(legacy.taskId, first.taskId);
+  assert.equal(legacy.lastObservation.label, "local-step-6");
+  assert.ok(!("lastCheckpoint" in legacy) && !("recentProgress" in legacy));
+  await other.commands
+    .get("bookie-task")
+    .handler("new", {
+      ...other.ctx,
+      mode: "tui",
+      isIdle: () => true,
+      ui: { ...other.ctx.ui, input: async () => "Other project task" },
+    });
+  await a.event("before_agent_start");
+  assert.notEqual(scope(a).taskId, first.taskId);
+  assert.deepEqual((await refresh(a)).taskHistory.recentProgress, []);
+  await assert.rejects(first.assertCurrent());
+  await other.event("session_shutdown");
+  const partial = host(cwd, true, "partial", true, { taskProgress: 1 });
+  await partial.event("session_start");
+  assert.ok(!("taskHistory" in (await refresh(partial))));
+  await partial.event("session_shutdown");
+  a.revoke();
+  assert.equal(await refresh(a), undefined);
+  await a.event("session_shutdown");
 });

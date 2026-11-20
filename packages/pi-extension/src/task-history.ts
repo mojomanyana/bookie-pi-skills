@@ -51,7 +51,7 @@ type Binding = {
   budgetRootTaskId: string;
   cwd: string;
   sessionId: string;
-  assertCurrent(): Promise<void>;
+  assertCurrent(requireEnrollment?: boolean): Promise<void>;
 };
 const unavailable = () =>
   Error("Task history is unavailable for this session and selection.");
@@ -101,6 +101,33 @@ const validRequest = (
   (x.sessionId === undefined ||
     x.sessionId === ctx.sessionManager.getSessionId()) &&
   typeof x.accept === "function";
+export async function dashboardTaskSummary(
+  store: TaskHistory,
+  task: TaskSelection,
+  includeProgress = false,
+) {
+  const view = await store.project(task, includeProgress);
+  const checkpoint = includeProgress ? view.lastCheckpoint : undefined;
+  return {
+    taskId: view.taskId,
+    title: view.title,
+    observations: view.observations,
+    ...(view.lastObservation ? { lastObservation: view.lastObservation } : {}),
+    ...(view.recentProgress ? { recentProgress: view.recentProgress } : {}),
+    ...(checkpoint
+      ? {
+          lastCheckpoint: {
+            state: checkpoint.state,
+            capturedAt: checkpoint.capturedAt,
+            files: checkpoint.files,
+            missing: checkpoint.missing,
+            excluded: checkpoint.excluded,
+          },
+        }
+      : {}),
+  };
+}
+
 export function registerTaskHistory(
   pi: ExtensionAPI,
   managed: Managed,
@@ -209,6 +236,25 @@ export function registerTaskHistory(
     return { store, projectId, assertCurrent, enrollment };
   }
   async function bind(ctx: ExtensionContext, create = false, witness = false) {
+    const cached = current;
+    if (
+      cached &&
+      enabled &&
+      ctx.isProjectTrusted?.() &&
+      cached.cwd === ctx.cwd &&
+      cached.sessionId === ctx.sessionManager.getSessionId() &&
+      capture.canManage() &&
+      disclosure.canManage()
+    ) {
+      try {
+        // Reuse only an enrolled, still-current binding. Its guard checks the session
+        // grant, underlying ledger and selected revision on every use.
+        await cached.assertCurrent(true);
+        if (current === cached) return cached;
+      } catch {
+        /* Resolve a changed selection or grant through the normal binding path. */
+      }
+    }
     const { store, projectId, assertCurrent, enrollment } = await access(ctx);
     let task = await store.selected();
     if (!task && (enrollment === "attached" || enrolledThisSession))
@@ -229,9 +275,13 @@ export function registerTaskHistory(
       projectId,
       cwd: ctx.cwd,
       sessionId: ctx.sessionManager.getSessionId(),
-      async assertCurrent() {
+      async assertCurrent(requireEnrollment = false) {
         await assertCurrent();
-        if ((await taskEnrollment(ctx.cwd)) === "unavailable")
+        const enrolled = await taskEnrollment(ctx.cwd);
+        if (
+          enrolled === "unavailable" ||
+          (requireEnrollment && enrolled !== "attached")
+        )
           throw unavailable();
         const now = await store.selected();
         if (
@@ -1003,17 +1053,16 @@ export function registerTaskHistory(
     },
   });
   return {
-    async dashboard(ctx: ExtensionContext) {
+    async dashboard(ctx: ExtensionContext, includeProgress: boolean) {
       const b = await bind(ctx);
       if (!b) return;
-      const v = await b.store.project(b.task);
+      const summary = await dashboardTaskSummary(
+        b.store,
+        b.task,
+        includeProgress,
+      );
       await b.assertCurrent();
-      return {
-        taskId: v.taskId,
-        title: v.title,
-        observations: v.observations,
-        ...(v.lastObservation ? { lastObservation: v.lastObservation } : {}),
-      };
+      return summary;
     },
     noteLink(ctx: ExtensionContext) {
       const b = current;

@@ -78,6 +78,7 @@ export interface TaskHistoryView extends TaskSelection {
     recordedAt: string;
   };
   lastCheckpoint?: ObservedCheckpoint;
+  recentProgress?: NonNullable<TaskHistoryView["lastObservation"]>[];
 }
 const invalid = () =>
   Error("Task history is unavailable, invalid or no longer selected.");
@@ -658,7 +659,10 @@ export async function openTaskHistory(scope: TaskHistoryScope) {
           });
       }))!;
     },
-    async project(task: TaskSelection): Promise<TaskHistoryView> {
+    async project(
+      task: TaskSelection,
+      includeProgress = false,
+    ): Promise<TaskHistoryView> {
       return (await use(false, (db) => {
         const selected = requireSelection(db, task);
         const count = Number(
@@ -700,15 +704,28 @@ export async function openTaskHistory(scope: TaskHistoryScope) {
               .length,
           };
         }
-        if (latest) {
-          const observed = taskObservation(JSON.parse(String(latest.payload)));
-          if (!observed) throw invalid();
-          view.lastObservation = {
-            owner: observed.owner,
-            state: observed.state,
-            label: observed.label,
-            recordedAt: String(latest.instant),
+        function summary(row: { payload?: unknown; instant?: unknown }) {
+          const event = taskObservation(JSON.parse(String(row.payload)));
+          if (!event || !historyText(row.instant, 32)) throw invalid();
+          return {
+            owner: event.owner,
+            state: event.state,
+            label: event.label,
+            recordedAt: row.instant,
           };
+        }
+        if (latest) view.lastObservation = summary(latest);
+        if (includeProgress) {
+          // Exclude explicit heartbeats before limiting, even after a long idle period.
+          view.recentProgress = db
+            .prepare(
+              `SELECT instant,payload FROM observations WHERE task=?
+             AND lower(json_extract(payload,'$.kind')) <> 'heartbeat'
+             AND lower(json_extract(payload,'$.state')) <> 'heartbeat'
+             ORDER BY instant DESC,seq DESC LIMIT 4`,
+            )
+            .all(task.taskId)
+            .map(summary);
         }
         return view;
       }))!;

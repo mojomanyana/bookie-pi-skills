@@ -837,7 +837,7 @@ export default function registerBookie(pi: ExtensionAPI): void {
         },
       };
     },
-    (ctx) => taskHistory.dashboard(ctx),
+    (ctx, progress) => taskHistory.dashboard(ctx, progress),
   );
   const taskHistory = registerTaskHistory(
     pi,

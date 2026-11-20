@@ -47,17 +47,9 @@ function ownerMatches(value: unknown, ctx: ExtensionContext): value is Owner {
   );
 }
 const inactive = () => Error("Automatic Bookie project memory is unavailable.");
-type TaskSummary = {
-  taskId: string;
-  title: string;
-  observations: number;
-  lastObservation?: {
-    owner: string;
-    state: string;
-    label: string;
-    recordedAt: string;
-  };
-};
+type TaskSummary = Awaited<
+  ReturnType<typeof import("./task-history.js").dashboardTaskSummary>
+>;
 type Observation = {
   taskHistory?: TaskSummary;
   rows: ChoiceRow[];
@@ -71,6 +63,7 @@ type Publisher = {
   sequence: number;
   inventory: boolean;
   taskHistory: boolean;
+  taskProgress: boolean;
 };
 function failedObservation(state: "unknown" | "unavailable"): Observation {
   return {
@@ -161,7 +154,11 @@ export function createManagedMemory(pi: ExtensionAPI) {
     ((ctx: ExtensionContext) => Promise<ChoiceAccess | undefined>) | undefined;
   let displayAccess: typeof authorize;
   let taskView:
-    ((ctx: ExtensionContext) => Promise<TaskSummary | undefined>) | undefined;
+    | ((
+        ctx: ExtensionContext,
+        progress: boolean,
+      ) => Promise<TaskSummary | undefined>)
+    | undefined;
   function hide() {
     // Replace rather than clear: an older in-flight observation keeps its own
     // retired derived cache and cannot populate the new session's cache.
@@ -276,6 +273,7 @@ export function createManagedMemory(pi: ExtensionAPI) {
     inventory: boolean,
     ctx: ExtensionContext,
     includeTask: boolean,
+    includeProgress: boolean,
     signal?: AbortSignal,
   ): Promise<Observation> {
     const cache = answerPreviewCache;
@@ -286,7 +284,7 @@ export function createManagedMemory(pi: ExtensionAPI) {
         ? await dashboardMemoryInventory(access, signal, cache)
         : undefined;
       const taskHistory = includeTask
-        ? await taskView?.(ctx).catch(() => undefined)
+        ? await taskView?.(ctx, includeProgress).catch(() => undefined)
         : undefined;
       await access.assertCurrent();
       checkDashboardAbort(signal);
@@ -324,7 +322,7 @@ export function createManagedMemory(pi: ExtensionAPI) {
         sessionId: selected.owner.sessionId,
         cwd: ctx.cwd,
         producer: "bookie-memory",
-        capabilities: { taskHistory: 1 },
+        capabilities: { taskHistory: 1, taskProgress: 1 },
         producerVersion: (
           createRequire(import.meta.url)("../package.json") as {
             version: string;
@@ -361,6 +359,7 @@ export function createManagedMemory(pi: ExtensionAPI) {
                   source!.inventory,
                   ctx,
                   source!.taskHistory,
+                  source!.taskProgress,
                   signal,
                 )
               : failedObservation("unavailable");
@@ -404,6 +403,10 @@ export function createManagedMemory(pi: ExtensionAPI) {
             taskHistory:
               object(value.capabilities) &&
               value.capabilities.taskHistory === 1,
+            taskProgress:
+              object(value.capabilities) &&
+              value.capabilities.taskHistory === 1 &&
+              value.capabilities.taskProgress === 1,
             inventory:
               object(value.capabilities) && value.capabilities.inventory === 1,
           };
@@ -448,6 +451,7 @@ export function createManagedMemory(pi: ExtensionAPI) {
             publisher.inventory,
             ctx,
             publisher.taskHistory,
+            publisher.taskProgress,
           );
           if (revision !== refreshRevision) return false;
           show(ctx, view);
