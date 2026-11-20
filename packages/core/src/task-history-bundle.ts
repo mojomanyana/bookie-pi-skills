@@ -173,10 +173,24 @@ function unpack(input: unknown): TaskBundle {
     )
       return failure("invalid prerequisites");
     const observations = boundedList(x.observations, 10000).map((raw) => {
-      const hasSequence = raw !== null && typeof raw === "object" && Object.hasOwn(raw, "ownerSequence");
-      const row = shape(raw, ["eventId", "recordedAt", "event", ...(hasSequence ? ["ownerSequence"] : [])]);
+      const hasSequence =
+        raw !== null &&
+        typeof raw === "object" &&
+        Object.hasOwn(raw, "ownerSequence");
+      const row = shape(raw, [
+        "eventId",
+        "recordedAt",
+        "event",
+        ...(hasSequence ? ["ownerSequence"] : []),
+      ]);
       const ownerSequence = row.ownerSequence;
-      if (hasSequence && (typeof ownerSequence !== "number" || !Number.isSafeInteger(ownerSequence) || ownerSequence < 1)) return failure("invalid owner sequence");
+      if (
+        hasSequence &&
+        (typeof ownerSequence !== "number" ||
+          !Number.isSafeInteger(ownerSequence) ||
+          ownerSequence < 1)
+      )
+        return failure("invalid owner sequence");
       const event = taskObservation(row.event);
       if (!event) return failure("invalid observation");
       const eventId = id(row.eventId, digest);
@@ -195,7 +209,12 @@ function unpack(input: unknown): TaskBundle {
       )
         return failure("observation identity mismatch");
       distinct(eventIds, eventId);
-      return { eventId, recordedAt: time(row.recordedAt), event, ...(typeof ownerSequence === "number" ? { ownerSequence } : {}) };
+      return {
+        eventId,
+        recordedAt: time(row.recordedAt),
+        event,
+        ...(typeof ownerSequence === "number" ? { ownerSequence } : {}),
+      };
     });
     const checkpoints = boundedList(x.checkpoints, 1024).map((raw) => {
       const row = shape(raw, [
@@ -366,7 +385,14 @@ async function materializeBundle(
         total += file.size!;
         if (total > maxBlobBytes) return failure("artifact limit exceeded");
         const bytes = await readTaskBlob(store, snapshot.object, file.digest);
-        blobs.set(file.digest, bytes.toString("base64"));
+        blobs.set(
+          file.digest,
+          Buffer.from(
+            bytes.buffer,
+            bytes.byteOffset,
+            bytes.byteLength,
+          ).toString("base64"),
+        );
       }
       checkpoints.push({
         checkpointId: snapshot.checkpointId,
@@ -562,6 +588,7 @@ function archiveBody(input: unknown) {
       source.length > 32768 ||
       bytes > 8 * 1024 * 1024 ||
       note.sourceHash !== "sha256:" + sha(source) ||
+      // eslint-disable-next-line no-control-regex -- Archived notes exclude non-printing controls except tabs and line breaks.
       /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u.test(
         note.sourceText,
       ) ||

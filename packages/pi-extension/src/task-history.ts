@@ -991,38 +991,7 @@ export function registerTaskHistory(
         } else throw Error("Use /bookie-task to choose an action.");
         await managed.refreshDashboard(ctx);
       } catch (e) {
-        if (
-          e instanceof Error &&
-          /^(?:Use \/bookie-task|Select up to|Choose up to|Select files|The selected file set)/u.test(
-            e.message,
-          )
-        )
-          throw e;
-        if (e instanceof Error) {
-          if (/exceeds|size limit|too many/iu.test(e.message))
-            throw Error(
-              "The archive or file capture exceeds a supported limit. Choose a smaller task or tracked file set.",
-            );
-          if (/pending|Git operation/iu.test(e.message))
-            throw Error(
-              "The file checkpoint is pending. Check private local Git access, then retry the export.",
-            );
-          if (/conflict|different content/iu.test(e.message))
-            throw Error(
-              "An existing historical record has a different revision. Its contents were preserved.",
-            );
-          if (/cycle|prerequisite/iu.test(e.message))
-            throw Error(
-              "This dependency would be invalid. Select a task from this project that has no dependency back to this task.",
-            );
-          if (/Invalid task bundle|Invalid task archive/u.test(e.message))
-            throw Error(
-              "The archive failed its format or content verification. Use the complete original export.",
-            );
-        }
-        throw Error(
-          "Task operation unavailable. Check /bookie-task enable, current capture/disclosure settings and the selected task. No completion is confirmed.",
-        );
+        throw taskCommandError(e);
       }
     },
   });
@@ -1054,6 +1023,41 @@ export function registerTaskHistory(
     },
   };
 }
+// Return a safe command diagnostic without exposing filesystem or private store errors.
+function taskCommandError(e: unknown): Error {
+  if (
+    e instanceof Error &&
+    /^(?:Use \/bookie-task|Select up to|Choose up to|Select files|The selected file set)/u.test(
+      e.message,
+    )
+  )
+    return e;
+  if (e instanceof Error) {
+    if (/exceeds|size limit|too many/iu.test(e.message))
+      return Error(
+        "The archive or file capture exceeds a supported limit. Choose a smaller task or tracked file set.",
+      );
+    if (/pending|Git operation/iu.test(e.message))
+      return Error(
+        "The file checkpoint is pending. Check private local Git access, then retry the export.",
+      );
+    if (/conflict|different content/iu.test(e.message))
+      return Error(
+        "An existing historical record has a different revision. Its contents were preserved.",
+      );
+    if (/cycle|prerequisite/iu.test(e.message))
+      return Error(
+        "This dependency would be invalid. Select a task from this project that has no dependency back to this task.",
+      );
+    if (/Invalid task bundle|Invalid task archive/u.test(e.message))
+      return Error(
+        "The archive failed its format or content verification. Use the complete original export.",
+      );
+  }
+  return Error(
+    "Task operation unavailable. Check /bookie-task enable, current capture/disclosure settings and the selected task. No completion is confirmed.",
+  );
+}
 async function writeArchive(
   path: string,
   text: string,
@@ -1073,45 +1077,46 @@ async function writeArchive(
     await guard();
     try {
       await link(temp, path);
+      return;
     } catch (e) {
       if (!(e instanceof Error && "code" in e && e.code === "EEXIST")) throw e;
-      const existing = await open(
-        path,
-        constants.O_RDONLY |
-          (constants.O_NOFOLLOW ?? 0) |
-          (constants.O_NONBLOCK ?? 0),
-      );
-      try {
-        const meta = await existing.stat();
-        const expected = Buffer.from(text);
+    }
+    const existing = await open(
+      path,
+      constants.O_RDONLY |
+        (constants.O_NOFOLLOW ?? 0) |
+        (constants.O_NONBLOCK ?? 0),
+    );
+    try {
+      const meta = await existing.stat();
+      const expected = Buffer.from(text);
+      if (
+        !meta.isFile() ||
+        (meta.mode & 0o077) !== 0 ||
+        meta.size !== expected.length
+      )
+        throw Error("Conflicting task archive.");
+      const chunk = Buffer.alloc(64 * 1024);
+      for (let offset = 0; offset < expected.length;) {
+        const { bytesRead } = await existing.read(
+          chunk,
+          0,
+          Math.min(chunk.length, expected.length - offset),
+          offset,
+        );
         if (
-          !meta.isFile() ||
-          (meta.mode & 0o077) !== 0 ||
-          meta.size !== expected.length
+          !bytesRead ||
+          !chunk
+            .subarray(0, bytesRead)
+            .equals(expected.subarray(offset, offset + bytesRead))
         )
           throw Error("Conflicting task archive.");
-        const chunk = Buffer.alloc(64 * 1024);
-        for (let offset = 0; offset < expected.length;) {
-          const { bytesRead } = await existing.read(
-            chunk,
-            0,
-            Math.min(chunk.length, expected.length - offset),
-            offset,
-          );
-          if (
-            !bytesRead ||
-            !chunk
-              .subarray(0, bytesRead)
-              .equals(expected.subarray(offset, offset + bytesRead))
-          )
-            throw Error("Conflicting task archive.");
-          offset += bytesRead;
-        }
-        if ((await existing.stat()).size !== expected.length)
-          throw Error("Conflicting task archive.");
-      } finally {
-        await existing.close();
+        offset += bytesRead;
       }
+      if ((await existing.stat()).size !== expected.length)
+        throw Error("Conflicting task archive.");
+    } finally {
+      await existing.close();
     }
   } finally {
     await unlink(temp);

@@ -159,7 +159,9 @@ export async function captureTaskFiles(
         try {
           const directory = await lstat(parent);
           if (!directory.isDirectory() || (await realpath(parent)) !== parent)
-            throw Error("A tracked path has an unsupported ancestor.");
+            throw Error("A tracked path has an unsupported ancestor.", {
+              cause: e,
+            });
           break;
         } catch (err) {
           if (!disappeared(err)) throw err;
@@ -280,7 +282,7 @@ export async function readTaskBlob(
   store: TaskHistory,
   tree: string,
   sha: string,
-) {
+): Promise<Uint8Array> {
   if (!object.test(tree) || !digest.test(sha))
     throw Error("Invalid task artifact reference.");
   const args = await privateRepo(store, false);

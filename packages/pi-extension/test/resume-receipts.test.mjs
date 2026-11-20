@@ -344,6 +344,86 @@ test("authorized next actions persist independently of user choices across a fre
       .map((item) => item.label),
     ["Which preview date should we use?"],
   );
+
+  await t.test(
+    "only linked questions and their authorized exact answers travel with the task",
+    async () => {
+      const {
+        openTaskHistory,
+        exportHistoryArchive,
+        importHistoryArchive,
+        readImportedHistoryArchive,
+      } = await import("pi-bookie-core");
+      const { readArchiveMemory } =
+        await import("../dist/task-archive-memory.js");
+      const projectText = await readFile(
+        join(access.root, "projects/workspace/project.md"),
+        "utf8",
+      );
+      const projectId = JSON.parse(projectText.split("\n")[1]).bookie.uid;
+      const db = await openTaskHistory({
+        vault: access.root,
+        projectId,
+        assertCurrent: access.assertCurrent,
+      });
+      const selectedTask = await db.selectNew("Audience handoff");
+      await db.linkNote(
+        selectedTask,
+        answered.source.path,
+        answered.source.sourceHash,
+      );
+      const readMemory = async (links) => {
+        const result = await readArchiveMemory(access, "task", links);
+        await result.assertCurrent();
+        return result.memory;
+      };
+      const archive = await exportHistoryArchive(
+        db,
+        selectedTask,
+        "task",
+        readMemory,
+      );
+      const entries = archive.memory.records;
+      assert.equal(archive.memory.limited, false);
+      assert.deepEqual(
+        entries.map((r) => r.path).sort(),
+        [answered.source.path, answered.choiceResolution.source.path].sort(),
+      );
+      const answerRecord = entries.find(
+        (r) => r.path === answered.choiceResolution.source.path,
+      );
+      assert.equal(
+        answerRecord.sourceHash,
+        answered.choiceResolution.source.sourceHash,
+      );
+      assert.match(answerRecord.sourceText, /Dispatchers/u);
+      assert.deepEqual(answerRecord.tasks, [selectedTask.taskId]);
+      const other = await db.selectNew("Other ongoing work");
+      const imported = await importHistoryArchive(db, archive);
+      assert.equal(imported.duplicate, false);
+      assert.deepEqual(
+        (await readImportedHistoryArchive(db, archive.archiveId)).memory,
+        archive.memory,
+      );
+      assert.deepEqual(await db.selected(), other);
+      const restricted = {
+        ...access,
+        allows: (record) =>
+          record.source.path !== answered.choiceResolution.source.path,
+      };
+      const projection = await readArchiveMemory(restricted, "task", [
+        {
+          taskId: selectedTask.taskId,
+          path: answered.source.path,
+          sourceHash: answered.source.sourceHash,
+        },
+      ]);
+      assert.deepEqual(
+        projection.memory.records.map((r) => r.path),
+        [answered.source.path],
+      );
+    },
+  );
 });
 
 test("native summary validation stays actionable and a corrected checkpoint survives a fresh session", async (t) => {

@@ -30,7 +30,8 @@ async function workspace(t, projectId) {
   return { root, store };
 }
 function rehash(bundle) {
-  const { bundleId: _, ...body } = bundle;
+  const body = { ...bundle };
+  delete body.bundleId;
   return {
     ...body,
     bundleId: createHash("sha256").update(JSON.stringify(body)).digest("hex"),
@@ -149,7 +150,8 @@ test("project export captures every local root and dependencies while a task bun
     all,
   );
   assert.deepEqual(await dst.store.selected(), active);
-  const { archiveId, ...damaged } = structuredClone(all);
+  const damaged = structuredClone(all);
+  delete damaged.archiveId;
   damaged.bundles = damaged.bundles.filter(
     (b) => b.taskId !== unrelated.taskId,
   );

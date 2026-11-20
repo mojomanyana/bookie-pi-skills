@@ -240,7 +240,9 @@ function readTaskRecords(db: HistoryDatabase, taskId: string, title: string) {
         eventId: String(row.id),
         recordedAt: String(row.instant),
         event,
-        ...(row.source_seq === null ? {} : { ownerSequence: Number(row.source_seq) }),
+        ...(row.source_seq === null
+          ? {}
+          : { ownerSequence: Number(row.source_seq) }),
       };
     }),
     checkpoints: captures.map((c) => ({
@@ -865,7 +867,7 @@ export async function openTaskHistory(scope: TaskHistoryScope) {
           id: row.id,
           taskId: row.task,
           manifest: String(row.manifest),
-          blobs: blobs.map((b) => {
+          blobs: blobs.map((b): { digest: string; bytes: Uint8Array } => {
             if (
               typeof b.digest !== "string" ||
               !(b.bytes instanceof Uint8Array) ||
@@ -1101,7 +1103,7 @@ export interface TaskFileManifest {
 }
 export interface CapturedTaskFiles {
   manifest: TaskFileManifest;
-  blobs: Map<string, Buffer>;
+  blobs: Map<string, Uint8Array>;
 }
 export function hashBytes(bytes: Uint8Array) {
   return createHash("sha256").update(bytes).digest("hex");
