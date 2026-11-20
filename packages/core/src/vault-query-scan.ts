@@ -13,6 +13,7 @@ import {
 } from "./vault-diagnostics.js";
 import type { VaultDiagnostic } from "./vault-diagnostics.js";
 import {
+  type PathTracker,
   bundlePath,
   createPathTracker,
   enumerateVault,
@@ -55,6 +56,7 @@ export interface VaultQueryScanResult {
 }
 
 interface ScanInput {
+  readonly tracker?: PathTracker;
   readonly rootPath: string | URL;
   readonly limits: ValidationLimits;
   readonly signal?: AbortSignal;
@@ -160,7 +162,7 @@ export async function scanVaultForQuery(
 ): Promise<VaultQueryScanResult> {
   const { limits, signal, visit } = input;
   const collector = new DiagnosticCollector(limits.maxDiagnostics);
-  const tracker = createPathTracker();
+  const tracker = input.tracker ?? createPathTracker();
   const invalidPaths = new Set<string>();
   const invalidUids = new Set<string>();
   let rejectedConcepts = 0;

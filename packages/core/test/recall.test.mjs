@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import {
   cp,
+  link,
   mkdtemp,
+  rename,
   readFile,
   readdir,
   rm,
@@ -90,6 +92,61 @@ const resolver = {
     byteLength: record.reference.byteLength,
   }),
 };
+
+test("scope reuse rechecks exact files, directory membership and policy before returning a decision", async (t) => {
+  const { root, project } = await fixture(t);
+  const other = await fixture(t);
+  const inspect = () => core.inspectRecallScope(root, project);
+  const first = await inspect();
+  assert.equal(first.ok, true);
+  const expected = structuredClone(first.scope);
+  first.scope.sensitivityClasses.length = 0;
+  first.scope.project.uid = "mutated by caller";
+  assert.deepEqual((await inspect()).scope, expected);
+  assert.equal(
+    (await core.inspectRecallScope(other.root, project)).scope.root,
+    other.root,
+  );
+  assert.deepEqual((await inspect()).scope, expected);
+
+  const path = join(root, projectPath);
+  const original = await readFile(path);
+  const changed = Buffer.from(original);
+  changed[changed.length - 1] ^= 1;
+  await writeFile(path, changed);
+  assert.equal((await inspect()).ok, false, "same-length edit");
+  await writeFile(path, original);
+  assert.deepEqual((await inspect()).scope, expected);
+  await writeFile(path + ".replacement", changed);
+  await rename(path + ".replacement", path);
+  assert.equal((await inspect()).ok, false, "replaced source");
+  await writeFile(path, original);
+  assert.deepEqual((await inspect()).scope, expected);
+
+  const extra = join(root, "projects/fixture/tasks/linked.md");
+  await link(join(other.root, taskPath), extra);
+  assert.equal(
+    (await inspect()).ok,
+    false,
+    "new unsafe entry under a separate directory",
+  );
+  await rm(extra);
+  assert.deepEqual((await inspect()).scope, expected);
+
+  const manifest = join(root, "bookie.yaml");
+  await writeFile(
+    manifest,
+    (await readFile(manifest, "utf8")).replace(
+      "excluded_classes: [restricted]",
+      "excluded_classes: [restricted, public]",
+    ),
+  );
+  assert.equal(
+    (await inspect()).ok,
+    false,
+    "current manifest excludes a previously allowed project",
+  );
+});
 
 test("exact context is reusable only with matching current source, destination and control state", async (t) => {
   const { root, project } = await fixture(t);
@@ -350,7 +407,7 @@ test("an explicit correction preserves predecessor bytes and rejects old bundle 
     binding,
   });
   assert.equal(prepared.ok, true);
-  const replacementPath = "/projects/fixture/research/Δ-findings.md";
+  const replacementPath = "/projects/fixture/research/Î”-findings.md";
   await writeFile(
     join(root, replacementPath),
     (await readFile(join(root, replacementPath), "utf8")) +
@@ -803,7 +860,7 @@ test("bounded canonical selection export returns exact full records and preserve
       end = source.indexOf("\n---\n", 4);
     const fm = JSON.parse(source.slice(4, end));
     fm.custom_export = {
-      "Unicode café": ["line\nnext", "tab\tvalue", true, 3],
+      "Unicode cafÃ©": ["line\nnext", "tab\tvalue", true, 3],
     };
     await writeFile(path, "---\n" + JSON.stringify(fm) + source.slice(end));
   });
@@ -876,7 +933,7 @@ test("bounded canonical selection export refuses partial, wrong and duplicate se
 });
 
 test("bounded canonical selection export protects decoded metadata but permits correction provenance", async (t) => {
-  const replacementPath = "/projects/fixture/research/Δ-findings.md";
+  const replacementPath = "/projects/fixture/research/Î”-findings.md";
   for (const disposition of ["suppressed", "superseded", "excluded"]) {
     await t.test(disposition, async (t) => {
       const f = await exportFixture(t, async (root) => {

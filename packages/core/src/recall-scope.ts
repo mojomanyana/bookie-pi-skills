@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readVaultManifest, getSchemaValidators } from "./vault-manifest.js";
 import {
+  type PathTracker,
   createPathTracker,
   readSafeBoundedFile,
   verifyTrackedPaths,
@@ -13,7 +14,7 @@ import {
   computeConceptSourceHash,
   isObject,
 } from "./concept-mutation-model.js";
-import { inspectConcept } from "./filesystem-query.js";
+import { inspectConceptTracked } from "./filesystem-query.js";
 import { containsDetectedSecret } from "./vault-secret-detection.js";
 import { throwIfAborted } from "./vault-cancellation.js";
 import type { Manifest } from "./vault-model.js";
@@ -107,18 +108,49 @@ export async function readRecallManifest(
     return recallFailure("vault");
   }
 }
+// Retain only a successful scope for its caller-owned revision. The stored result is
+// never exposed to callers. Every hit revalidates all visited files and directories.
+const witnessedScopes = new WeakMap<
+  ConceptRevision,
+  { scope: RecallScope; tracker: PathTracker }
+>();
+
 export async function inspectRecallScope(
   rootPath: string | URL,
   project: ConceptRevision,
   options: RecallReadOptions = {},
 ): Promise<RecallResult<{ scope: RecallScope }>> {
   if (!validRevision(project)) return recallFailure("input");
+  throwIfAborted(options.signal);
+  const cacheable = Object.keys(options).every((key) => key === "signal");
+  const witnessed = cacheable ? witnessedScopes.get(project) : undefined;
+  if (
+    witnessed &&
+    witnessed.scope.project.path === project.path &&
+    witnessed.scope.project.sourceHash === project.sourceHash
+  ) {
+    try {
+      const root = await realpath(
+        resolve(rootPath instanceof URL ? fileURLToPath(rootPath) : rootPath),
+      );
+      if (
+        root === witnessed.scope.root &&
+        (await verifyTrackedPaths(witnessed.tracker, options.signal))
+      )
+        return { ok: true, scope: structuredClone(witnessed.scope) };
+    } catch {
+      throwIfAborted(options.signal);
+    }
+    witnessedScopes.delete(project);
+  }
   const loaded = await readRecallManifest(rootPath, options);
   if (!loaded.ok) return loaded;
-  const inspected = await inspectConcept(
+  const tracker = cacheable ? createPathTracker() : undefined;
+  const inspected = await inspectConceptTracked(
     loaded.root,
     { path: project.path },
     { ...RECALL_SCAN_LIMITS, maxContentBytes: 1, ...options },
+    tracker,
   );
   if (
     !inspected.ok ||
@@ -131,19 +163,19 @@ export async function inspectRecallScope(
   const checked = await readRecallManifest(loaded.root, options);
   if (!checked.ok || checked.manifestRevision !== loaded.manifestRevision)
     return recallFailure("scope");
-  return {
-    ok: true,
-    scope: {
-      root: loaded.root,
-      vaultUid: loaded.manifest.vault.uid,
-      project: {
-        path: inspected.source.path,
-        uid: inspected.uid,
-        sourceHash: inspected.source.sourceHash,
-      },
-      manifestRevision: loaded.manifestRevision,
-      sensitivityClasses: [...loaded.manifest.policy.sensitivity.classes],
-      excludedClasses: [...loaded.manifest.policy.sensitivity.excluded_classes],
+  const scope: RecallScope = {
+    root: loaded.root,
+    vaultUid: loaded.manifest.vault.uid,
+    project: {
+      path: inspected.source.path,
+      uid: inspected.uid,
+      sourceHash: inspected.source.sourceHash,
     },
+    manifestRevision: loaded.manifestRevision,
+    sensitivityClasses: [...loaded.manifest.policy.sensitivity.classes],
+    excludedClasses: [...loaded.manifest.policy.sensitivity.excluded_classes],
   };
+  if (tracker)
+    witnessedScopes.set(project, { scope: structuredClone(scope), tracker });
+  return { ok: true, scope };
 }
