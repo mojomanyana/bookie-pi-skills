@@ -1,6 +1,6 @@
 # pi-bookie release notes
 
-## [0.9.0] — candidate
+## [0.9.0] — 2026-11-20
 
 - Read and resume a selected local task, retain observations, track selected working files in separate Git history, and move historical evidence between workspaces. Requires pi-bookie-core 0.4.0.
 

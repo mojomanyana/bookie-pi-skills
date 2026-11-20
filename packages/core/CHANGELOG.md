@@ -1,7 +1,8 @@
 # pi-bookie-core release notes
 
-## [0.4.0] — candidate
+## [0.4.0] — 2026-11-20
 
+- Reuse a validated project scope when the complete file and directory identities still match. Changes to the vault trigger a fresh inspection.
 - Add durable local task observations, explicit file capture, background Git publication and portable historical bundles. Canonical OKF note formats remain readable.
 
 ## [0.3.0] - 2026-11-16
