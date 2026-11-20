@@ -532,6 +532,8 @@ export async function openTaskHistory(scope: TaskHistoryScope) {
         if (previous >= next) {
           // A concurrent reader may already have applied this page.
           for (const [index, event] of events.entries()) {
+            const source = provenance[index];
+            if (!source) throw invalid();
             const id = hash(
               JSON.stringify([
                 task.taskId,
@@ -549,8 +551,8 @@ export async function openTaskHistory(scope: TaskHistoryScope) {
             if (
               !saved ||
               saved.payload !== JSON.stringify(event) ||
-              saved.instant !== provenance[index].recordedAt ||
-              saved.source_seq !== provenance[index].sequence
+              saved.instant !== source.recordedAt ||
+              saved.source_seq !== source.sequence
             )
               throw conflict();
           }
@@ -560,6 +562,7 @@ export async function openTaskHistory(scope: TaskHistoryScope) {
         const indexedAt = new Date().toISOString();
         for (const [index, event] of events.entries()) {
           const source = provenance[index];
+          if (!source) throw invalid();
           const { eventId } = storeObservation(
             db,
             task.taskId,
