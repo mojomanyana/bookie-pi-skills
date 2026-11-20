@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtemp, mkdir, rm, writeFile, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -91,6 +92,77 @@ test("checkpoint worker uses immutable captured bytes and retains explicit missi
     ).toString(),
     "first",
   );
+});
+
+test("private Git garbage collection preserves old captures and a refused publication can resume once", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "bookie-history-gc-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const vault = path.join(root, "vault");
+  await mkdir(vault, { mode: 0o700 });
+  const scope = {
+    vault,
+    projectId: "PRJ-00000000000000000000000000",
+    assertCurrent: async () => {},
+  };
+  const store = await openTaskHistory(scope);
+  const task = await store.ensureSelected();
+  const capture = async (body) => {
+    await writeFile(path.join(root, "agenda.md"), body);
+    return store.capture(
+      task,
+      await captureTaskFiles(root, ["agenda.md"], scope.assertCurrent),
+    );
+  };
+  const first = await capture("First agenda");
+  await publishTaskFiles(store);
+  const second = await capture("Second agenda");
+  const repo = path.join(store.base, "task-history.git");
+  const git = (...args) =>
+    execFileSync("git", ["--git-dir", repo, ...args], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_CONFIG_GLOBAL: "/dev/null",
+      },
+    });
+  const lock = path.join(
+    repo,
+    "refs",
+    "bookie",
+    "tasks",
+    task.taskId,
+    "checkpoints",
+    second + ".lock",
+  );
+  await writeFile(lock, "simulated ref contention", { flag: "wx" });
+  await assert.rejects(publishTaskFiles(store));
+  assert.equal((await store.pending()).id, second);
+  git("gc", "--prune=now");
+  await unlink(lock);
+  await writeFile(
+    path.join(root, "agenda.md"),
+    "Later edit outside both checkpoints",
+  );
+  const fresh = await openTaskHistory(scope);
+  await publishTaskFiles(fresh);
+  await publishTaskFiles(fresh);
+  git("gc", "--prune=now");
+  const { checkpoints } = await fresh.bundle(task);
+  assert.equal(checkpoints.length, 2);
+  for (const [id, body] of [
+    [first, "First agenda"],
+    [second, "Second agenda"],
+  ]) {
+    const capture = checkpoints.find((c) => c.checkpointId === id);
+    assert.ok(capture);
+    const retained = await readTaskBlob(
+      fresh,
+      capture.object,
+      capture.manifest.entries[0].digest,
+    );
+    assert.equal(Buffer.from(retained).toString(), body);
+  }
 });
 
 test("an overlapping session takes over pending checkpoint publication under its own grant", async (t) => {
