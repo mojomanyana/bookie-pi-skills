@@ -295,6 +295,56 @@ export async function readTaskBlob(
     throw Error("Retained task artifact digest differs.");
   return value;
 }
+async function publishNextCheckpoint(store: TaskHistory): Promise<boolean> {
+  const row = await store.pending();
+  if (!row) return false;
+  if (!uuid.test(row.id) || !uuid.test(row.taskId))
+    throw Error("Invalid task history request.");
+  const args = await privateRepo(store, true);
+  const lines: string[] = [];
+  const writeBlob = async (name: string, data: Uint8Array) => {
+    const id = (
+      await git(
+        store,
+        [...args, "hash-object", "--no-filters", "-w", "--stdin"],
+        data,
+      )
+    )
+      .toString()
+      .trim();
+    if (!object.test(id)) throw Error("Invalid private Git blob receipt.");
+    lines.push("100644 blob " + id + "\t" + name + "\n");
+  };
+  for (const blob of row.blobs) await writeBlob(blob.digest, blob.bytes);
+  await writeBlob("manifest.json", Buffer.from(row.manifest));
+  const tree = (
+    await git(store, [...args, "mktree"], Buffer.from(lines.sort().join("")))
+  )
+    .toString()
+    .trim();
+  if (!object.test(tree)) throw Error("Invalid private Git tree receipt.");
+  await store.assertCurrent();
+  const ref = "refs/bookie/tasks/" + row.taskId + "/checkpoints/" + row.id;
+  try {
+    await git(store, [
+      ...args,
+      "update-ref",
+      ref,
+      tree,
+      "0".repeat(tree.length),
+    ]);
+  } catch (e) {
+    if (
+      (await git(store, [...args, "rev-parse", "--verify", ref]))
+        .toString()
+        .trim() !== tree
+    )
+      throw e;
+  }
+  await store.published(row.id, tree);
+  return true;
+}
+
 const jobs = new Map<
   string,
   { wake: number; store: TaskHistory; done: Promise<void> }
@@ -309,67 +359,23 @@ export function publishTaskFiles(store: TaskHistory): Promise<void> {
   }
   const worker = { wake: 0, store, done: Promise.resolve() };
   worker.done = (async () => {
-    for (;;) {
-      const wake = worker.wake;
-      const store = worker.store;
-      const row = await store.pending();
-      if (!row) {
-        if (wake !== worker.wake) continue;
-        jobs.delete(store.base);
-        return;
+    try {
+      for (;;) {
+        const wake = worker.wake;
+        const source = worker.store;
+        try {
+          if (await publishNextCheckpoint(source)) continue;
+        } catch (error) {
+          // A fresh session may have renewed the worker while the old grant expired.
+          // Start the pending read again under that session's own authority.
+          if (worker.store === source) throw error;
+        }
+        if (wake === worker.wake) return;
       }
-      if (!uuid.test(row.id) || !uuid.test(row.taskId))
-        throw Error("Invalid task history request.");
-      const args = await privateRepo(store, true);
-      const lines: string[] = [];
-      const writeBlob = async (name: string, data: Uint8Array) => {
-        const id = (
-          await git(
-            store,
-            [...args, "hash-object", "--no-filters", "-w", "--stdin"],
-            data,
-          )
-        )
-          .toString()
-          .trim();
-        if (!object.test(id)) throw Error("Invalid private Git blob receipt.");
-        lines.push("100644 blob " + id + "\t" + name + "\n");
-      };
-      for (const blob of row.blobs) await writeBlob(blob.digest, blob.bytes);
-      await writeBlob("manifest.json", Buffer.from(row.manifest));
-      const tree = (
-        await git(
-          store,
-          [...args, "mktree"],
-          Buffer.from(lines.sort().join("")),
-        )
-      )
-        .toString()
-        .trim();
-      if (!object.test(tree)) throw Error("Invalid private Git tree receipt.");
-      await store.assertCurrent();
-      const ref = "refs/bookie/tasks/" + row.taskId + "/checkpoints/" + row.id;
-      try {
-        await git(store, [
-          ...args,
-          "update-ref",
-          ref,
-          tree,
-          "0".repeat(tree.length),
-        ]);
-      } catch (e) {
-        if (
-          (await git(store, [...args, "rev-parse", "--verify", ref]))
-            .toString()
-            .trim() !== tree
-        )
-          throw e;
-      }
-      await store.published(row.id, tree);
+    } finally {
+      if (jobs.get(store.base) === worker) jobs.delete(store.base);
     }
-  })().finally(() => {
-    if (jobs.get(store.base) === worker) jobs.delete(store.base);
-  });
+  })();
   jobs.set(store.base, worker);
   return worker.done;
 }

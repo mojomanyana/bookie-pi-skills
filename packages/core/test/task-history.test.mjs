@@ -93,6 +93,59 @@ test("checkpoint worker uses immutable captured bytes and retains explicit missi
   );
 });
 
+test("an overlapping session takes over pending checkpoint publication under its own grant", async (t) => {
+  const root = await mkdtemp(
+    path.join(tmpdir(), "bookie-publication-handoff-"),
+  );
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const vault = path.join(root, "vault");
+  await mkdir(vault, { mode: 0o700 });
+  const scope = {
+    vault,
+    projectId: "PRJ-00000000000000000000000000",
+    assertCurrent: async () => {},
+  };
+  const entered = Promise.withResolvers();
+  const leave = Promise.withResolvers();
+  let closing = false;
+  const old = await openTaskHistory({
+    ...scope,
+    async assertCurrent() {
+      if (closing) {
+        entered.resolve();
+        await leave.promise;
+        throw Error("old session closed");
+      }
+    },
+  });
+  const task = await old.ensureSelected();
+  await writeFile(path.join(root, "agenda.txt"), "first session");
+  const files = await captureTaskFiles(
+    root,
+    ["agenda.txt"],
+    scope.assertCurrent,
+  );
+  const id = await old.capture(task, files);
+  const fresh = await openTaskHistory(scope);
+  closing = true;
+  const pending = publishTaskFiles(old);
+  await entered.promise;
+  const resumed = publishTaskFiles(fresh);
+  leave.resolve();
+  await Promise.all([pending, resumed]);
+
+  const { checkpoints } = await fresh.bundle(task);
+  assert.deepEqual(
+    checkpoints.map((c) => c.checkpointId),
+    [id],
+  );
+  const file = checkpoints[0].manifest.entries[0];
+  assert.equal(
+    (await readTaskBlob(fresh, checkpoints[0].object, file.digest)).toString(),
+    "first session",
+  );
+});
+
 test("replay checkpoints move atomically with owner facts and survive reopening", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "bookie-replay-"));
   t.after(() => rm(root, { recursive: true, force: true }));
