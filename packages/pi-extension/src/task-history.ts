@@ -36,7 +36,10 @@ import {
 import { attestTaskEnrollment, taskEnrollment } from "./managed-vault.js";
 import { refreshDispatchProjection } from "./task-history-replay.js";
 import type { createCaptureAuthority } from "./capture-authority.js";
-import type { createDisclosureAuthority } from "./disclosure-authority.js";
+import {
+  DISCLOSURE_WITHHELD,
+  type createDisclosureAuthority,
+} from "./disclosure-authority.js";
 import type { createBookieContextFilter } from "./context-filter.js";
 import type { createManagedMemory } from "./managed-memory.js";
 
@@ -509,15 +512,16 @@ export function registerTaskHistory(
       ),
       async execute(callId, params, signal, _update, ctx) {
         try {
-          const b = await bind(ctx);
-          if (!b) throw unavailable();
           const selected = await managed.get(ctx);
-          if (!selected) throw unavailable();
+          if (!selected) throw Error(DISCLOSURE_WITHHELD);
           const ticket = await disclosure.capture(
             selected.vault.root,
             ctx,
             "canonical",
           );
+          // Obtain disclosure authority before binding or querying local task history.
+          const b = await bind(ctx);
+          if (!b) throw unavailable();
           const guard = async () => {
             await b.assertCurrent();
             await ticket.assertCurrent();
@@ -586,7 +590,10 @@ export function registerTaskHistory(
           await guard();
           filter.remember(callId, result, guard);
           return result;
-        } catch {
+        } catch (error) {
+          if (error instanceof Error && error.message === DISCLOSURE_WITHHELD)
+            throw error;
+          // eslint-disable-next-line preserve-caught-error -- Other failures can contain private session, vault or provider details.
           throw Error(
             "Task history could not be read with current access. Use /bookie-task to inspect the local selection.",
           );
