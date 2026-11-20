@@ -2112,14 +2112,12 @@ test("dashboard progress requires both capabilities and a live enrolled task bin
   assert.equal(legacy.taskId, first.taskId);
   assert.equal(legacy.lastObservation.label, "local-step-6");
   assert.ok(!("lastCheckpoint" in legacy) && !("recentProgress" in legacy));
-  await other.commands
-    .get("bookie-task")
-    .handler("new", {
-      ...other.ctx,
-      mode: "tui",
-      isIdle: () => true,
-      ui: { ...other.ctx.ui, input: async () => "Other project task" },
-    });
+  await other.commands.get("bookie-task").handler("new", {
+    ...other.ctx,
+    mode: "tui",
+    isIdle: () => true,
+    ui: { ...other.ctx.ui, input: async () => "Other project task" },
+  });
   await a.event("before_agent_start");
   assert.notEqual(scope(a).taskId, first.taskId);
   assert.deepEqual((await refresh(a)).taskHistory.recentProgress, []);
