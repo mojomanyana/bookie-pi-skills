@@ -10,7 +10,12 @@ import {
   createDiagnostic,
   DiagnosticCollector,
 } from "./vault-diagnostics.js";
-import type { ValidationLimits, VaultEntries } from "./vault-model.js";
+export type { PathTracker } from "./vault-model.js";
+import type {
+  PathTracker,
+  ValidationLimits,
+  VaultEntries,
+} from "./vault-model.js";
 
 export type BoundedReadResult =
   | {
@@ -47,12 +52,6 @@ interface PathIdentity {
 interface PathSnapshot {
   readonly identities: readonly PathIdentity[];
   readonly realPath: string;
-}
-
-declare const pathTrackerBrand: unique symbol;
-
-export interface PathTracker {
-  readonly [pathTrackerBrand]: true;
 }
 
 interface TrackedPaths {

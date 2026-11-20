@@ -1,4 +1,3 @@
-import type { PathTracker } from "./vault-filesystem.js";
 import { positiveLimit } from "./bounded-limit.js";
 import { Buffer } from "node:buffer";
 import { resolve } from "node:path";
@@ -38,7 +37,7 @@ import type {
 import { throwIfAborted } from "./vault-cancellation.js";
 import { compareText, createDiagnostic } from "./vault-diagnostics.js";
 import type { VaultDiagnostic } from "./vault-diagnostics.js";
-import type { ValidationLimits } from "./vault-model.js";
+import type { PathTracker, ValidationLimits } from "./vault-model.js";
 import {
   DEFAULT_MAX_MANIFEST_BYTES,
   DEFAULT_MAX_TOTAL_CONCEPT_BYTES,
