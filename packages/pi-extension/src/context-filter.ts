@@ -35,7 +35,9 @@ function referenceNotice(content: unknown) {
           if (
             typeof item.registrationId === "string" &&
             /^sha256:[a-f0-9]{64}$/.test(item.registrationId) &&
-            ["manifest", "final", "partial"].includes(String(item.part))
+            ["manifest", "final", "partial", "brief"].includes(
+              String(item.part),
+            )
           )
             references.push({
               kind: "producer",

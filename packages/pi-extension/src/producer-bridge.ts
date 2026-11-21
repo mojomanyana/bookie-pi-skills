@@ -24,16 +24,18 @@ export class ProducerReadError extends Error {
       | "owner-unavailable"
       | "authority"
       | "source-changed"
+      | "invalid-range"
       | "not-found"
       | "unavailable",
   ) {
     super("Producer reference unavailable.");
   }
 }
-function request(
+export function requestProducer(
   pi: ExtensionAPI,
   owner: { sessionId: string; cwd: string },
   args: Record<string, unknown>,
+  channel = EVENT,
 ): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     const requestId = randomUUID();
@@ -45,7 +47,7 @@ function request(
       }
     }, 1500);
     try {
-      pi.events?.emit?.(EVENT, {
+      pi.events?.emit?.(channel, {
         version: 1,
         requestId,
         ...owner,
@@ -60,6 +62,22 @@ function request(
             reply.requestId === requestId &&
             reply.sessionId === owner.sessionId &&
             reply.cwd === owner.cwd;
+          if (
+            identityMatches &&
+            channel === "scout:resolve:v1" &&
+            reply.ok === false
+          ) {
+            const code =
+              reply.status === "denied"
+                ? "authority"
+                : reply.status === "stale"
+                  ? "source-changed"
+                  : reply.status === "missing"
+                    ? "not-found"
+                    : "unavailable";
+            reject(new ProducerReadError(code));
+            return;
+          }
           if (!identityMatches || reply.ok !== true) {
             reject(
               new ProducerReadError(
@@ -150,7 +168,7 @@ export async function readProducerReference(
     sessionId: ctx.sessionManager.getSessionId(),
     cwd: await realpath(ctx.cwd),
   };
-  const reply = await request(pi, owner, {
+  const reply = await requestProducer(pi, owner, {
     action: "read",
     reference: nativeReference(value),
     producerInstance: value.producerInstance,
@@ -231,7 +249,7 @@ export function registerProducerBridge(
         assertAuthority: authority,
         resolveReference: async (selected) => {
           await authority();
-          const reply = await request(pi, currentOwner, {
+          const reply = await requestProducer(pi, currentOwner, {
             action: "read",
             reference: nativeReference(selected),
             producerInstance: selected.producerInstance,
@@ -274,7 +292,7 @@ export function registerProducerBridge(
         await grant.assertCurrent();
         if (epoch !== selectedEpoch || context !== ctx)
           throw Error("Capture owner changed.");
-        const result = await request(pi, currentOwner, {
+        const result = await requestProducer(pi, currentOwner, {
           action: "list",
           limit: 32,
           ...(cursor ? { cursor } : {}),
@@ -336,7 +354,7 @@ export function registerProducerBridge(
         hint.reference.owner.cwd !== currentOwner.cwd
       )
         return;
-      const reply = await request(pi, currentOwner, {
+      const reply = await requestProducer(pi, currentOwner, {
         action: "read",
         reference: hint.reference,
         authorize: grant.assertCurrent,

@@ -1,4 +1,10 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { registerCheckpointScout } from "../dist/scout-checkpoint-source.js";
+import {
+  registeredDelegate,
+  selectCheckpointEvidence,
+} from "../dist/checkpoint-evidence.js";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
 import { cp, mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
@@ -6,6 +12,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import {
   readRecallState,
+  inspectConcept,
   registerProducerReference,
   updateRecallControl,
 } from "pi-bookie-core";
@@ -114,6 +121,141 @@ async function register(f, operationId = "role:one") {
   assert.equal(result.ok, true);
   return { result, record, project };
 }
+test("saved Scout source registers without a body and reopens in a new session with current body authority", async (t) => {
+  const f = await fixture(t);
+  const evidenceText =
+    "A missing page does not invalidate the separately cited official transaction source.";
+  const digest = (value) => createHash("sha256").update(value).digest("hex");
+  const reference = {
+    version: 1,
+    producer: "pi-scout-research",
+    kind: "research-brief",
+    session: digest("session-one"),
+    sha256: digest(evidenceText),
+    bytes: Buffer.byteLength(evidenceText),
+  };
+  const reads = [];
+  let broken = false;
+  f.events.set("scout:resolve:v1", async (request) => {
+    const { requestId, sessionId, cwd, offset } = request;
+    const identity = { version: 1, requestId, sessionId, cwd };
+    assert.deepEqual(request.reference, reference);
+    if (sessionId !== "session-one") {
+      assert.equal(
+        await request.authorize?.({
+          reference,
+          destination: {
+            provider: "fixture",
+            model: "subject",
+            api: "fixture-api",
+            endpoint: digest("https://wrong.invalid/v1"),
+          },
+        }),
+        false,
+      );
+      if (
+        !(await request.authorize?.({
+          reference,
+          destination: {
+            provider: "fixture",
+            model: "subject",
+            api: "fixture-api",
+            endpoint: digest("https://fixture.invalid/v1"),
+          },
+        }))
+      ) {
+        request.reply({ ...identity, ok: false, status: "denied" });
+        return;
+      }
+    }
+    const text = broken ? "X".repeat(reference.bytes) : evidenceText;
+    const end = Math.min(reference.bytes, offset + request.maxBytes),
+      excerpt = text.slice(offset, end);
+    reads.push({ sessionId, offset, length: Buffer.byteLength(excerpt) });
+    request.reply({
+      ...identity,
+      ok: true,
+      result: {
+        ok: true,
+        status: "resolved",
+        reference,
+        offset,
+        excerpt,
+        nextOffset: end === reference.bytes ? null : end,
+        complete: offset === 0 && end === reference.bytes,
+        truncated: end < reference.bytes,
+        untrusted: true,
+        semanticApproval: false,
+      },
+      assertCurrent: async () => {},
+    });
+  });
+  const project = await inspectConcept(f.vault, {
+    path: "/projects/fixture/project.md",
+  });
+  const grant = {
+    vault: { root: f.vault },
+    project: project.source,
+    sensitivity: "public",
+    assertCurrent: async () => {},
+  };
+  const pi = {
+    events: { emit: (name, request) => f.events.get(name)?.(request) },
+  };
+  const saved = await registerCheckpointScout(
+    pi,
+    f.ctx,
+    {
+      kind: "research",
+      sessionId: "session-one",
+      callId: "scout-call-001",
+      tool: "scout_research",
+      reference,
+    },
+    grant,
+    async () => {},
+  );
+  assert.ok(saved?.registrationId);
+  assert.deepEqual(reads, [
+    { sessionId: "session-one", offset: reference.bytes, length: 0 },
+  ]);
+  f.ctx.sessionManager.getSessionId = () => "session-two";
+  await f.emit("session_start");
+  await authorizeDisclosure(f.commands, f.vault, f.ctx);
+  const args = {
+    registrationId: saved.registrationId,
+    part: "brief",
+    maxBytes: 40,
+  };
+  await assert.rejects(f.call("bookie_reference_read", args), /denied/);
+  await f.commands.get("bookie-context").handler("producer", {
+    ...f.ctx,
+    hasUI: true,
+    ui: {
+      notify() {},
+      confirm: async () => true,
+      select: async (_, choices) => choices[0],
+    },
+  });
+  const first = parsed(await f.call("bookie_reference_read", args));
+  assert.equal(first.truncated, true);
+  assert.equal(first.nextOffset, 40);
+  const last = parsed(
+    await f.call("bookie_reference_read", {
+      ...args,
+      offset: first.nextOffset,
+      maxBytes: 200,
+    }),
+  );
+  assert.equal(last.nextOffset, null);
+  assert.equal(last.complete, false);
+  assert.equal(first.excerpt + last.excerpt, evidenceText);
+  assert.equal(last.references[0].historical, true);
+  assert.equal(last.references[0].approval, false);
+  broken = true;
+  await assert.rejects(f.call("bookie_reference_read", args), /stale/);
+});
+
 function bridge(f, text = "Synthetic retained result") {
   f.events.set("pi-daddy:operation-artifacts:v1", async (request) => {
     await request.authorize?.();
@@ -139,6 +281,114 @@ function bridge(f, text = "Synthetic retained result") {
     });
   });
 }
+
+test("an Architect checkpoint follows only the matching retained execution under fresh-session permission", async (t) => {
+  const f = await fixture(t);
+  const { result, record, project } = await register(f);
+  const getSession = () => "historical-owner";
+  const toolCall = {
+    type: "toolCall",
+    name: "delegate",
+    id: "design-call",
+    arguments: { agent: "architect" },
+  };
+  const branch = [
+    { type: "message", message: { role: "user" } },
+    {
+      type: "message",
+      message: {
+        role: "assistant",
+        provider: "fixture",
+        model: "subject",
+        content: [toolCall],
+      },
+    },
+    {
+      type: "message",
+      message: {
+        role: "toolResult",
+        toolName: "delegate",
+        toolCallId: "design-call",
+        isError: false,
+        details: {
+          ok: true,
+          cleanup: { identity: { executionId: record.executionId } },
+        },
+      },
+    },
+  ];
+  const selection = selectCheckpointEvidence(
+    {
+      ...f.ctx,
+      sessionManager: { getSessionId: getSession, getBranch: () => branch },
+    },
+    { includeEvidence: ["decision"] },
+  );
+  assert.equal(selection.status, "selected");
+  const evidence = selection.sources[0];
+  const { state: controls } = await readRecallState(f.vault);
+  const ticket = {
+    scope: { project: { uid: project.uid } },
+    classes: ["public"],
+    controls,
+  };
+  const id = registeredDelegate(evidence, f.dir, ticket);
+  assert.equal(id, result.registrationId);
+  assert.equal(
+    registeredDelegate(
+      { ...evidence, executionId: "a-different-run" },
+      f.dir,
+      ticket,
+    ),
+    undefined,
+  );
+  assert.equal(
+    registeredDelegate(evidence, f.dir, {
+      ...ticket,
+      scope: { project: { uid: "different" } },
+    }),
+    undefined,
+  );
+  assert.equal(
+    registeredDelegate(evidence, f.dir, { ...ticket, classes: [] }),
+    undefined,
+  );
+  assert.equal(
+    registeredDelegate(evidence, f.dir, {
+      ...ticket,
+      controls: {
+        ...controls,
+        controls: [
+          {
+            project: ticket.scope.project,
+            target: { kind: "producer", registrationId: id },
+            disposition: "suppressed",
+          },
+        ],
+      },
+    }),
+    undefined,
+  );
+  bridge(f, "The Architect recommended a single conditional write.");
+  const query = { registrationId: id, part: "final" };
+  assert.notEqual(f.ctx.sessionManager.getSessionId(), getSession());
+  await assert.rejects(f.call("bookie_reference_read", query), /denied/);
+  await f.commands.get("bookie-context").handler("producer", {
+    ...f.ctx,
+    hasUI: true,
+    ui: {
+      notify() {},
+      confirm: async () => true,
+      select: async (_, choices) => choices[0],
+    },
+  });
+  const reopened = parsed(await f.call("bookie_reference_read", query));
+  assert.equal(
+    reopened.excerpt,
+    "The Architect recommended a single conditional write.",
+  );
+  assert.equal(reopened.references[0].registrationId, id);
+});
 
 test("no-shell context consumers retain references only and refuse stale or restored authority", async (t) => {
   const f = await fixture(t);
