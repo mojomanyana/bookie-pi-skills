@@ -689,7 +689,11 @@ export default function registerBookie(pi: ExtensionAPI): void {
   const disclosure = createDisclosureAuthority(pi, authority.bind, managed);
   registerReattachCommand(pi, managed);
   const contextFilter = createBookieContextFilter(pi);
-  registerContextConsumers(pi, disclosure, contextFilter);
+  const checkCheckpointSource = registerContextConsumers(
+    pi,
+    disclosure,
+    contextFilter,
+  );
   registerWorkMapConsumer(pi, disclosure, contextFilter);
   type CheckpointState =
     | { readonly status: "preparing" }
@@ -799,7 +803,7 @@ export default function registerBookie(pi: ExtensionAPI): void {
   };
   pi.on("session_start", resetSession);
   pi.on("session_shutdown", resetSession);
-  registerProducerBridge(pi, authority);
+  const producerBridge = registerProducerBridge(pi, authority);
   managed.install(
     async (ctx) => {
       if (!authority.canManage() || !disclosure.canManage()) return;
@@ -854,6 +858,8 @@ export default function registerBookie(pi: ExtensionAPI): void {
       disclosure,
       contextFilter,
       taskHistory.noteLink,
+      checkCheckpointSource,
+      producerBridge.captureCheckpointResult,
     ),
   );
 }

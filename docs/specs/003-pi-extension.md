@@ -274,3 +274,9 @@ Both the original choice note and its linked answer receipt expose the same veri
 ### Source-backed routine checkpoints
 
 The routine save can add bounded typed receipt metadata from selected actual calls on the active Pi branch. Automatic selection uses the current user request. Ambiguity returns candidates before mutation, and an unavailable requested category is an explicit evidence gap. An exact call ID cannot grant access or establish successful verification. Ordinary notes retain their identity and validation rules. A Scout reference can be registered with current scoped capture authority. Opening a retained brief requires separate current owner and body authority. Original source bodies remain in their stores. Identical authorized saves reuse the same checkpoint.
+
+### Delivery checkpoint recall
+
+When Principal declares a named Bookie checkpoint during the current request, a matching save records the original delivery and session identifiers. It selects eligible research, decisions and validation from that request under the current capture settings. The save verifies the canonical note and records any unavailable source. A source registration identifies an artifact. Reading its body requires current disclosure authority.
+
+An authorized exact read of that checkpoint supplies read-only Principal status arguments. A new conversation and a fresh Pi process in the same workspace and profile use the same stored identifiers. Older notes remain readable with the evidence they originally saved. Reading a checkpoint never starts a check, researcher, reviewer or delivery.

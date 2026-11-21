@@ -921,4 +921,27 @@ export function registerContextConsumers(
       }
     });
   });
+  // Reuse the ordinary body reader and its current destination policy. The
+  // checkpoint records availability only; its note never copies the excerpt.
+  return async function checkCheckpointSource(
+    ctx: ExtensionContext,
+    registrationId: string,
+    part: "final" | "brief",
+    signal?: AbortSignal,
+  ) {
+    try {
+      const checked = await resolve(
+        ctx,
+        { kind: "producer", registrationId, part },
+        16,
+        undefined,
+        signal,
+      );
+      await checked.assertCurrent();
+      return true;
+    } catch {
+      aborted(signal);
+      return false;
+    }
+  };
 }

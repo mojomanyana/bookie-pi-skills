@@ -1265,3 +1265,78 @@ test("host metadata saves one checkpoint and resume retrieves its exact current 
     /stale/,
   );
 });
+
+test("register a checkpoint's exact delegate receipt without dispatch or a prior dashboard registration", async (t) => {
+  const f = await fixture(t);
+  const { registerProducerBridge } = await import("../dist/producer-bridge.js");
+  bridge(f);
+  const transfers = [];
+  const pi = {
+    on() {},
+    events: {
+      on() {},
+      emit(name, request) {
+        transfers.push(request.action);
+        f.events.get(name)(request);
+      },
+    },
+  };
+  const capture = registerProducerBridge(pi, { setReferenceSync() {} });
+  const project = await inspectConcept(f.vault, {
+    path: "/projects/fixture/project.md",
+  });
+  const grant = {
+    vault: { root: f.vault },
+    project: {
+      path: project.source.path,
+      sourceHash: project.source.sourceHash,
+    },
+    sensitivity: "public",
+    assertCurrent: async () => {},
+  };
+  const executionId = "exec-checkpoint",
+    toolCallId = "architect-call";
+  const artifact = {
+    version: 1,
+    producer: "pi-daddy",
+    owner: { sessionId: "session-one", cwd: f.dir },
+    operationId: "role:checkpoint",
+    executionId,
+    manifest: {
+      path: "/private/result.json",
+      sha256: "b".repeat(64),
+      bytes: 222,
+    },
+  };
+  f.branch.push({
+    type: "message",
+    message: {
+      role: "toolResult",
+      toolName: "delegate",
+      toolCallId,
+      details: { operation: { artifact } },
+    },
+  });
+  await capture.captureCheckpointResult(
+    f.ctx,
+    grant,
+    toolCallId,
+    "unrelated",
+    async () => {},
+  );
+  assert.deepEqual(transfers, []);
+  await capture.captureCheckpointResult(
+    f.ctx,
+    grant,
+    toolCallId,
+    executionId,
+    async () => {},
+  );
+  assert.ok(transfers.length && transfers.every((action) => action === "read"));
+  const { state } = await readRecallState(f.vault);
+  assert.equal(
+    state.registrations.filter((r) => r.record.executionId === executionId)
+      .length,
+    1,
+  );
+});

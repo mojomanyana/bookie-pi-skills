@@ -4,6 +4,7 @@ import {
   historyChoice,
   projectChoiceMetadata,
 } from "./choice-answer.js";
+import { loadConcept } from "pi-bookie-core";
 import type {
   MutationDiagnostic,
   PrepareCheckpointFailureReason,
@@ -110,6 +111,33 @@ export function guardBookieTool<P extends TSchema, D, S>(
                 ].includes(key),
             ),
           );
+          if (
+            raw.type === "Activity" &&
+            raw.handling === "ordinary" &&
+            !raw.sourceTruncated &&
+            typeof raw.sourceText === "string" &&
+            object(raw.source) &&
+            typeof raw.source.path === "string"
+          ) {
+            const parsed = loadConcept(Buffer.from(raw.sourceText), {
+              file: raw.source.path,
+            });
+            const metadata = parsed.ok && parsed.concept.frontmatter.bookie;
+            const locator = object(metadata) && metadata.delivery_checkpoint;
+            if (
+              object(locator) &&
+              typeof locator.sourceSessionId === "string" &&
+              /^[a-z0-9-]{8,80}$/iu.test(locator.sourceSessionId) &&
+              typeof locator.deliveryId === "string" &&
+              /^principal-delivery:[a-f0-9]{32}$/u.test(locator.deliveryId)
+            ) {
+              filtered.deliveryStatus = {
+                action: "status",
+                sourceSessionId: locator.sourceSessionId,
+                deliveryId: locator.deliveryId,
+              };
+            }
+          }
           const ref = historyChoice(ticket, raw);
           if (ref) {
             Object.assign(filtered, await projectChoiceMetadata(ticket, ref));
