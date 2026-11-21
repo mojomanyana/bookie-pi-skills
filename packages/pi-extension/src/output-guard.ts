@@ -319,10 +319,10 @@ export function checkpointPreparationFailureMessage(
 }
 
 export const REMEMBER_INPUT_ERROR =
-  "Bookie rejected this input before saving: title must be 1–120 characters; summary 1–2000; nextAction and openChoice, when supplied, must be non-sensitive single lines of 1–240 characters. Options must be distinct with a supported recommendation, and deliveryUrl must be a safe public URL. Correct the input and retry; this validation failure saved no note.";
+  "Bookie rejected this input before saving: title must be 1–120 characters; summary 1–2000 (up to 4000 with includeEvidence or evidenceCallIds); nextAction and openChoice, when supplied, must be non-sensitive single lines of 1–240 characters. Options must be distinct with a supported recommendation, and deliveryUrl must be a safe public URL. Correct the input and retry; this validation failure saved no note.";
 
 export const REMEMBER_SCHEMA_ERROR =
-  "Bookie tool input validation failed: title must be 1–120 characters; summary 1–2000; nextAction and openChoice, when supplied, must be single lines of 1–240 characters. Use only the documented fields and types. Correct the input and retry the save; do not repeat completed project work.";
+  "Bookie tool input validation failed: title must be 1–120 characters; summary 1–2000 (up to 4000 with includeEvidence or evidenceCallIds); nextAction and openChoice, when supplied, must be single lines of 1–240 characters. Use only the documented fields and types. Correct the input and retry the save; do not repeat completed project work.";
 
 const SAFE_ERRORS = new Set([
   REMEMBER_INPUT_ERROR,

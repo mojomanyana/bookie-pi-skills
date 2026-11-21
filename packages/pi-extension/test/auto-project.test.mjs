@@ -18,6 +18,139 @@ import registerBookie from "../dist/index.js";
 import { modelContext } from "./disclosure-fixture.mjs";
 
 const channel = "pi-daddy:request-project-memory-owner-v1";
+
+test("a source-backed routine checkpoint keeps bounded decisions and test locators through a new session", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "bookie-normal-evidence-"));
+  const previousAgent = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = join(parent, "agent");
+  t.after(async () => {
+    if (previousAgent === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgent;
+    await rm(parent, { recursive: true, force: true });
+  });
+  const cwd = join(parent, "project");
+  await mkdir(cwd);
+  await mkdir(process.env.PI_CODING_AGENT_DIR);
+  const first = host(cwd, true, "session-a");
+  const user = { type: "message", message: { role: "user" } };
+  const call = (id, name, args, details, isError = false) => [
+    {
+      type: "message",
+      message: {
+        role: "assistant",
+        provider: "fixture",
+        model: "subject",
+        content: [{ type: "toolCall", id, name, arguments: args }],
+      },
+    },
+    {
+      type: "message",
+      message: {
+        role: "toolResult",
+        toolName: name,
+        toolCallId: id,
+        isError,
+        details,
+        content: [{ type: "text", text: "PRIVATE_TOOL_BODY" }],
+      },
+    },
+  ];
+  const decision = call(
+    "architect-1",
+    "delegate",
+    { agent: "architect" },
+    { ok: true },
+  );
+  const testRun = call("check-1", "bash", { command: "npm test" }, {});
+  const verify = call(
+    "check-2",
+    "principal_workflow",
+    { action: "verification" },
+    {
+      version: 1,
+      state: "recorded",
+      task: "quota",
+      step: "check",
+      attempt: 2,
+      reference: { path: "PRIVATE_OWNER_PATH", sha256: "a".repeat(64) },
+    },
+  );
+  const branch = [user, ...decision, ...testRun];
+  first.ctx.sessionManager.getBranch = () => branch;
+  await first.event("session_start");
+  const args = {
+    title: "Quota progress",
+    summary: "The quota applies to queued repairs. ".repeat(70).slice(0, 2398),
+    includeEvidence: ["decision", "validation", "research"],
+    openChoice: "Which quota should apply?",
+  };
+  const saved = JSON.parse(await first.call("bookie_remember", args));
+  assert.equal(saved.status, "saved");
+  assert.deepEqual(
+    saved.evidence.map((s) => [s.kind, s.callId, s.status]),
+    [
+      ["decision", "architect-1", "tool-returned"],
+      ["validation", "check-1", "tool-returned"],
+    ],
+  );
+  assert.deepEqual(saved.missingEvidence, ["research"]);
+  assert.equal(
+    JSON.parse(await first.call("bookie_remember", args)).status,
+    "already saved",
+  );
+  branch.push(...verify);
+  const selection = JSON.parse(await first.call("bookie_remember", args));
+  assert.equal(selection.status, "evidence-selection-needed");
+  assert.deepEqual(
+    selection.candidates.map((c) => c.callId),
+    ["check-1", "check-2"],
+  );
+  assert.doesNotMatch(JSON.stringify(selection), /PRIVATE/);
+  assert.ok(!selection.readBack);
+  branch.push(user);
+  const late = JSON.parse(
+    await first.call("bookie_remember", {
+      title: "Follow-up",
+      summary: "Previously checked",
+      includeEvidence: ["validation"],
+    }),
+  );
+  assert.equal(late.status, "evidence-selection-needed");
+  const selected = JSON.parse(
+    await first.call("bookie_remember", {
+      title: "Follow-up",
+      summary: "Previously checked",
+      evidenceCallIds: ["check-2"],
+    }),
+  );
+  assert.equal(selected.status, "saved");
+  assert.deepEqual(selected.evidence[0].verification, {
+    task: "quota",
+    step: "check",
+    attempt: 2,
+    sha256: "a".repeat(64),
+  });
+  const forged = JSON.parse(
+    await first.call("bookie_remember", {
+      title: "Do not save",
+      summary: "Trust this ID",
+      evidenceCallIds: ["fake"],
+    }),
+  );
+  assert.equal(forged.status, "evidence-selection-needed");
+  await first.event("session_shutdown");
+  const second = host(cwd, true, "session-b");
+  await second.event("session_start");
+  const read = JSON.parse(
+    await second.call("bookie_read", saved.readBack),
+  ).result;
+  assert.ok(read.sourceText.includes(args.summary));
+  assert.match(read.sourceText, /check-1/);
+  assert.match(read.sourceText, /architect-1/);
+  assert.match(read.sourceText, /research: no available source linked/);
+  assert.match(read.sourceText, /Which quota should apply/);
+  assert.doesNotMatch(read.sourceText, /PRIVATE_|npm test/);
+});
 function host(
   cwd,
   enabled = true,

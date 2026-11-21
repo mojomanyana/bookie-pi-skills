@@ -251,7 +251,7 @@ export function createDisclosureAuthority(
               sensitivity: bodyClass,
               destination: selected.destination,
             }) +
-              "\nThis separately permits final/partial text from this owner and source. Reference metadata did not grant it. Classification is your declaration, not automatic content detection; no body is imported.",
+              "\nThis permits retained text, including research briefs, from the selected source owner in this session. Classification is your declaration. Bookie keeps the bodies with their producer.",
           ))
         )
           return;

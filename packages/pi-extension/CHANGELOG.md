@@ -1,5 +1,11 @@
 # pi-bookie release notes
 
+## [0.10.0] — 2026-11-21
+
+- Save one project checkpoint with its outcome, open choice and selected evidence. Evidence-backed summaries support up to 4,000 characters. Ordinary saves keep their 2,000-character limit.
+- Follow retained Architect decisions, Principal verification receipts and paged Scout briefs after starting a new Pi session. Recall checks current access and identifies missing sources or ambiguous matches.
+- Uses the existing pi-bookie-core 0.4.0. Earlier project notes remain readable.
+
 ## [0.9.0] — 2026-11-20
 
 - Read and resume a selected local task, retain observations, track selected working files in separate Git history, and move historical evidence between workspaces. Requires pi-bookie-core 0.4.0.

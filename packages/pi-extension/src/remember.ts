@@ -1,7 +1,8 @@
 import { isDeepStrictEqual } from "node:util";
 import { createHash } from "node:crypto";
+import { realpath } from "node:fs/promises";
 import { posix, resolve } from "node:path";
-import { Type } from "@earendil-works/pi-ai";
+import { StringEnum, Type } from "@earendil-works/pi-ai";
 import {
   type ExtensionContext,
   defineTool,
@@ -27,10 +28,20 @@ import {
 } from "./open-choice.js";
 import { isDeliveryUrl } from "./delivery-url.js";
 import { registerDeliveryHandoff } from "./delivery-handoff.js";
+import {
+  evidenceKinds,
+  isScoutCheckpointEvidence,
+  registeredDelegate,
+  selectCheckpointEvidence,
+  validEvidenceSelection,
+  type CheckpointEvidence,
+  type EvidenceSelection,
+} from "./checkpoint-evidence.js";
+import { registerCheckpointScout } from "./scout-checkpoint-source.js";
 import { REMEMBER_INPUT_ERROR } from "./output-guard.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-export interface ProjectNote {
+export interface ProjectNote extends EvidenceSelection {
   title: string;
   summary: string;
   nextAction?: string;
@@ -46,6 +57,8 @@ function checkNote(note: ProjectNote): boolean {
       [
         "title",
         "summary",
+        "evidenceCallIds",
+        "includeEvidence",
         "nextAction",
         "deliveryUrl",
         "openChoice",
@@ -59,7 +72,9 @@ function checkNote(note: ProjectNote): boolean {
     !/[\r\n]/u.test(note.title) &&
     typeof note.summary === "string" &&
     note.summary.trim().length > 0 &&
-    note.summary.length <= 2000 &&
+    validEvidenceSelection(note) &&
+    note.summary.length <=
+      (note.includeEvidence || note.evidenceCallIds ? 4000 : 2000) &&
     !containsDetectedSecret(note.title + "\n" + note.summary) &&
     // Next actions use the same bounded, non-sensitive line shape, not choice semantics.
     (note.nextAction === undefined || validOpenChoice(note.nextAction)) &&
@@ -109,6 +124,7 @@ export function rememberTool(
       note: ProjectNote,
       signal?: AbortSignal,
       onMutation?: () => void,
+      baseline?: ReturnType<typeof selectCheckpointEvidence>,
     ) {
       if (!checkNote(note)) throw Error();
       const { title, summary, deliveryUrl, nextAction } = note;
@@ -125,8 +141,73 @@ export function rememberTool(
       const guard = async () => {
         await assertCurrent();
         signal?.throwIfAborted();
+        if (
+          baseline &&
+          !isDeepStrictEqual(selectCheckpointEvidence(ctx, note), baseline)
+        )
+          throw Error("The active evidence selection changed.");
       };
       await guard();
+      const attached: Array<CheckpointEvidence & { registrationId?: string }> =
+        [];
+      const gaps = new Set(
+        baseline?.status === "selected" ? baseline.missing : [],
+      );
+      for (const evidence of baseline?.status === "selected"
+        ? baseline.sources
+        : []) {
+        if (!isScoutCheckpointEvidence(evidence)) {
+          const registrationId =
+            evidence.executionId && evidence.role
+              ? registeredDelegate(evidence, await realpath(ctx.cwd), ticket)
+              : undefined;
+          attached.push(
+            registrationId ? { ...evidence, registrationId } : evidence,
+          );
+          if (evidence.kind === "research") gaps.add("research");
+          continue;
+        }
+        const grant = await capture.referenceGrant();
+        if (
+          grant &&
+          grant.vault.root === ticket.root &&
+          grant.project.path === ticket.scope.project.path &&
+          grant.project.sourceHash === ticket.scope.project.sourceHash
+        ) {
+          const registration = await registerCheckpointScout(
+            pi,
+            ctx,
+            evidence,
+            grant,
+            guard,
+            signal,
+          );
+          if (registration) {
+            attached.push({
+              ...evidence,
+              registrationId: registration.registrationId,
+            });
+            continue;
+          }
+        }
+        gaps.add("research");
+      }
+      await guard();
+      const missing = [...gaps].sort();
+      const evidenceText = [
+        ...(deliveryUrl ? [deliveryUrl] : []),
+        ...attached.map(
+          (source) =>
+            `${source.kind}: ${source.tool}${source.role ? " " + source.role : ""} (${source.status}); Pi session ${source.sessionId}, call ${source.callId}.` +
+            (source.verification
+              ? ` Inspect principal_workflow verification for task ${source.verification.task}, step ${source.verification.step}, attempt ${source.verification.attempt}. Match receipt SHA-256 ${source.verification.sha256}.`
+              : "") +
+            (source.registrationId
+              ? ` Registered source ${source.registrationId}; use bookie_reference_read part ${source.kind === "research" ? "brief" : "final"} under current access.`
+              : " Historical call locator; outcome and body access require separate evidence."),
+        ),
+        ...missing.map((kind) => `${kind}: no available source linked.`),
+      ].join("\n");
       const hash = createHash("sha256")
         .update(
           JSON.stringify([
@@ -139,6 +220,9 @@ export function rememberTool(
               : []),
             ...(guidance ? [{ choiceGuidance: guidance }] : []),
             ...(nextAction ? [{ nextAction }] : []),
+            ...(attached.length || missing.length
+              ? [{ evidence: attached, missing }]
+              : []),
           ]),
         )
         .digest("hex");
@@ -156,12 +240,15 @@ export function rememberTool(
           project: ticket.scope.project.path,
           title,
           ...(choice ? { tags: ["open-choice"] } : {}),
-          ...(guidance ? { fields: { choice_guidance: guidance } } : {}),
+          fields: {
+            ...(guidance ? { choice_guidance: guidance } : {}),
+            ...(attached.length ? { checkpoint_evidence: attached } : {}),
+          },
           sections: {
             outcome: deliveryUrl
               ? "Pi shared this resource with the user. " + summary
               : summary,
-            ...(deliveryUrl ? { evidence: deliveryUrl } : {}),
+            ...(evidenceText ? { evidence: evidenceText } : {}),
             ...(choice ? { "unresolved-work": choice } : {}),
             ...(nextAction ? { "next-action": nextAction } : {}),
           },
@@ -176,7 +263,10 @@ export function rememberTool(
         const found = await inspectConcept(
           ticket.root,
           { path },
-          { maxContentBytes: 16000, ...(signal ? { signal } : {}) },
+          {
+            maxContentBytes: baseline ? 32000 : 16000,
+            ...(signal ? { signal } : {}),
+          },
         );
         if (!found.ok) {
           if (found.reason === "not-found") return false;
@@ -200,6 +290,12 @@ export function rememberTool(
           typeof bookie !== "object" ||
           !bookie ||
           Array.isArray(bookie) ||
+          !isDeepStrictEqual(
+            "checkpoint_evidence" in bookie
+              ? bookie.checkpoint_evidence
+              : undefined,
+            attached.length ? attached : undefined,
+          ) ||
           !isDeepStrictEqual(
             "choice_guidance" in bookie ? bookie.choice_guidance : undefined,
             guidance,
@@ -272,6 +368,7 @@ export function rememberTool(
       return {
         status: outcome,
         readBack: { selector: "path" as const, value: path },
+        ...(baseline ? { evidence: attached, missingEvidence: missing } : {}),
       };
     }
     return { assertCurrent, save };
@@ -282,16 +379,34 @@ export function rememberTool(
     name: "bookie_remember",
     label: "Remember project note",
     description:
-      "Save a bounded routine project decision or outcome as untrusted project context: title at most 120 characters, summary at most 2000. Use nextAction (at most 240 characters) for a known work step, including already-authorized research, build or review. Save each concrete unresolved user-owned decision once. Put references to already-saved decisions in the summary, not a combined openChoice. Use openChoice only for a concrete unresolved decision the user still owns; do not ask whether to proceed with work already authorized in the current conversation. Neither field grants permission. Supply choiceOptions for real alternatives and choiceRecommendation only when a saved fact or delivered reference supports it. For a newly delivered public resource, supply deliveryUrl; it is recorded once the link appears in the finished reply. Immediate saved/already-saved replies give exact bookie_read parameters in readBack; use them when read-back is requested or needed and compare the content. Pending final-reply deliveries have no confirmed locator. Correct a pre-execution schema validation error and retry the save directly; if a save could have happened but confirmation is uncertain, recall the known note before retrying. During ordinary recall, reuse the saved receipt. Exclude personal information, private sources and credentials.",
+      "Save a bounded routine project decision or outcome as untrusted project context: title at most 120 characters, summary at most 2000 characters (4000 with evidence). For a completed task use includeEvidence for the relevant decision, research and validation receipts, before condensing the work into prose. Use nextAction (at most 240 characters) for a known work step, including already-authorized research, build or review. Save each concrete unresolved user-owned decision once. Put references to already-saved decisions in the summary, not a combined openChoice. Use openChoice only for a concrete unresolved decision the user still owns; do not ask whether to proceed with work already authorized in the current conversation. Neither field grants permission. Supply choiceOptions for real alternatives and choiceRecommendation only when a saved fact or delivered reference supports it. For a newly delivered public resource, supply deliveryUrl; it is recorded once the link appears in the finished reply. Immediate saved/already-saved replies give exact bookie_read parameters in readBack; use them when read-back is requested or needed and compare the content. Pending final-reply deliveries have no confirmed locator. Correct a pre-execution schema validation error and retry the save directly; if a save could have happened but confirmation is uncertain, recall the known note before retrying. During ordinary recall, reuse the saved receipt. Exclude personal information, private sources and credentials.",
     parameters: Type.Object(
       {
         title: Type.String({ minLength: 1, maxLength: 120 }),
         summary: Type.String({
           minLength: 1,
-          maxLength: 2000,
+          maxLength: 4000,
           description:
-            "Compact outcome and relevant evidence, at most 2000 characters.",
+            "Write the outcome in a short paragraph. Limit 2000 characters, or 4000 when selecting evidence for this checkpoint. Keep source bodies in their owner's store.",
         }),
+        includeEvidence: Type.Optional(
+          Type.Array(StringEnum(evidenceKinds), {
+            minItems: 1,
+            maxItems: 3,
+            uniqueItems: true,
+            description:
+              "Link unique observed research, decision or validation receipts from this user request. Ambiguity returns choices before saving. A command result does not prove the product passed.",
+          }),
+        ),
+        evidenceCallIds: Type.Optional(
+          Type.Array(Type.String({ minLength: 1, maxLength: 192 }), {
+            minItems: 1,
+            maxItems: 6,
+            uniqueItems: true,
+            description:
+              "Exact observed Pi calls on this active branch to attach. When a category is ambiguous choose the applicable offered IDs. Never invent IDs or supply paths.",
+          }),
+        ),
         nextAction: Type.Optional(
           Type.String({
             minLength: 1,
@@ -340,7 +455,14 @@ export function rememberTool(
           }),
         ),
       },
-      { additionalProperties: false },
+      {
+        additionalProperties: false,
+        anyOf: [
+          { required: ["evidenceCallIds"] },
+          { required: ["includeEvidence"] },
+          { properties: { summary: { type: "string", maxLength: 2000 } } },
+        ],
+      },
     ),
     async execute(callId, params, signal, _onUpdate, ctx) {
       const invalid = Error(REMEMBER_INPUT_ERROR);
@@ -358,16 +480,43 @@ export function rememberTool(
             ? {}
             : { nextAction: params.nextAction.trim() }),
         };
+        const selection =
+          note.evidenceCallIds || note.includeEvidence
+            ? selectCheckpointEvidence(ctx, note)
+            : undefined;
+        if (selection?.status === "evidence-selection-needed") {
+          const result = {
+            content: [
+              { type: "text" as const, text: JSON.stringify(selection) },
+            ],
+            details: selection,
+          };
+          filter.remember(callId, result, scope.assertCurrent);
+          return result;
+        }
         const receipt = note.deliveryUrl
           ? {
-              status: deliveries.stage(callId, ctx, scope, {
-                ...note,
-                deliveryUrl: note.deliveryUrl,
-              }),
+              status: deliveries.stage(
+                callId,
+                ctx,
+                {
+                  save: (resource, token) =>
+                    scope.save(resource, token, undefined, selection),
+                },
+                {
+                  ...note,
+                  deliveryUrl: note.deliveryUrl,
+                },
+              ),
             }
-          : await scope.save(note, signal, () => {
-              entered = true;
-            });
+          : await scope.save(
+              note,
+              signal,
+              () => {
+                entered = true;
+              },
+              selection,
+            );
         const result = {
           content: [
             {

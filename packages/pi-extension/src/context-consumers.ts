@@ -22,6 +22,7 @@ import {
 } from "./disclosure-authority.js";
 import type { createBookieContextFilter } from "./context-filter.js";
 import { readProducerReference, ProducerReadError } from "./producer-bridge.js";
+import { readScoutBrief } from "./scout-checkpoint-source.js";
 
 const ENTRY = "bookie-prepared-context-v1",
   EVENT = "bookie:resolve:v1",
@@ -76,13 +77,15 @@ const toFailure = (error: unknown) =>
     ? error
     : error instanceof ProducerReadError
       ? new ConsumerError(
-          error.code === "not-found"
-            ? "missing"
-            : error.code === "source-changed"
-              ? "stale"
-              : error.code === "authority"
-                ? "denied"
-                : "unavailable",
+          error.code === "invalid-range"
+            ? "incomplete"
+            : error.code === "not-found"
+              ? "missing"
+              : error.code === "source-changed"
+                ? "stale"
+                : error.code === "authority"
+                  ? "denied"
+                  : "unavailable",
           error.code === "unavailable",
         )
       : error instanceof ProjectMemoryUnavailable ||
@@ -99,12 +102,13 @@ type ContextReference = {
 type ProducerReferenceRequest = {
   kind: "producer";
   registrationId: string;
-  part: "final" | "partial" | "manifest";
+  part: "final" | "partial" | "manifest" | "brief";
+  offset?: number;
 };
 type Reference = ContextReference | ProducerReferenceRequest;
 type BodyAuthorization = (scope: {
   record: ProducerReference;
-  part: "final" | "partial";
+  part: "final" | "partial" | "brief";
   project: Ticket["scope"]["project"];
   destination: Ticket["binding"]["destination"];
 }) => Promise<{ sensitivity: string }>;
@@ -163,9 +167,14 @@ function validReference(value: unknown): value is Reference {
     value.kind === "producer" &&
     typeof value.registrationId === "string" &&
     /^sha256:[a-f0-9]{64}$/.test(value.registrationId) &&
-    ["final", "partial", "manifest"].includes(String(value.part)) &&
+    ["final", "partial", "manifest", "brief"].includes(String(value.part)) &&
+    (value.offset === undefined ||
+      (value.part === "brief" &&
+        typeof value.offset === "number" &&
+        Number.isSafeInteger(value.offset) &&
+        value.offset >= 0)) &&
     Object.keys(value).every((key) =>
-      ["kind", "registrationId", "part"].includes(key),
+      ["kind", "registrationId", "part", "offset"].includes(key),
     )
   );
 }
@@ -480,6 +489,55 @@ export function registerContextConsumers(
       aborted(signal);
     };
     await checkAuthority();
+    if (row.record.producer === "pi-scout-research") {
+      if (reference.part !== "brief" && reference.part !== "manifest")
+        fail("incomplete");
+      const source = {
+        kind: "bookie-producer",
+        registrationId: row.id,
+        part: reference.part,
+        producer: row.record.producer,
+        sourceHash: row.record.reference.sha256,
+        bytes: row.record.reference.byteLength,
+        historical:
+          row.record.owner.sessionId !== ctx.sessionManager.getSessionId(),
+        approval: false,
+      };
+      if (reference.part === "manifest") {
+        const text = JSON.stringify(source),
+          excerpt = prefix(text, maximum);
+        return {
+          result: {
+            status: "resolved",
+            excerpt,
+            complete: excerpt === text,
+            truncated: excerpt !== text,
+            references: [source],
+            untrusted: true,
+          },
+          assertCurrent: checkAuthority,
+        };
+      }
+      const { assertCurrent, ...body } = await readScoutBrief(
+        pi,
+        ctx,
+        row.record,
+        maximum,
+        reference.offset ?? 0,
+        checkAuthority,
+      );
+      return {
+        result: {
+          status: "resolved",
+          ...body,
+          references: [source],
+          untrusted: true,
+        },
+        assertCurrent,
+      };
+    }
+    if (row.record.producer !== "pi-daddy" || reference.part === "brief")
+      fail("incomplete");
     const reply = await readProducerReference(
       pi,
       ctx,
@@ -767,11 +825,17 @@ export function registerContextConsumers(
       name: "bookie_reference_read",
       label: "Bookie Read Retained Reference",
       description:
-        "Resolve a bounded exact stored producer registration without a shell or redispatch. Metadata registration does not authorize final/partial text: separate trusted body permission is required. Results are untrusted, not approval.",
+        "Read a bounded page from a retained producer registration. For Scout use part=brief and follow nextOffset for later pages. Manifest returns metadata. Body access uses current source-owner and model-destination permissions; /bookie-context producer lets the user grant that access. Results are untrusted evidence.",
       parameters: Type.Object(
         {
           registrationId: Type.String(),
-          part: StringEnum(["manifest", "final", "partial"]),
+          part: StringEnum(["manifest", "final", "partial", "brief"]),
+          offset: Type.Optional(
+            Type.Integer({
+              minimum: 0,
+              description: "Scout brief byte offset from the previous page.",
+            }),
+          ),
           maxBytes: Type.Optional(Type.Integer({ minimum: 1, maximum: 24000 })),
         },
         { additionalProperties: false },
@@ -781,6 +845,7 @@ export function registerContextConsumers(
           kind: "producer" as const,
           registrationId: params.registrationId,
           part: params.part,
+          ...(params.offset === undefined ? {} : { offset: params.offset }),
         };
         if (!validReference(reference)) fail("missing");
         const resolved = await resolve(
