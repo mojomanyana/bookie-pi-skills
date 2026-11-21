@@ -160,7 +160,7 @@ export function rememberTool(
               selectCheckpointEvidence(
                 ctx,
                 note,
-                !!delivery && !note.includeEvidence && !note.evidenceCallIds,
+                !!delivery && (!note.evidenceCallIds || !!note.includeEvidence),
               ),
               baseline,
             ))
@@ -515,7 +515,7 @@ export function rememberTool(
             maxItems: 6,
             uniqueItems: true,
             description:
-              "Exact observed Pi calls on this active branch to attach. When a category is ambiguous choose the applicable offered IDs. Never invent IDs or supply paths.",
+              "Attach exact observed Pi call IDs. A unique settled delegate operation ID from this request can also identify its call. For a narrower selection, supply just the applicable IDs.",
           }),
         ),
         nextAction: Type.Optional(
@@ -597,7 +597,7 @@ export function rememberTool(
             ? selectCheckpointEvidence(
                 ctx,
                 note,
-                !!delivery && !note.includeEvidence && !note.evidenceCallIds,
+                !!delivery && (!note.evidenceCallIds || !!note.includeEvidence),
               )
             : undefined;
         if (selection?.status === "evidence-selection-needed") {

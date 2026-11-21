@@ -1,5 +1,9 @@
 # pi-bookie release notes
 
+## [0.11.1] — 2026-11-21
+
+- A checkpoint can identify a single active delivery and retain its observed sources even when the delivery omitted a named checkpoint. Older notes that name one delivery can supply a read-only lookup.
+
 ## [0.11.0] — 2026-11-21
 
 - Named Principal checkpoints now record the delivery and observed source references. An exact read returns the arguments for looking up that delivery after a new session or a fresh launch.

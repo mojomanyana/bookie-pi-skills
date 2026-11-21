@@ -180,7 +180,7 @@ function locator(
   if (tool === "bash" && record(args) && typeof args.command === "string") {
     // A recognized test command is discoverable. Its receipt never grants outcome credit.
     const testCommand =
-      /(?:^|[;&|\n])\s*(?:npm\s+(?:run\s+)?test|node\s+--test|pytest|cargo\s+test|go\s+test|dotnet\s+test)(?:\s|$|[;&|])/u;
+      /(?:^|[;&|\n])\s*(?:npm\s+(?:run\s+)?test|node\s+--test|python(?:3)?\s+(?:-m\s+(?:unittest|pytest)|(?:[\w./-]+\/)?test_[\w.-]+\.py)|pytest|cargo\s+test|go\s+test|dotnet\s+test)(?:\s|$|[;&|])/u;
     return {
       ...base,
       kind: testCommand.test(args.command) ? "validation" : "command",
@@ -277,6 +277,7 @@ export function selectCheckpointEvidence(
   const calls = new Map<string, { name: string; args: unknown }>();
   const ownerRefs: unknown[] = [];
   const candidates: CheckpointEvidence[] = [];
+  const operations = new Map<CheckpointEvidence, string>();
   let current: CheckpointEvidence[] = [];
   let previous: CheckpointEvidence[] = [];
   // Automatic matches use the current request only. The immediately preceding
@@ -321,24 +322,37 @@ export function selectCheckpointEvidence(
       if (observed) {
         candidates.push(observed);
         current.push(observed);
+        if (
+          observed.role &&
+          record(m.details) &&
+          record(m.details.operation) &&
+          m.details.operation.state === "settled" &&
+          id(m.details.operation.operationId)
+        ) {
+          operations.set(observed, m.details.operation.operationId);
+        }
       }
     }
   }
   const sources: CheckpointEvidence[] = [];
   const missing: EvidenceKind[] = [];
   for (const callId of exact) {
-    const matches = candidates.filter((c) => c.callId === callId);
+    const matches = candidates.filter(
+      (c) =>
+        c.callId === callId ||
+        (current.includes(c) && operations.get(c) === callId),
+    );
     if (matches.length !== 1)
       return ambiguous(
         "A selected call has no unique eligible result on this active branch.",
       );
-    sources.push(matches[0]!);
+    if (!sources.includes(matches[0]!)) sources.push(matches[0]!);
   }
   for (const kind of requested) {
-    if (sources.some((s) => s.kind === kind)) continue;
+    if (!automatic && sources.some((s) => s.kind === kind)) continue;
     const matches = current.filter((c) => c.kind === kind);
     if (automatic) {
-      sources.push(...matches);
+      sources.push(...matches.filter((c) => !sources.includes(c)));
       if (!matches.length) missing.push(kind);
       continue;
     }
@@ -373,11 +387,12 @@ export function deliveryForCheckpoint(ctx: ExtensionContext, title: string) {
     (e) => e.type === "message" && e.message.role === "user",
   );
   if (start < 0) return;
-  const entry = branch
+  const rows = branch
     .slice(start + 1)
-    .findLast(
+    .filter(
       (e) => e.type === "custom" && e.customType === "principal-delivery-v1",
     );
+  const entry = rows.at(-1);
   if (entry?.type !== "custom" || !record(entry.data)) return;
   const row = entry.data;
   if (
@@ -390,10 +405,35 @@ export function deliveryForCheckpoint(ctx: ExtensionContext, title: string) {
     typeof row.deliveryId !== "string" ||
     !/^principal-delivery:[a-f0-9]{32}$/u.test(row.deliveryId) ||
     !Array.isArray(row.criteria) ||
-    !row.criteria.some(
-      (c) => record(c) && c.kind === "checkpoint" && c.title === title,
-    )
+    !row.criteria.length
+  )
+    return;
+  const named = row.criteria.filter(
+    (c) => record(c) && c.kind === "checkpoint",
+  );
+  if (
+    named.length
+      ? !named.some((c) => c.title === title)
+      : rows.some(
+          (e) =>
+            e.type !== "custom" ||
+            !record(e.data) ||
+            e.data.deliveryId !== row.deliveryId,
+        )
   )
     return;
   return { sourceSessionId: row.sessionId, deliveryId: row.deliveryId };
+}
+
+// Older activity notes can name their original delivery in prose. This is
+// a read-only hint; Principal verifies the owner, task and active branch.
+export function legacyDeliveryStatus(generated: unknown, body: string) {
+  if (!record(generated) || typeof generated.by !== "string") return;
+  const sourceSessionId = /^process:pi:([a-z0-9-]{8,80})$/iu.exec(
+    generated.by,
+  )?.[1];
+  const ids = new Set(body.match(/\bprincipal-delivery:[a-f0-9]{32}\b/gu));
+  if (sourceSessionId && ids.size === 1) {
+    return { sourceSessionId, deliveryId: [...ids][0]! };
+  }
 }
