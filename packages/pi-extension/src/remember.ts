@@ -29,6 +29,7 @@ import {
 import { isDeliveryUrl } from "./delivery-url.js";
 import { registerDeliveryHandoff } from "./delivery-handoff.js";
 import {
+  deliveryForCheckpoint,
   evidenceKinds,
   isScoutCheckpointEvidence,
   registeredDelegate,
@@ -37,6 +38,7 @@ import {
   type CheckpointEvidence,
   type EvidenceSelection,
 } from "./checkpoint-evidence.js";
+import type { registerProducerBridge } from "./producer-bridge.js";
 import { registerCheckpointScout } from "./scout-checkpoint-source.js";
 import { REMEMBER_INPUT_ERROR } from "./output-guard.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -101,6 +103,15 @@ export function rememberTool(
   noteLink?: (
     ctx: ExtensionContext,
   ) => ((path: string, digest: string) => Promise<void>) | undefined,
+  checkCheckpointSource?: (
+    ctx: ExtensionContext,
+    id: string,
+    part: "final" | "brief",
+    signal?: AbortSignal,
+  ) => Promise<boolean>,
+  captureResult?: ReturnType<
+    typeof registerProducerBridge
+  >["captureCheckpointResult"],
 ) {
   async function bind(ctx: ExtensionContext) {
     const selected = await managed.get(ctx);
@@ -125,6 +136,7 @@ export function rememberTool(
       signal?: AbortSignal,
       onMutation?: () => void,
       baseline?: ReturnType<typeof selectCheckpointEvidence>,
+      delivery?: ReturnType<typeof deliveryForCheckpoint>,
     ) {
       if (!checkNote(note)) throw Error();
       const { title, summary, deliveryUrl, nextAction } = note;
@@ -142,8 +154,16 @@ export function rememberTool(
         await assertCurrent();
         signal?.throwIfAborted();
         if (
-          baseline &&
-          !isDeepStrictEqual(selectCheckpointEvidence(ctx, note), baseline)
+          !isDeepStrictEqual(deliveryForCheckpoint(ctx, title), delivery) ||
+          (baseline &&
+            !isDeepStrictEqual(
+              selectCheckpointEvidence(
+                ctx,
+                note,
+                !!delivery && !note.includeEvidence && !note.evidenceCallIds,
+              ),
+              baseline,
+            ))
         )
           throw Error("The active evidence selection changed.");
       };
@@ -157,14 +177,57 @@ export function rememberTool(
         ? baseline.sources
         : []) {
         if (!isScoutCheckpointEvidence(evidence)) {
-          const registrationId =
-            evidence.executionId && evidence.role
-              ? registeredDelegate(evidence, await realpath(ctx.cwd), ticket)
-              : undefined;
+          let registrationId: string | undefined;
+          if (evidence.executionId && evidence.role) {
+            const cwd = await realpath(ctx.cwd);
+            registrationId = registeredDelegate(evidence, cwd, ticket);
+            const registered = ticket.controls.registrations.some(
+              ({ record }) =>
+                record.producer === "pi-daddy" &&
+                record.owner.cwd === cwd &&
+                record.owner.sessionId === evidence.sessionId &&
+                record.executionId === evidence.executionId,
+            );
+            if (!registered && delivery && captureResult) {
+              const grant = await capture.referenceGrant();
+              if (
+                grant &&
+                grant.vault.root === ticket.root &&
+                grant.project.path === ticket.scope.project.path &&
+                grant.project.sourceHash === ticket.scope.project.sourceHash
+              ) {
+                try {
+                  await captureResult(
+                    ctx,
+                    grant,
+                    evidence.callId,
+                    evidence.executionId,
+                    guard,
+                  );
+                  const current = await disclosure.capture(
+                    ticket.root,
+                    ctx,
+                    "registry",
+                  );
+                  registrationId = registeredDelegate(evidence, cwd, current);
+                  await current.assertCurrent();
+                } catch {
+                  registrationId = undefined;
+                }
+                await guard();
+              }
+            }
+          }
           attached.push(
             registrationId ? { ...evidence, registrationId } : evidence,
           );
-          if (evidence.kind === "research") gaps.add("research");
+          if (
+            evidence.kind === "research" ||
+            (delivery && evidence.role && !registrationId)
+          )
+            gaps.add(
+              evidence.kind === "command" ? "validation" : evidence.kind,
+            );
           continue;
         }
         const grant = await capture.referenceGrant();
@@ -174,14 +237,20 @@ export function rememberTool(
           grant.project.path === ticket.scope.project.path &&
           grant.project.sourceHash === ticket.scope.project.sourceHash
         ) {
-          const registration = await registerCheckpointScout(
-            pi,
-            ctx,
-            evidence,
-            grant,
-            guard,
-            signal,
-          );
+          let registration;
+          try {
+            registration = await registerCheckpointScout(
+              pi,
+              ctx,
+              evidence,
+              grant,
+              guard,
+              signal,
+            );
+          } catch (error) {
+            if (!delivery) throw error;
+            await guard();
+          }
           if (registration) {
             attached.push({
               ...evidence,
@@ -193,8 +262,30 @@ export function rememberTool(
         gaps.add("research");
       }
       await guard();
+      const unavailable: string[] = [];
+      if (delivery && checkCheckpointSource) {
+        for (const source of attached) {
+          if (
+            source.registrationId &&
+            !(await checkCheckpointSource(
+              ctx,
+              source.registrationId,
+              source.kind === "research" ? "brief" : "final",
+              signal,
+            ))
+          ) {
+            unavailable.push(source.registrationId);
+          }
+        }
+        await guard();
+      }
       const missing = [...gaps].sort();
       const evidenceText = [
+        ...(delivery
+          ? [
+              `Prior delivery. Use principal_delivery with action=status, sourceSessionId=${delivery.sourceSessionId}, deliveryId=${delivery.deliveryId}.`,
+            ]
+          : []),
         ...(deliveryUrl ? [deliveryUrl] : []),
         ...attached.map(
           (source) =>
@@ -206,6 +297,10 @@ export function rememberTool(
               ? ` Registered source ${source.registrationId}; use bookie_reference_read part ${source.kind === "research" ? "brief" : "final"} under current access.`
               : " Historical call locator; outcome and body access require separate evidence."),
         ),
+        ...unavailable.map(
+          (id) =>
+            `Registered source ${id}: body unavailable under current access at save time.`,
+        ),
         ...missing.map((kind) => `${kind}: no available source linked.`),
       ].join("\n");
       const hash = createHash("sha256")
@@ -214,6 +309,7 @@ export function rememberTool(
             ticket.scope.project.uid,
             title,
             summary,
+            ...(delivery ? [{ delivery, unavailable }] : []),
             ...(deliveryUrl ? [deliveryUrl] : []),
             ...(choice && choice !== legacyChoice
               ? [{ openChoice: choice }]
@@ -242,6 +338,7 @@ export function rememberTool(
           ...(choice ? { tags: ["open-choice"] } : {}),
           fields: {
             ...(guidance ? { choice_guidance: guidance } : {}),
+            ...(delivery ? { delivery_checkpoint: delivery } : {}),
             ...(attached.length ? { checkpoint_evidence: attached } : {}),
           },
           sections: {
@@ -290,6 +387,12 @@ export function rememberTool(
           typeof bookie !== "object" ||
           !bookie ||
           Array.isArray(bookie) ||
+          !isDeepStrictEqual(
+            "delivery_checkpoint" in bookie
+              ? bookie.delivery_checkpoint
+              : undefined,
+            delivery,
+          ) ||
           !isDeepStrictEqual(
             "checkpoint_evidence" in bookie
               ? bookie.checkpoint_evidence
@@ -346,6 +449,7 @@ export function rememberTool(
             throw Error();
           }
           if (result.redacted) throw Error();
+          if ((baseline || delivery) && !(await readExisting())) throw Error();
           return "saved";
         },
       );
@@ -368,6 +472,13 @@ export function rememberTool(
       return {
         status: outcome,
         readBack: { selector: "path" as const, value: path },
+        ...(delivery
+          ? {
+              deliveryCheckpoint: delivery,
+              readBackVerified: true,
+              unavailableSources: unavailable,
+            }
+          : {}),
         ...(baseline ? { evidence: attached, missingEvidence: missing } : {}),
       };
     }
@@ -480,9 +591,14 @@ export function rememberTool(
             ? {}
             : { nextAction: params.nextAction.trim() }),
         };
+        const delivery = deliveryForCheckpoint(ctx, note.title);
         const selection =
-          note.evidenceCallIds || note.includeEvidence
-            ? selectCheckpointEvidence(ctx, note)
+          delivery || note.evidenceCallIds || note.includeEvidence
+            ? selectCheckpointEvidence(
+                ctx,
+                note,
+                !!delivery && !note.includeEvidence && !note.evidenceCallIds,
+              )
             : undefined;
         if (selection?.status === "evidence-selection-needed") {
           const result = {
@@ -501,7 +617,7 @@ export function rememberTool(
                 ctx,
                 {
                   save: (resource, token) =>
-                    scope.save(resource, token, undefined, selection),
+                    scope.save(resource, token, undefined, selection, delivery),
                 },
                 {
                   ...note,
@@ -516,6 +632,7 @@ export function rememberTool(
                 entered = true;
               },
               selection,
+              delivery,
             );
         const result = {
           content: [

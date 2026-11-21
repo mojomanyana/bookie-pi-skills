@@ -240,8 +240,10 @@ type SelectionResult =
 export function selectCheckpointEvidence(
   ctx: ExtensionContext,
   selection: EvidenceSelection,
+  automatic = false,
 ): SelectionResult {
-  const requested = selection.includeEvidence ?? [];
+  const requested =
+    selection.includeEvidence ?? (automatic ? evidenceKinds : []);
   const exact = selection.evidenceCallIds ?? [];
   if (!requested.length && !exact.length)
     return { status: "selected", sources: [], missing: [] };
@@ -335,6 +337,11 @@ export function selectCheckpointEvidence(
   for (const kind of requested) {
     if (sources.some((s) => s.kind === kind)) continue;
     const matches = current.filter((c) => c.kind === kind);
+    if (automatic) {
+      sources.push(...matches);
+      if (!matches.length) missing.push(kind);
+      continue;
+    }
     if (matches.length > 1)
       return ambiguous(
         "Multiple results match. Resubmit with the exact applicable evidenceCallIds.",
@@ -358,4 +365,35 @@ export function selectCheckpointEvidence(
     sources: sources.sort((a, b) => a.callId.localeCompare(b.callId)),
     missing: missing.sort(),
   };
+}
+
+export function deliveryForCheckpoint(ctx: ExtensionContext, title: string) {
+  const branch = ctx.sessionManager.getBranch?.() ?? [];
+  const start = branch.findLastIndex(
+    (e) => e.type === "message" && e.message.role === "user",
+  );
+  if (start < 0) return;
+  const entry = branch
+    .slice(start + 1)
+    .findLast(
+      (e) => e.type === "custom" && e.customType === "principal-delivery-v1",
+    );
+  if (entry?.type !== "custom" || !record(entry.data)) return;
+  const row = entry.data;
+  if (
+    row.version !== 1 ||
+    row.ended ||
+    row.cwd !== ctx.cwd ||
+    row.sessionId !== ctx.sessionManager.getSessionId() ||
+    typeof row.sessionId !== "string" ||
+    !/^[a-z0-9-]{8,80}$/iu.test(row.sessionId) ||
+    typeof row.deliveryId !== "string" ||
+    !/^principal-delivery:[a-f0-9]{32}$/u.test(row.deliveryId) ||
+    !Array.isArray(row.criteria) ||
+    !row.criteria.some(
+      (c) => record(c) && c.kind === "checkpoint" && c.title === title,
+    )
+  )
+    return;
+  return { sourceSessionId: row.sessionId, deliveryId: row.deliveryId };
 }

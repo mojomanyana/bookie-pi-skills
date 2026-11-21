@@ -225,12 +225,14 @@ export function registerProducerBridge(
     ctx: ExtensionContext,
     reference: unknown,
     instance: string,
+    guard?: () => Promise<void>,
   ) {
     const selectedEpoch = epoch,
       currentOwner = await owner(ctx);
     const authority = async () => {
-      if (epoch !== selectedEpoch || context !== ctx)
+      if (epoch !== selectedEpoch || (!guard && context !== ctx))
         throw Error("Producer capture owner changed.");
+      await guard?.();
       await grant.assertCurrent();
     };
     await authority();
@@ -385,6 +387,61 @@ export function registerProducerBridge(
     context = undefined;
   });
   return {
+    captureCheckpointResult(
+      ctx: ExtensionContext,
+      grant: ReferenceCaptureGrant,
+      callId: string,
+      executionId: string,
+      guard: () => Promise<void>,
+    ) {
+      return serial(async () => {
+        await guard();
+        const currentOwner = await owner(ctx);
+        const matches = ctx.sessionManager
+          .getBranch()
+          .slice(-2048)
+          .filter(
+            (e) =>
+              e.type === "message" &&
+              e.message.role === "toolResult" &&
+              e.message.toolName === "delegate" &&
+              e.message.toolCallId === callId,
+          );
+        const entry = matches.length === 1 && matches[0];
+        if (
+          !entry ||
+          entry.type !== "message" ||
+          entry.message.role !== "toolResult"
+        )
+          return;
+        const details: unknown = entry.message.details;
+        const ref =
+          object(details) &&
+          object(details.operation) &&
+          details.operation.artifact;
+        if (
+          !object(ref) ||
+          !object(ref.owner) ||
+          ref.executionId !== executionId ||
+          ref.owner.sessionId !== currentOwner.sessionId ||
+          ref.owner.cwd !== currentOwner.cwd
+        )
+          return;
+        const check = async () => {
+          await guard();
+          await grant.assertCurrent();
+        };
+        await check();
+        const reply = await requestProducer(pi, currentOwner, {
+          action: "read",
+          reference: ref,
+          authorize: check,
+        });
+        await check();
+        if (typeof reply.producerInstance !== "string") return;
+        await register(grant, ctx, ref, reply.producerInstance, guard);
+      });
+    },
     close() {
       epoch++;
       continuation = undefined;

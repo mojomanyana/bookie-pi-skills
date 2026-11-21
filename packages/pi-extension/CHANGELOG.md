@@ -1,5 +1,10 @@
 # pi-bookie release notes
 
+## [0.11.0] — 2026-11-21
+
+- Named Principal checkpoints now record the delivery and observed source references. An exact read returns the arguments for looking up that delivery after a new session or a fresh launch.
+- The save verifies the stored checkpoint and records source availability under current access.
+
 ## [0.10.0] — 2026-11-21
 
 - Save one project checkpoint with its outcome, open choice and selected evidence. Evidence-backed summaries support up to 4,000 characters. Ordinary saves keep their 2,000-character limit.
