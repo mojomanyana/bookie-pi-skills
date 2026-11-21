@@ -138,12 +138,27 @@ test("a source-backed routine checkpoint keeps bounded decisions and test locato
     }),
   );
   assert.equal(forged.status, "evidence-selection-needed");
+  const oldDelivery = "principal-delivery:" + "a".repeat(32);
+  const oldNote = JSON.parse(
+    await first.call("bookie_remember", {
+      title: "Earlier delivery",
+      summary: "Recorded delivery " + oldDelivery,
+    }),
+  );
   await first.event("session_shutdown");
   const second = host(cwd, true, "session-b");
   await second.event("session_start");
   const read = JSON.parse(
     await second.call("bookie_read", saved.readBack),
   ).result;
+  const historic = JSON.parse(
+    await second.call("bookie_read", oldNote.readBack),
+  ).result;
+  assert.deepEqual(historic.deliveryStatus, {
+    action: "status",
+    sourceSessionId: "session-a",
+    deliveryId: oldDelivery,
+  });
   assert.ok(read.sourceText.includes(args.summary));
   assert.match(read.sourceText, /check-1/);
   assert.match(read.sourceText, /architect-1/);

@@ -4,6 +4,7 @@ import {
   historyChoice,
   projectChoiceMetadata,
 } from "./choice-answer.js";
+import { legacyDeliveryStatus } from "./checkpoint-evidence.js";
 import { loadConcept } from "pi-bookie-core";
 import type {
   MutationDiagnostic,
@@ -123,7 +124,14 @@ export function guardBookieTool<P extends TSchema, D, S>(
               file: raw.source.path,
             });
             const metadata = parsed.ok && parsed.concept.frontmatter.bookie;
-            const locator = object(metadata) && metadata.delivery_checkpoint;
+            const locator =
+              object(metadata) &&
+              (metadata.delivery_checkpoint ??
+                (parsed.ok &&
+                  legacyDeliveryStatus(
+                    parsed.concept.frontmatter.generated,
+                    parsed.concept.bodyText,
+                  )));
             if (
               object(locator) &&
               typeof locator.sourceSessionId === "string" &&

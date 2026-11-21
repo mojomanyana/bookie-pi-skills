@@ -1340,3 +1340,107 @@ test("register a checkpoint's exact delegate receipt without dispatch or a prior
     1,
   );
 });
+
+test("one active delivery keeps its sources with an undeclared checkpoint and an exact owner operation", async () => {
+  const { deliveryForCheckpoint, legacyDeliveryStatus } =
+    await import("../dist/checkpoint-evidence.js");
+  const sessionId = "session-123";
+  const deliveryId = "principal-delivery:" + "a".repeat(32);
+  const operationId = "principal:" + "b".repeat(64);
+  const row = {
+    version: 1,
+    cwd: "/project",
+    sessionId,
+    deliveryId,
+    criteria: [{ kind: "review" }],
+  };
+  const entries = [
+    { type: "message", message: { role: "user" } },
+    { type: "custom", customType: "principal-delivery-v1", data: row },
+  ];
+  const ctx = {
+    cwd: row.cwd,
+    model: { provider: "fixture", id: "subject" },
+    sessionManager: { getSessionId: () => sessionId, getBranch: () => entries },
+  };
+  function call(id, name, args, details) {
+    entries.push(
+      {
+        type: "message",
+        message: {
+          role: "assistant",
+          provider: "fixture",
+          model: "subject",
+          content: [{ type: "toolCall", id, name, arguments: args }],
+        },
+      },
+      {
+        type: "message",
+        message: {
+          role: "toolResult",
+          toolCallId: id,
+          toolName: name,
+          details,
+          isError: false,
+        },
+      },
+    );
+  }
+  call(
+    "review-1",
+    "delegate",
+    { agent: "review" },
+    { ok: true, operation: { operationId, state: "settled" } },
+  );
+  call(
+    "check-1",
+    "bash",
+    { command: "python3 test_inventory.py && git status" },
+    {},
+  );
+  assert.deepEqual(deliveryForCheckpoint(ctx, "Progress"), {
+    sourceSessionId: sessionId,
+    deliveryId,
+  });
+  const selected = selectCheckpointEvidence(
+    ctx,
+    { includeEvidence: ["validation"], evidenceCallIds: [operationId] },
+    true,
+  );
+  assert.deepEqual(
+    selected.sources.map((s) => s.callId),
+    ["check-1", "review-1"],
+  );
+  assert.deepEqual(
+    legacyDeliveryStatus({ by: "process:pi:" + sessionId }, deliveryId),
+    { sourceSessionId: sessionId, deliveryId },
+  );
+  assert.equal(
+    legacyDeliveryStatus({ by: "human:writer" }, deliveryId),
+    undefined,
+  );
+  assert.equal(
+    legacyDeliveryStatus(
+      { by: "process:pi:" + sessionId },
+      deliveryId + " " + ("principal-delivery:" + "b".repeat(32)),
+    ),
+    undefined,
+  );
+  call(
+    "review-2",
+    "delegate",
+    { agent: "review" },
+    { ok: true, operation: { operationId, state: "settled" } },
+  );
+  assert.equal(
+    selectCheckpointEvidence(ctx, { evidenceCallIds: [operationId] }, true)
+      .status,
+    "evidence-selection-needed",
+  );
+  entries.push({
+    type: "custom",
+    customType: "principal-delivery-v1",
+    data: { ...row, deliveryId: "principal-delivery:" + "c".repeat(32) },
+  });
+  assert.equal(deliveryForCheckpoint(ctx, "Progress"), undefined);
+});
