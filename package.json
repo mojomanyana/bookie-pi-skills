@@ -8,7 +8,6 @@
     "node": ">=24"
   },
   "workspaces": [
-    "apps/*",
     "packages/*"
   ],
   "pi": {

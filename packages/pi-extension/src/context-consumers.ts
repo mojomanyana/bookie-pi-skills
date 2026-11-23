@@ -655,8 +655,8 @@ export function registerContextConsumers(
     ),
     { minItems: 1, maxItems: 16 },
   );
-  pi.registerTool(
-    defineTool({
+  pi.registerTool({
+    ...defineTool({
       name: "bookie_export",
       label: "Bookie Export Selected Records",
       description:
@@ -738,9 +738,10 @@ export function registerContextConsumers(
         }
       },
     }),
-  );
-  pi.registerTool(
-    defineTool({
+    exposure: "deferred" as const,
+  } as Parameters<ExtensionAPI["registerTool"]>[0]);
+  pi.registerTool({
+    ...defineTool({
       name: "bookie_context_prepare",
       label: "Bookie Prepare Context",
       description:
@@ -774,9 +775,10 @@ export function registerContextConsumers(
         }
       },
     }),
-  );
-  pi.registerTool(
-    defineTool({
+    exposure: "deferred" as const,
+  } as Parameters<ExtensionAPI["registerTool"]>[0]);
+  pi.registerTool({
+    ...defineTool({
       name: "bookie_context_read",
       label: "Bookie Read Context",
       description:
@@ -819,9 +821,10 @@ export function registerContextConsumers(
         }
       },
     }),
-  );
-  pi.registerTool(
-    defineTool({
+    exposure: "deferred" as const,
+  } as Parameters<ExtensionAPI["registerTool"]>[0]);
+  pi.registerTool({
+    ...defineTool({
       name: "bookie_reference_read",
       label: "Bookie Read Retained Reference",
       description:
@@ -860,7 +863,8 @@ export function registerContextConsumers(
         return result;
       },
     }),
-  );
+    exposure: "deferred" as const,
+  } as Parameters<ExtensionAPI["registerTool"]>[0]);
   pi.events?.on?.(EVENT, (value: unknown) => {
     if (!object(value) || typeof value.reply !== "function") return;
     const reply = value.reply as (result: unknown) => void;
