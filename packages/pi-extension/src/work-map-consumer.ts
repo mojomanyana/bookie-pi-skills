@@ -1779,8 +1779,8 @@ export function registerWorkMapConsumer(
       );
     },
   });
-  pi.registerTool(
-    defineTool({
+  pi.registerTool({
+    ...defineTool({
       name: "bookie_work",
       label: "Bookie Work",
       description:
@@ -1858,5 +1858,6 @@ export function registerWorkMapConsumer(
         }
       },
     }),
-  );
+    exposure: "deferred" as const,
+  } as any);
 }

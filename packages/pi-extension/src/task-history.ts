@@ -550,8 +550,8 @@ export function registerTaskHistory(
       await gap(ctx, item.binding, item.prior);
     }
   });
-  pi.registerTool(
-    defineTool({
+  pi.registerTool({
+    ...defineTool({
       name: "bookie_task_history",
       label: "Current Bookie task history",
       description:
@@ -650,7 +650,8 @@ export function registerTaskHistory(
         }
       },
     }),
-  );
+    exposure: "deferred" as const,
+  } as any);
   pi.registerCommand("bookie-task", {
     description:
       "View or select the current Bookie task, track files, save a checkpoint, or transfer retained task history.",

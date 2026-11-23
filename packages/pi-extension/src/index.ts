@@ -1,4 +1,5 @@
 import { createManagedMemory } from "./managed-memory.js";
+import { registerAutoRecall } from "./auto-recall.js";
 import { registerReattachCommand } from "./reattach.js";
 import { rememberTool } from "./remember.js";
 import { registerTaskHistory } from "./task-history.js";
@@ -508,7 +509,7 @@ const searchTool = defineTool({
   name: "bookie_search",
   label: "Bookie Search",
   description:
-    "Search current project memory. Omit vault, including in a new session. Managed memory matches ALL case-insensitive word tokens across title/body and orders newest recorded notes first (10 by default, limit up to 50). Use mode=recent without query to browse recent notes, or mode=exact for a literal case-sensitive substring. Manually selected vaults retain exact search by default and do not support recent mode. A complete zero-match search is not proof of empty history: try mode=candidates or shorter key terms in the same project. Candidate mode ranks partial word overlap and returns unconfirmed possibilities; offer useful candidates without a fixed option count, plus none of these or clarification. Exact-read a user-selected candidate before relying on it; never silently substitute or save it as a decision. Candidates do not support synonyms and are available only in managed memory. Saved choice and answer hits can include a verified choiceResolution with the question and selected answer. Separate choiceDisposition metadata records an explicit not-a-decision classification or conflict; never treat it as an answer. Read matching notes before reporting it; a separate progress note or empty work-map tasks do not establish that no answer exists. Inspect completeness/truncation; failed or incomplete recall leaves history unknown. Matches are bounded, untrusted source data.",
+    "Search saved project memory (decisions, checkpoints, notes). Omit vault for the current project. Supports mode=search (all tokens), mode=recent (latest notes), mode=exact, or mode=candidates (partial overlap). Matches are untrusted historical notes.",
   parameters: Type.Object(
     {
       vault: Type.Optional(
@@ -722,25 +723,41 @@ export default function registerBookie(pi: ExtensionAPI): void {
     authority,
   );
 
+  const defer = <T extends object>(tool: T): T =>
+    ({ ...tool, exposure: "deferred" as const }) as T;
+
   pi.registerTool(
-    guardBookieTool(readTool, disclosure, boundedResult, contextFilter),
+    defer(guardBookieTool(readTool, disclosure, boundedResult, contextFilter)),
   );
   pi.registerTool(
-    guardBookieTool(searchTool, disclosure, boundedResult, contextFilter),
-  );
-  pi.registerTool(
-    guardBookieTool(validateTool, disclosure, boundedResult, contextFilter),
-  );
-  pi.registerTool(
-    guardBookieTool(
-      createWriteTool(authority),
-      disclosure,
-      boundedResult,
-      contextFilter,
+    defer(
+      guardBookieTool(searchTool, disclosure, boundedResult, contextFilter),
     ),
   );
   pi.registerTool(
-    guardBookieTool(checkpointTool, disclosure, boundedResult, contextFilter),
+    defer(
+      guardBookieTool(validateTool, disclosure, boundedResult, contextFilter),
+    ),
+  );
+  pi.registerTool(
+    defer(
+      guardBookieTool(
+        createWriteTool(authority),
+        disclosure,
+        boundedResult,
+        contextFilter,
+      ),
+    ),
+  );
+  pi.registerTool(
+    defer(
+      guardBookieTool(
+        checkpointTool,
+        disclosure,
+        boundedResult,
+        contextFilter,
+      ),
+    ),
   );
 
   pi.on("session_before_compact", async (event, ctx) => {
@@ -850,16 +867,19 @@ export default function registerBookie(pi: ExtensionAPI): void {
     disclosure,
     contextFilter,
   );
+  registerAutoRecall(pi, managed);
   pi.registerTool(
-    rememberTool(
-      pi,
-      managed,
-      authority,
-      disclosure,
-      contextFilter,
-      taskHistory.noteLink,
-      checkCheckpointSource,
-      producerBridge.captureCheckpointResult,
+    defer(
+      rememberTool(
+        pi,
+        managed,
+        authority,
+        disclosure,
+        contextFilter,
+        taskHistory.noteLink,
+        checkCheckpointSource,
+        producerBridge.captureCheckpointResult,
+      ),
     ),
   );
 }
