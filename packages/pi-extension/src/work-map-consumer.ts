@@ -1859,5 +1859,5 @@ export function registerWorkMapConsumer(
       },
     }),
     exposure: "deferred" as const,
-  } as any);
+  } as Parameters<ExtensionAPI["registerTool"]>[0]);
 }

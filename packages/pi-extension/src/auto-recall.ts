@@ -2,7 +2,10 @@ import { createHash } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import { containsDetectedSecret, queryVaultFts } from "pi-bookie-core";
 import type { createManagedMemory } from "./managed-memory.js";
 import type { createDisclosureAuthority } from "./disclosure-authority.js";
@@ -12,7 +15,10 @@ const MAX_INJECTED_CHARS = 1400;
 function indexDbPathFor(vaultRoot: string): string {
   const base =
     process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
-  const hash = createHash("sha256").update(vaultRoot).digest("hex").slice(0, 24);
+  const hash = createHash("sha256")
+    .update(vaultRoot)
+    .digest("hex")
+    .slice(0, 24);
   return join(base, "bookie-index", `${hash}.sqlite`);
 }
 

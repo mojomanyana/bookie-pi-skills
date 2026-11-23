@@ -30,7 +30,12 @@ test("queryVaultFts indexes public/internal notes, excludes restricted/excluded/
       "---\ntitle: Leaked key note\nsensitivity: public\n---\nEvict expired keys with token ghp_1234567890abcdefghijklmnopqrstuvwxyzABCD.\n",
     );
 
-    const hits = await queryVaultFts(dir, dbPath, "please fix the evict expired keys in our code", 5);
+    const hits = await queryVaultFts(
+      dir,
+      dbPath,
+      "please fix the evict expired keys in our code",
+      5,
+    );
     assert.equal(hits.length, 1);
     assert.equal(hits[0].path, "allowed.md");
     assert.equal(hits[0].title, "Rate limiter eviction");

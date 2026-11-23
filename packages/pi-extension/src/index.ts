@@ -751,12 +751,7 @@ export default function registerBookie(pi: ExtensionAPI): void {
   );
   pi.registerTool(
     defer(
-      guardBookieTool(
-        checkpointTool,
-        disclosure,
-        boundedResult,
-        contextFilter,
-      ),
+      guardBookieTool(checkpointTool, disclosure, boundedResult, contextFilter),
     ),
   );
 

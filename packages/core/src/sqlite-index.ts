@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+} from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { containsDetectedSecret } from "./vault-secret-detection.js";
 
@@ -18,11 +24,54 @@ export interface QueryVaultFtsOptions {
 
 const DEFAULT_ALLOWED_SENSITIVITIES = new Set(["public", "internal"]);
 const STOPWORDS = new Set([
-  "the", "and", "for", "with", "that", "this", "from", "are", "was", "were",
-  "have", "has", "had", "not", "but", "can", "will", "should", "could", "would",
-  "our", "your", "their", "into", "over", "under", "about", "there", "where",
-  "when", "what", "which", "how", "why", "all", "any", "also", "just", "only",
-  "make", "fix", "add", "use", "run", "please", "code", "file", "files",
+  "the",
+  "and",
+  "for",
+  "with",
+  "that",
+  "this",
+  "from",
+  "are",
+  "was",
+  "were",
+  "have",
+  "has",
+  "had",
+  "not",
+  "but",
+  "can",
+  "will",
+  "should",
+  "could",
+  "would",
+  "our",
+  "your",
+  "their",
+  "into",
+  "over",
+  "under",
+  "about",
+  "there",
+  "where",
+  "when",
+  "what",
+  "which",
+  "how",
+  "why",
+  "all",
+  "any",
+  "also",
+  "just",
+  "only",
+  "make",
+  "fix",
+  "add",
+  "use",
+  "run",
+  "please",
+  "code",
+  "file",
+  "files",
 ]);
 
 interface SqliteStatement {
@@ -85,7 +134,9 @@ function parseFrontmatterBlock(content: string): string | undefined {
 function extractSensitivity(content: string): string {
   const fm = parseFrontmatterBlock(content);
   if (!fm) return "restricted";
-  const match = /^\s*sensitivity\s*:\s*["']?([a-zA-Z0-9_-]+)["']?\s*$/m.exec(fm);
+  const match = /^\s*sensitivity\s*:\s*["']?([a-zA-Z0-9_-]+)["']?\s*$/m.exec(
+    fm,
+  );
   return match?.[1] ? match[1].toLowerCase() : "restricted";
 }
 
@@ -158,7 +209,9 @@ export async function queryVaultFts(
       );
     `);
 
-    const existingRows = db.prepare("SELECT path, mtime_ms FROM doc_meta").all();
+    const existingRows = db
+      .prepare("SELECT path, mtime_ms FROM doc_meta")
+      .all();
     const existing = new Map<string, number>();
     for (const row of existingRows) {
       existing.set(String(row.path), Number(row.mtime_ms));
@@ -262,11 +315,15 @@ export async function queryVaultFts(
       .map((row) => ({
         path: String(row.path),
         title: String(row.title),
-        snippet: String(row.snippet ?? "").replace(/\s+/g, " ").trim(),
+        snippet: String(row.snippet ?? "")
+          .replace(/\s+/g, " ")
+          .trim(),
         mtimeMs: Number(row.mtime_ms ?? 0),
         rank: Number(row.rank ?? 0),
       }))
-      .filter((note) => !containsDetectedSecret(`${note.title}\n${note.snippet}`));
+      .filter(
+        (note) => !containsDetectedSecret(`${note.title}\n${note.snippet}`),
+      );
   } catch {
     return [];
   } finally {

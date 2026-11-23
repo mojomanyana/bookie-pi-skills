@@ -651,7 +651,7 @@ export function registerTaskHistory(
       },
     }),
     exposure: "deferred" as const,
-  } as any);
+  } as Parameters<ExtensionAPI["registerTool"]>[0]);
   pi.registerCommand("bookie-task", {
     description:
       "View or select the current Bookie task, track files, save a checkpoint, or transfer retained task history.",
