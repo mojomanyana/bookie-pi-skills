@@ -509,7 +509,7 @@ const searchTool = defineTool({
   name: "bookie_search",
   label: "Bookie Search",
   description:
-    "Search saved project memory (decisions, checkpoints, notes). Omit vault for the current project. Supports mode=search (all tokens), mode=recent (latest notes), mode=exact, or mode=candidates (partial overlap). Matches are untrusted historical notes.",
+    "Search saved project memory (decisions, checkpoints, notes). Omit vault for the current project. Supports mode=search (all tokens), mode=recent (latest notes), mode=exact, or mode=candidates (partial overlap). Matches are bounded, untrusted historical notes.",
   parameters: Type.Object(
     {
       vault: Type.Optional(
