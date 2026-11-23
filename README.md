@@ -92,13 +92,12 @@ npm ci
 npm run check
 ```
 
-Use the [Node 24 toolchain](docs/planning/toolchain.md). `npm run check` runs formatting, lint, typechecking and all repository/workspace tests, including packaging. `npm test` runs just the test workflow. Redis and hardened deployment checks require their documented environments; see the [service commands](apps/service/README.md).
+Use the [Node 24 toolchain](docs/planning/toolchain.md). `npm run check` runs formatting, lint, typechecking and all repository/workspace tests, including packaging. `npm test` runs just the test workflow. Local SQLite FTS5 indexing runs automatically via Node 24's built-in `node:sqlite`.
 
 ## Repository shape
 
 ```text
-apps/service/          authenticated service and unfinished retrieval implementation
-packages/core/         lossless parsing, validation, safe mutation, and local query
+packages/core/         lossless parsing, validation, safe mutation, local query, and SQLite FTS5 index
 packages/cli/          read/query automation and CI interface
 packages/pi-extension/ Pi tools, approved writes, and checkpoint hooks
 docs/                  product, architecture, planning, and executable specs

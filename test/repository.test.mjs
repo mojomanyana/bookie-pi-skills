@@ -23,7 +23,6 @@ const requiredFiles = [
   "packages/core/test/versions.test.mjs",
   "packages/cli/package.json",
   "packages/pi-extension/package.json",
-  "apps/service/package.json",
   "docs/INDEX.md",
   "docs/product/vision.md",
   "docs/product/requirements.md",
@@ -347,7 +346,6 @@ test("toolchain, workspaces, and lockfile versions stay aligned", () => {
     "packages/core",
     "packages/cli",
     "packages/pi-extension",
-    "apps/service",
   ];
 
   assert.equal(rootPackage.engines.node, `>=${nodeMajor}`);

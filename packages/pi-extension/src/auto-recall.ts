@@ -3,8 +3,9 @@ import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { queryVaultFts } from "pi-bookie-core";
+import { containsDetectedSecret, queryVaultFts } from "pi-bookie-core";
 import type { createManagedMemory } from "./managed-memory.js";
+import type { createDisclosureAuthority } from "./disclosure-authority.js";
 
 const MAX_INJECTED_CHARS = 1400;
 
@@ -17,13 +18,13 @@ function indexDbPathFor(vaultRoot: string): string {
 
 /**
  * Passive session-start project memory injection (<10ms local SQLite FTS5, 0 LLM calls).
- * Injects a bounded <=350-token `<project_memory>` section via Pi 1.6 `systemPromptOptions.sections`
- * when the current workspace already has a managed Bookie vault, removing the need for
- * manual `/bookie-task enable` ceremony just to recall recent project decisions/checkpoints.
+ * Respects Bookie's disclosure authority, fail-closed sensitivity classes (public/internal only),
+ * and secret detection before injecting a bounded <=350-token `<project_memory>` section.
  */
 export function registerAutoRecall(
   pi: ExtensionAPI,
   managed: ReturnType<typeof createManagedMemory>,
+  disclosure: ReturnType<typeof createDisclosureAuthority>,
 ): void {
   let injectedForSession: string | undefined;
 
@@ -33,6 +34,7 @@ export function registerAutoRecall(
 
   pi.on("before_agent_start", async (event: unknown, ctx: ExtensionContext) => {
     try {
+      if (!disclosure.canManage()) return;
       const ev = event as {
         prompt?: string;
         systemPromptOptions?: {
@@ -55,6 +57,7 @@ export function registerAutoRecall(
         indexDbPathFor(canonical),
         promptText,
         3,
+        { allowedSensitivities: ["public", "internal"] },
       );
       if (hits.length === 0) return;
 
@@ -65,6 +68,7 @@ export function registerAutoRecall(
         lines.push(`- ${hit.title} (${hit.path}): ${hit.snippet}`);
       }
       const section = lines.join("\n").slice(0, MAX_INJECTED_CHARS);
+      if (containsDetectedSecret(section)) return;
       if (ev.systemPromptOptions.forceSystemPrompt !== undefined) {
         ev.systemPromptOptions.forceSystemPrompt += `\n\n<project_memory>\n${section}\n</project_memory>`;
       } else {

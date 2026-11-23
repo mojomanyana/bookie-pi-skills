@@ -867,7 +867,7 @@ export default function registerBookie(pi: ExtensionAPI): void {
     disclosure,
     contextFilter,
   );
-  registerAutoRecall(pi, managed);
+  registerAutoRecall(pi, managed, disclosure);
   pi.registerTool(
     defer(
       rememberTool(

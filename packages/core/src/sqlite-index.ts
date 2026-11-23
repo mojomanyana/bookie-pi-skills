@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
+import { containsDetectedSecret } from "./vault-secret-detection.js";
 
 export interface IndexedNote {
   readonly path: string;
@@ -9,6 +10,20 @@ export interface IndexedNote {
   readonly mtimeMs: number;
   readonly rank: number;
 }
+
+export interface QueryVaultFtsOptions {
+  /** Sensitivity classes permitted for automatic recall. Defaults fail-closed to public + internal only. */
+  readonly allowedSensitivities?: readonly string[];
+}
+
+const DEFAULT_ALLOWED_SENSITIVITIES = new Set(["public", "internal"]);
+const STOPWORDS = new Set([
+  "the", "and", "for", "with", "that", "this", "from", "are", "was", "were",
+  "have", "has", "had", "not", "but", "can", "will", "should", "could", "would",
+  "our", "your", "their", "into", "over", "under", "about", "there", "where",
+  "when", "what", "which", "how", "why", "all", "any", "also", "just", "only",
+  "make", "fix", "add", "use", "run", "please", "code", "file", "files",
+]);
 
 interface SqliteStatement {
   run(...params: unknown[]): unknown;
@@ -60,9 +75,26 @@ function collectMarkdownFiles(root: string, maxFiles = 2000): string[] {
   return results;
 }
 
+function parseFrontmatterBlock(content: string): string | undefined {
+  if (!content.startsWith("---")) return undefined;
+  const end = content.indexOf("\n---", 3);
+  return end > 0 ? content.slice(3, end) : undefined;
+}
+
+/** Fail closed: missing or unrecognized sensitivity defaults to "restricted". */
+function extractSensitivity(content: string): string {
+  const fm = parseFrontmatterBlock(content);
+  if (!fm) return "restricted";
+  const match = /^\s*sensitivity\s*:\s*["']?([a-zA-Z0-9_-]+)["']?\s*$/m.exec(fm);
+  return match?.[1] ? match[1].toLowerCase() : "restricted";
+}
+
 function extractTitle(content: string, fallbackPath: string): string {
-  const fmTitle = /^title\s*:\s*["']?([^\r\n"']+)["']?\s*$/m.exec(content);
-  if (fmTitle?.[1]) return fmTitle[1].trim().slice(0, 140);
+  const fm = parseFrontmatterBlock(content);
+  if (fm) {
+    const fmTitle = /^\s*title\s*:\s*["']?([^\r\n"']+)["']?\s*$/m.exec(fm);
+    if (fmTitle?.[1]) return fmTitle[1].trim().slice(0, 140);
+  }
   const heading = /^#\s+(.+)$/m.exec(content);
   if (heading?.[1]) return heading[1].trim().slice(0, 140);
   return fallbackPath;
@@ -74,29 +106,39 @@ function stripFrontmatter(content: string): string {
   return end > 0 ? content.slice(end + 4).trim() : content;
 }
 
-function toFtsQuery(raw: string): string | undefined {
-  const tokens = raw
+function extractKeywords(raw: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const words = raw
     .toLowerCase()
     .replace(/[^a-z0-9_]+/g, " ")
     .trim()
-    .split(/\s+/)
-    .filter((t) => t.length >= 2)
-    .slice(0, 10);
-  if (tokens.length === 0) return undefined;
-  return tokens.map((t) => `"${t}"*`).join(" OR ");
+    .split(/\s+/);
+  for (const w of words) {
+    if (w.length < 3 || STOPWORDS.has(w) || seen.has(w)) continue;
+    seen.add(w);
+    out.push(w);
+    if (out.length >= 8) break;
+  }
+  return out;
 }
 
 /**
  * Rebuildable local SQLite FTS5 index over a canonical OKF Markdown vault.
  * Uses Node 24's built-in `node:sqlite` (zero native npm dependencies, zero daemon).
+ * Enforces fail-closed sensitivity filtering and secret detection before indexing/returning.
  */
 export async function queryVaultFts(
   vaultDir: string,
   indexDbPath: string,
   query: string,
   limit = 5,
+  options: QueryVaultFtsOptions = {},
 ): Promise<IndexedNote[]> {
   if (!existsSync(vaultDir)) return [];
+  const allowed = options.allowedSensitivities
+    ? new Set(options.allowedSensitivities.map((s) => s.toLowerCase()))
+    : DEFAULT_ALLOWED_SENSITIVITIES;
   const db = await openSqlite(indexDbPath);
   if (!db) return [];
   try {
@@ -105,7 +147,8 @@ export async function queryVaultFts(
         path TEXT PRIMARY KEY,
         mtime_ms INTEGER NOT NULL,
         sha256 TEXT NOT NULL,
-        title TEXT NOT NULL
+        title TEXT NOT NULL,
+        sensitivity TEXT NOT NULL
       );
       CREATE VIRTUAL TABLE IF NOT EXISTS doc_fts USING fts5(
         path UNINDEXED,
@@ -124,8 +167,9 @@ export async function queryVaultFts(
     const files = collectMarkdownFiles(vaultDir);
     const seen = new Set<string>();
     const upsertMeta = db.prepare(
-      "INSERT OR REPLACE INTO doc_meta (path, mtime_ms, sha256, title) VALUES (?, ?, ?, ?)",
+      "INSERT OR REPLACE INTO doc_meta (path, mtime_ms, sha256, title, sensitivity) VALUES (?, ?, ?, ?, ?)",
     );
+    const deleteMeta = db.prepare("DELETE FROM doc_meta WHERE path = ?");
     const deleteFts = db.prepare("DELETE FROM doc_fts WHERE path = ?");
     const insertFts = db.prepare(
       "INSERT INTO doc_fts (path, title, body) VALUES (?, ?, ?)",
@@ -133,7 +177,6 @@ export async function queryVaultFts(
 
     for (const full of files) {
       const rel = relative(vaultDir, full).replace(/\\/g, "/");
-      seen.add(rel);
       let st;
       try {
         st = statSync(full);
@@ -142,22 +185,32 @@ export async function queryVaultFts(
       }
       if (st.size > 512 * 1024) continue;
       const mtimeMs = Math.floor(st.mtimeMs);
-      if (existing.get(rel) === mtimeMs) continue;
+      if (existing.get(rel) === mtimeMs) {
+        seen.add(rel);
+        continue;
+      }
       let raw: string;
       try {
         raw = readFileSync(full, "utf8");
       } catch {
         continue;
       }
+      const sensitivity = extractSensitivity(raw);
       const title = extractTitle(raw, rel);
       const body = stripFrontmatter(raw).slice(0, 32_000);
+      // Fail closed: never index excluded/restricted/secret-bearing notes into FTS.
+      if (!allowed.has(sensitivity) || containsDetectedSecret(raw)) {
+        deleteMeta.run(rel);
+        deleteFts.run(rel);
+        continue;
+      }
+      seen.add(rel);
       const sha = createHash("sha256").update(raw).digest("hex");
-      upsertMeta.run(rel, mtimeMs, sha, title);
+      upsertMeta.run(rel, mtimeMs, sha, title, sensitivity);
       deleteFts.run(rel);
       insertFts.run(rel, title, body);
     }
 
-    const deleteMeta = db.prepare("DELETE FROM doc_meta WHERE path = ?");
     for (const stalePath of existing.keys()) {
       if (!seen.has(stalePath)) {
         deleteMeta.run(stalePath);
@@ -166,44 +219,54 @@ export async function queryVaultFts(
     }
 
     const capped = Math.max(1, Math.min(20, limit));
-    const ftsQuery = toFtsQuery(query);
-    if (!ftsQuery) {
-      const recent = db
+    const allowedList = [...allowed];
+    if (allowedList.length === 0) return [];
+    const placeholders = allowedList.map(() => "?").join(",");
+
+    const keywords = extractKeywords(query);
+    const runMatch = (expr: string) =>
+      db
         .prepare(
-          `SELECT m.path, m.title, m.mtime_ms, substr(f.body, 1, 220) AS snippet
+          `SELECT f.path, f.title, m.mtime_ms,
+                  snippet(doc_fts, 2, '', '', '…', 28) AS snippet,
+                  bm25(doc_fts) AS rank
+           FROM doc_fts f
+           JOIN doc_meta m ON m.path = f.path
+           WHERE doc_fts MATCH ? AND m.sensitivity IN (${placeholders})
+           ORDER BY rank ASC, m.mtime_ms DESC
+           LIMIT ?`,
+        )
+        .all(expr, ...allowedList, capped);
+
+    let rows: Record<string, unknown>[] = [];
+    if (keywords.length === 0) {
+      rows = db
+        .prepare(
+          `SELECT m.path, m.title, m.mtime_ms, substr(f.body, 1, 220) AS snippet, 0 AS rank
            FROM doc_meta m JOIN doc_fts f ON f.path = m.path
+           WHERE m.sensitivity IN (${placeholders})
            ORDER BY m.mtime_ms DESC LIMIT ?`,
         )
-        .all(capped);
-      return recent.map((row) => ({
+        .all(...allowedList, capped);
+    } else {
+      // Prefer strict AND on filtered keywords first; fall back to OR only when AND returns 0.
+      const andExpr = keywords.map((t) => `"${t}"*`).join(" AND ");
+      rows = runMatch(andExpr);
+      if (rows.length === 0 && keywords.length > 1) {
+        const orExpr = keywords.map((t) => `"${t}"*`).join(" OR ");
+        rows = runMatch(orExpr);
+      }
+    }
+
+    return rows
+      .map((row) => ({
         path: String(row.path),
         title: String(row.title),
         snippet: String(row.snippet ?? "").replace(/\s+/g, " ").trim(),
         mtimeMs: Number(row.mtime_ms ?? 0),
-        rank: 0,
-      }));
-    }
-
-    const hits = db
-      .prepare(
-        `SELECT f.path, f.title, m.mtime_ms,
-                snippet(doc_fts, 2, '', '', '…', 28) AS snippet,
-                bm25(doc_fts) AS rank
-         FROM doc_fts f
-         JOIN doc_meta m ON m.path = f.path
-         WHERE doc_fts MATCH ?
-         ORDER BY rank ASC, m.mtime_ms DESC
-         LIMIT ?`,
-      )
-      .all(ftsQuery, capped);
-
-    return hits.map((row) => ({
-      path: String(row.path),
-      title: String(row.title),
-      snippet: String(row.snippet ?? "").replace(/\s+/g, " ").trim(),
-      mtimeMs: Number(row.mtime_ms ?? 0),
-      rank: Number(row.rank ?? 0),
-    }));
+        rank: Number(row.rank ?? 0),
+      }))
+      .filter((note) => !containsDetectedSecret(`${note.title}\n${note.snippet}`));
   } catch {
     return [];
   } finally {
