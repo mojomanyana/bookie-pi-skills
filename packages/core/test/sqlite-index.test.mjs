@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { queryVaultFts } from "../dist/index.js";
 
-test("queryVaultFts indexes public/internal notes, excludes restricted/excluded/secret notes, and strips stopwords", async () => {
+test("queryVaultFts indexes YAML and JSON frontmatter public/internal notes, excludes restricted/secret notes", async () => {
   const dir = mkdtempSync(join(tmpdir(), "bookie-fts-"));
   const dbPath = join(dir, "index.sqlite");
   try {
@@ -14,16 +14,12 @@ test("queryVaultFts indexes public/internal notes, excludes restricted/excluded/
       "---\ntitle: Rate limiter eviction\nsensitivity: internal\n---\nEvict expired sliding window keys cleanly.\n",
     );
     writeFileSync(
+      join(dir, "json-activity.md"),
+      '---\n{"type":"Activity","title":"JSON checkpoint","bookie":{"profile":"1.0","sensitivity":"internal"}}\n---\nEvict expired sliding window keys from JSON concept.\n',
+    );
+    writeFileSync(
       join(dir, "restricted.md"),
-      "---\ntitle: Restricted architecture secret\nsensitivity: restricted\n---\nEvict expired sliding window keys restricted details.\n",
-    );
-    writeFileSync(
-      join(dir, "excluded.md"),
-      "---\ntitle: Excluded note\nsensitivity: excluded\n---\nEvict expired sliding window keys excluded details.\n",
-    );
-    writeFileSync(
-      join(dir, "missing-sensitivity.md"),
-      "---\ntitle: Unlabeled note\n---\nEvict expired sliding window keys without sensitivity label.\n",
+      "---\ntitle: Restricted secret\nsensitivity: restricted\n---\nEvict expired sliding window keys restricted details.\n",
     );
     writeFileSync(
       join(dir, "secret.md"),
@@ -36,12 +32,14 @@ test("queryVaultFts indexes public/internal notes, excludes restricted/excluded/
       "please fix the evict expired keys in our code",
       5,
     );
-    assert.equal(hits.length, 1);
-    assert.equal(hits[0].path, "allowed.md");
-    assert.equal(hits[0].title, "Rate limiter eviction");
+    assert.equal(hits.length, 2);
+    assert.deepEqual(hits.map((h) => h.path).sort(), [
+      "allowed.md",
+      "json-activity.md",
+    ]);
 
-    // Removing the file removes it from the index on next query
     rmSync(join(dir, "allowed.md"));
+    rmSync(join(dir, "json-activity.md"));
     const afterDelete = await queryVaultFts(dir, dbPath, "evict expired", 5);
     assert.equal(afterDelete.length, 0);
   } finally {

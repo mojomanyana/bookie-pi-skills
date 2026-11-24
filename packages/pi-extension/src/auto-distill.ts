@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -155,13 +156,28 @@ export async function distillSessionCheckpoint(
       ? parsed.summary.trim().slice(0, 1800)
       : "";
   if (!title || !summary) return { saved: false, reason: "empty-fields" };
+  const nowIso = new Date().toISOString();
+  const actUid = `ACT-${randomBytes(8).toString("hex")}`;
+  // Emit canonical OKF Activity frontmatter so both queryVaultFts (auto-recall) and
+  // recallVault (bookie_search / Daddy Dashboard) index and surface distilled checkpoints.
+  const frontmatter = JSON.stringify({
+    type: "Activity",
+    title,
+    status: "stable",
+    generated: { by: "process:pi-bookie-auto-distill", at: nowIso },
+    bookie: {
+      profile: "1.0",
+      uid: actUid,
+      project: "/projects/workspace/project.md",
+      state: "active",
+      occurred_at: nowIso,
+      created_at: nowIso,
+      sensitivity: "internal",
+    },
+  });
   const body = [
     "---",
-    `title: ${JSON.stringify(title)}`,
-    "type: activity",
-    "sensitivity: internal",
-    `createdAt: ${JSON.stringify(new Date().toISOString())}`,
-    "source: bookie-auto-distill",
+    frontmatter,
     "---",
     "",
     `# ${title}`,
@@ -173,10 +189,10 @@ export async function distillSessionCheckpoint(
     return { saved: false, reason: "secret-detected-in-output" };
   }
   const canonical = realpathSync(vaultRoot);
-  const notesDir = join(canonical, "notes");
-  await mkdir(notesDir, { recursive: true, mode: 0o700 });
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const target = join(notesDir, `auto-${stamp}-${slugTitle(title)}.md`);
+  const activitiesDir = join(canonical, "projects", "workspace", "activities");
+  await mkdir(activitiesDir, { recursive: true, mode: 0o700 });
+  const stamp = nowIso.replace(/[:.]/g, "-");
+  const target = join(activitiesDir, `auto-${stamp}-${slugTitle(title)}.md`);
   await writeFile(target, body, { encoding: "utf8", mode: 0o600 });
   return { saved: true, path: target };
 }
