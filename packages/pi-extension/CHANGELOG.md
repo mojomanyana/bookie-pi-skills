@@ -1,5 +1,10 @@
 # pi-bookie release notes
 
+## [0.12.0] — 2026-11-24
+
+- Add passive session-start `<project_memory>` auto-recall via `systemPromptOptions.sections` backed by `pi-bookie-core@0.5.0` SQLite FTS5 (fail-closed sensitivity and secret checks).
+- Defer all 12 Bookie tools (`exposure: "deferred"`) to eliminate Turn-1 tool-schema bloat while remaining discoverable via Pi's built-in `tool_search` and `codemode`.
+
 ## [0.11.1] — 2026-11-21
 
 - A checkpoint can identify a single active delivery and retain its observed sources even when the delivery omitted a named checkpoint. Older notes that name one delivery can supply a read-only lookup.

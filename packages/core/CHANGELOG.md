@@ -1,5 +1,10 @@
 # pi-bookie-core release notes
 
+## [0.5.0] — 2026-11-24
+
+- Add zero-dependency rebuildable SQLite FTS5 index (`queryVaultFts`) using Node 24's built-in `node:sqlite`, enforcing fail-closed sensitivity filtering and secret detection.
+- Remove unfinished `apps/service/` Redis microservice.
+
 ## [0.4.0] — 2026-11-20
 
 - Reuse a validated project scope when the complete file and directory identities still match. Changes to the vault trigger a fresh inspection.
