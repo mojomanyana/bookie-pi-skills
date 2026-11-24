@@ -1,5 +1,9 @@
 # pi-bookie-core release notes
 
+## [0.5.2] — 2026-11-24
+
+- Parse both YAML and single-line JSON frontmatter in `queryVaultFts` and wrap FTS5 sync in a SQLite transaction.
+
 ## [0.5.1] — 2026-11-24
 
 - Maintenance release aligned with `pi-bookie@0.13.0` OIDC publishing.

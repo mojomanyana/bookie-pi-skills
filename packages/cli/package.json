@@ -18,7 +18,7 @@
     "test:built": "node --test test/*.test.mjs"
   },
   "dependencies": {
-    "pi-bookie-core": "0.5.1"
+    "pi-bookie-core": "0.5.2"
   },
   "license": "MIT"
 }

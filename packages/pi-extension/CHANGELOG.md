@@ -1,5 +1,9 @@
 # pi-bookie release notes
 
+## [0.13.1] — 2026-11-24
+
+- Emit canonical OKF Activity frontmatter in `auto-distill` and add contextual deferred Bookie tool activation in `before_agent_start`.
+
 ## [0.13.0] — 2026-11-24
 
 - Add automatic cheap-model checkpoint distillation on `session_before_compact` + `/bookie-distill` command (`PI_ECO_MODEL_FAST`, fail-closed secret scanning, `sensitivity: internal`).
