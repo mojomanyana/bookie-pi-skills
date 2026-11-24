@@ -1,5 +1,6 @@
 import { createManagedMemory } from "./managed-memory.js";
 import { registerAutoRecall } from "./auto-recall.js";
+import { registerAutoDistill } from "./auto-distill.js";
 import { registerReattachCommand } from "./reattach.js";
 import { rememberTool } from "./remember.js";
 import { registerTaskHistory } from "./task-history.js";
@@ -863,6 +864,7 @@ export default function registerBookie(pi: ExtensionAPI): void {
     contextFilter,
   );
   registerAutoRecall(pi, managed, disclosure);
+  registerAutoDistill(pi, managed, authority, disclosure);
   pi.registerTool(
     defer(
       rememberTool(
