@@ -63,7 +63,8 @@ test("distillSessionCheckpoint writes an internal OKF note using PI_ECO_MODEL_FA
     assert.ok(ok.path);
     assert.deepEqual(usedModel, { provider: "fireworks", id: "glm-5p3-flash" });
     const written = readFileSync(ok.path, "utf8");
-    assert.match(written, /sensitivity: internal/);
+    assert.match(written, /"sensitivity":"internal"/);
+    assert.match(written, /"type":"Activity"/);
     assert.match(written, /Rate limiter concurrency fix/);
 
     const blocked = await distillSessionCheckpoint(

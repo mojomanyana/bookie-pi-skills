@@ -130,10 +130,36 @@ function parseFrontmatterBlock(content: string): string | undefined {
   return end > 0 ? content.slice(3, end) : undefined;
 }
 
-/** Fail closed: missing or unrecognized sensitivity defaults to "restricted". */
+function parseFrontmatterObject(
+  fm: string,
+): Record<string, unknown> | undefined {
+  const trimmed = fm.trim();
+  if (!trimmed.startsWith("{")) return undefined;
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Fail closed: missing or unrecognized sensitivity defaults to "restricted". Supports YAML & JSON frontmatter. */
 function extractSensitivity(content: string): string {
   const fm = parseFrontmatterBlock(content);
   if (!fm) return "restricted";
+  const jsonObj = parseFrontmatterObject(fm);
+  if (jsonObj) {
+    const bookie = jsonObj.bookie as Record<string, unknown> | undefined;
+    const raw =
+      typeof bookie?.sensitivity === "string"
+        ? bookie.sensitivity
+        : typeof jsonObj.sensitivity === "string"
+          ? jsonObj.sensitivity
+          : undefined;
+    return raw ? raw.toLowerCase() : "restricted";
+  }
   const match = /^\s*sensitivity\s*:\s*["']?([a-zA-Z0-9_-]+)["']?\s*$/m.exec(
     fm,
   );
@@ -143,6 +169,10 @@ function extractSensitivity(content: string): string {
 function extractTitle(content: string, fallbackPath: string): string {
   const fm = parseFrontmatterBlock(content);
   if (fm) {
+    const jsonObj = parseFrontmatterObject(fm);
+    if (jsonObj && typeof jsonObj.title === "string" && jsonObj.title.trim()) {
+      return jsonObj.title.trim().slice(0, 140);
+    }
     const fmTitle = /^\s*title\s*:\s*["']?([^\r\n"']+)["']?\s*$/m.exec(fm);
     if (fmTitle?.[1]) return fmTitle[1].trim().slice(0, 140);
   }
@@ -228,47 +258,58 @@ export async function queryVaultFts(
       "INSERT INTO doc_fts (path, title, body) VALUES (?, ?, ?)",
     );
 
-    for (const full of files) {
-      const rel = relative(vaultDir, full).replace(/\\/g, "/");
-      let st;
-      try {
-        st = statSync(full);
-      } catch {
-        continue;
-      }
-      if (st.size > 512 * 1024) continue;
-      const mtimeMs = Math.floor(st.mtimeMs);
-      if (existing.get(rel) === mtimeMs) {
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const full of files) {
+        const rel = relative(vaultDir, full).replace(/\\/g, "/");
+        let st;
+        try {
+          st = statSync(full);
+        } catch {
+          continue;
+        }
+        if (st.size > 512 * 1024) continue;
+        const mtimeMs = Math.floor(st.mtimeMs);
+        if (existing.get(rel) === mtimeMs) {
+          seen.add(rel);
+          continue;
+        }
+        let raw: string;
+        try {
+          raw = readFileSync(full, "utf8");
+        } catch {
+          continue;
+        }
+        const sensitivity = extractSensitivity(raw);
+        const title = extractTitle(raw, rel);
+        const body = stripFrontmatter(raw).slice(0, 32_000);
+        // Fail closed: never index excluded/restricted/secret-bearing notes into FTS.
+        if (!allowed.has(sensitivity) || containsDetectedSecret(raw)) {
+          deleteMeta.run(rel);
+          deleteFts.run(rel);
+          continue;
+        }
         seen.add(rel);
-        continue;
-      }
-      let raw: string;
-      try {
-        raw = readFileSync(full, "utf8");
-      } catch {
-        continue;
-      }
-      const sensitivity = extractSensitivity(raw);
-      const title = extractTitle(raw, rel);
-      const body = stripFrontmatter(raw).slice(0, 32_000);
-      // Fail closed: never index excluded/restricted/secret-bearing notes into FTS.
-      if (!allowed.has(sensitivity) || containsDetectedSecret(raw)) {
-        deleteMeta.run(rel);
+        const sha = createHash("sha256").update(raw).digest("hex");
+        upsertMeta.run(rel, mtimeMs, sha, title, sensitivity);
         deleteFts.run(rel);
-        continue;
+        insertFts.run(rel, title, body);
       }
-      seen.add(rel);
-      const sha = createHash("sha256").update(raw).digest("hex");
-      upsertMeta.run(rel, mtimeMs, sha, title, sensitivity);
-      deleteFts.run(rel);
-      insertFts.run(rel, title, body);
-    }
 
-    for (const stalePath of existing.keys()) {
-      if (!seen.has(stalePath)) {
-        deleteMeta.run(stalePath);
-        deleteFts.run(stalePath);
+      for (const stalePath of existing.keys()) {
+        if (!seen.has(stalePath)) {
+          deleteMeta.run(stalePath);
+          deleteFts.run(stalePath);
+        }
       }
+      db.exec("COMMIT");
+    } catch (txErr) {
+      try {
+        db.exec("ROLLBACK");
+      } catch {
+        /* ignore rollback failure */
+      }
+      throw txErr;
     }
 
     const capped = Math.max(1, Math.min(20, limit));

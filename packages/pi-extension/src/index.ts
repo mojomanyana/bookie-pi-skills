@@ -865,6 +865,36 @@ export default function registerBookie(pi: ExtensionAPI): void {
   );
   registerAutoRecall(pi, managed, disclosure);
   registerAutoDistill(pi, managed, authority, disclosure);
+  // Contextual deferred tool activation: 0 Turn-1 bytes on ordinary coding tasks,
+  // auto-activated when project memory is enabled or the prompt asks for Bookie/checkpoints/recall.
+  const BOOKIE_TRIGGER_RE =
+    /\b(bookie|checkpoint|remember|recall|project\s+memory|vault)\b/i;
+  pi.on("before_agent_start", (event: unknown) => {
+    const surface = pi as unknown as {
+      getActiveTools?: () => string[];
+      setActiveTools?: (names: string[]) => void;
+    };
+    if (!surface.getActiveTools || !surface.setActiveTools) return;
+    const prompt =
+      typeof (event as { prompt?: unknown })?.prompt === "string"
+        ? (event as { prompt: string }).prompt
+        : "";
+    if (!disclosure.canManage() && !BOOKIE_TRIGGER_RE.test(prompt)) return;
+    const active = new Set(surface.getActiveTools());
+    let changed = false;
+    for (const name of [
+      "bookie_search",
+      "bookie_remember",
+      "bookie_read",
+      "bookie_checkpoint",
+    ]) {
+      if (!active.has(name)) {
+        active.add(name);
+        changed = true;
+      }
+    }
+    if (changed) surface.setActiveTools([...active]);
+  });
   pi.registerTool(
     defer(
       rememberTool(
