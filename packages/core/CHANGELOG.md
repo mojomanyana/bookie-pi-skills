@@ -1,5 +1,9 @@
 # pi-bookie-core release notes
 
+## [1.0.0] — 2026-11-24
+
+- v1.0.0 major release: local-first OKF canonical core + zero-dependency Node 24 SQLite FTS5 hybrid index (`queryVaultFts`) with fail-closed sensitivity and secret controls.
+
 ## [0.5.2] — 2026-11-24
 
 - Parse both YAML and single-line JSON frontmatter in `queryVaultFts` and wrap FTS5 sync in a SQLite transaction.
