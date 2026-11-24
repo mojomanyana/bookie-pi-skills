@@ -5,7 +5,6 @@ import { registerReattachCommand } from "./reattach.js";
 import { rememberTool } from "./remember.js";
 import { registerTaskHistory } from "./task-history.js";
 import { wrapUntrustedSource } from "./untrusted-text.js";
-import { registerWorkMapConsumer } from "./work-map-consumer.js";
 import { createBookieContextFilter } from "./context-filter.js";
 import { registerContextConsumers } from "./context-consumers.js";
 import { registerProducerBridge } from "./producer-bridge.js";
@@ -696,7 +695,6 @@ export default function registerBookie(pi: ExtensionAPI): void {
     disclosure,
     contextFilter,
   );
-  registerWorkMapConsumer(pi, disclosure, contextFilter);
   type CheckpointState =
     | { readonly status: "preparing" }
     | {

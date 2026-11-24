@@ -7,6 +7,7 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { containsDetectedSecret } from "pi-bookie-core";
+import { loadEcosystemConfig } from "./ecosystem-config.js";
 import type { createManagedMemory } from "./managed-memory.js";
 import type { createCaptureAuthority } from "./capture-authority.js";
 import type { createDisclosureAuthority } from "./disclosure-authority.js";
@@ -32,7 +33,9 @@ function selectFastModel(
   registry: StreamModelRegistry | undefined,
   fallback: unknown,
 ): unknown {
-  const spec = process.env.PI_ECO_MODEL_FAST?.trim();
+  const spec =
+    process.env.PI_ECO_MODEL_FAST?.trim() ||
+    loadEcosystemConfig(process.env).models?.fast?.trim();
   if (spec && typeof registry?.find === "function") {
     const sep = spec.includes("/") ? "/" : ":";
     const idx = spec.indexOf(sep);
@@ -209,7 +212,11 @@ export function registerAutoDistill(
   disclosure: ReturnType<typeof createDisclosureAuthority>,
 ): void {
   pi.on("session_before_compact", async (event, ctx) => {
-    if (process.env.PI_BOOKIE_AUTO_DISTILL === "0") return;
+    if (
+      process.env.PI_BOOKIE_AUTO_DISTILL === "0" ||
+      loadEcosystemConfig(process.env).bookie?.autoDistill === false
+    )
+      return;
     if (!authority.canManage() || !disclosure.canManage()) return;
     try {
       const selected = await managed.get(ctx).catch(() => undefined);

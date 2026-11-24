@@ -1,5 +1,9 @@
 # pi-bookie release notes
 
+## [1.0.0] — 2026-11-24
+
+- v1.0.0 major release: removed retired `bookie_work` consumer, added `~/.pi/agent/ecosystem.json` config support, passive `<project_memory>` auto-recall, and canonical OKF `auto-distill`.
+
 ## [0.13.1] — 2026-11-24
 
 - Emit canonical OKF Activity frontmatter in `auto-distill` and add contextual deferred Bookie tool activation in `before_agent_start`.

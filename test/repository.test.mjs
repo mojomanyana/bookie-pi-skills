@@ -379,12 +379,12 @@ test("toolchain, workspaces, and lockfile versions stay aligned", () => {
       "packages/core": {
         name: "pi-bookie-core",
         public: true,
-        version: "0.5.2",
+        version: "1.0.0",
       },
       "packages/pi-extension": {
         name: "pi-bookie",
         public: true,
-        version: "0.13.1",
+        version: "1.0.0",
       },
       "packages/cli": { name: "@bookie/cli", public: false, version: "0.0.0" },
       "apps/service": {
@@ -408,7 +408,7 @@ test("toolchain, workspaces, and lockfile versions stay aligned", () => {
       link: true,
     });
     if (workspacePath !== "packages/core") {
-      assert.equal(manifest.dependencies["pi-bookie-core"], "0.5.2");
+      assert.equal(manifest.dependencies["pi-bookie-core"], "1.0.0");
       assert.equal(manifest.dependencies["@bookie/core"], undefined);
     }
     if (release.public) {

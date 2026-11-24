@@ -7,6 +7,7 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { containsDetectedSecret, queryVaultFts } from "pi-bookie-core";
+import { loadEcosystemConfig } from "./ecosystem-config.js";
 import type { createManagedMemory } from "./managed-memory.js";
 import type { createDisclosureAuthority } from "./disclosure-authority.js";
 
@@ -40,6 +41,7 @@ export function registerAutoRecall(
 
   pi.on("before_agent_start", async (event: unknown, ctx: ExtensionContext) => {
     try {
+      if (loadEcosystemConfig(process.env).bookie?.autoRecall === false) return;
       if (!disclosure.canManage()) return;
       const ev = event as {
         prompt?: string;
