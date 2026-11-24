@@ -1,5 +1,9 @@
 # pi-bookie-core release notes
 
+## [0.5.1] — 2026-11-24
+
+- Maintenance release aligned with `pi-bookie@0.13.0` OIDC publishing.
+
 ## [0.5.0] — 2026-11-24
 
 - Add zero-dependency rebuildable SQLite FTS5 index (`queryVaultFts`) using Node 24's built-in `node:sqlite`, enforcing fail-closed sensitivity filtering and secret detection.

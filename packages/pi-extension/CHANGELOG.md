@@ -1,5 +1,9 @@
 # pi-bookie release notes
 
+## [0.13.0] — 2026-11-24
+
+- Add automatic cheap-model checkpoint distillation on `session_before_compact` + `/bookie-distill` command (`PI_ECO_MODEL_FAST`, fail-closed secret scanning, `sensitivity: internal`).
+
 ## [0.12.0] — 2026-11-24
 
 - Add passive session-start `<project_memory>` auto-recall via `systemPromptOptions.sections` backed by `pi-bookie-core@0.5.0` SQLite FTS5 (fail-closed sensitivity and secret checks).
