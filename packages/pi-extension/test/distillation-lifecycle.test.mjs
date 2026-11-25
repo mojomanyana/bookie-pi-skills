@@ -162,3 +162,36 @@ test("a cancelled request skips the model before dispatch", async (t) => {
   assert.equal(calls.length, 0);
   assert.deepEqual(await readdir(vault), []);
 });
+
+test("modelFallbacks.fast falls back from unavailable primary to available fallback or explicit session sentinel", async (t) => {
+  const { ctx, vault, calls, cheap, work } = await fixture(t);
+  await writeFile(
+    join(vault, "ecosystem.json"),
+    JSON.stringify({
+      models: { fast: "demo/unavailable" },
+      modelFallbacks: { fast: ["demo/catalog/cheap", "session"] },
+    }),
+  );
+  assert.equal((await distillSessionCheckpoint(ctx, vault)).saved, true);
+  assert.equal(calls[0].model, cheap);
+
+  await writeFile(
+    join(vault, "ecosystem.json"),
+    JSON.stringify({
+      models: { fast: "demo/unavailable" },
+      modelFallbacks: { fast: ["session"] },
+    }),
+  );
+  assert.equal((await distillSessionCheckpoint(ctx, vault)).saved, true);
+  assert.equal(calls[1].model, work);
+});
+
+test("invalid ecosystem.json fails closed without calling any model", async (t) => {
+  const { ctx, vault, calls } = await fixture(t);
+  await writeFile(join(vault, "ecosystem.json"), "{invalid json");
+  assert.deepEqual(await distillSessionCheckpoint(ctx, vault), {
+    saved: false,
+    reason: "invalid-ecosystem-config",
+  });
+  assert.equal(calls.length, 0);
+});

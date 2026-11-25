@@ -14,7 +14,7 @@ Bookie is a portable operational knowledge ledger for people and agents. Git-tra
 | Service | Authenticated health/index/search HTTP contract with an injected store; exact-commit projection, isolated ingestion/preflight, recipe/artifact codecs and fenced non-serving Redis candidate primitives. | No integrated Redis-backed serving/controller, context/admin implementation, evaluation, atomic activation/rollback or production startup/Compose. |
 | Qualification | Historical clean-install immutable local-image and synthetic deployment evidence exists. | Changed runtime bytes need fresh qualification. No current production, maximum-scale latency or real non-public indexing approval. |
 
-Implementation anchors: [core exports](../../packages/core/src/index.ts), [CLI](../../packages/cli/src/cli.ts), [Pi tools/hooks](../../packages/pi-extension/src/index.ts), HTTP routes (retired `apps/service`), candidate store (retired `apps/service`), and [SPEC-004's remaining gates](../specs/004-retrieval-service.md#accepted-controller-admission-contract--implementation-pending). Fake-store HTTP tests do not establish Redis search. A timeout is not throughput/capacity evidence.
+Implementation anchors: [core exports](../../packages/core/src/index.ts), [CLI](../../packages/cli/src/cli.ts), [Pi tools/hooks](../../packages/pi-extension/src/index.ts), HTTP routes (retired `apps/service`), candidate store (retired `apps/service`), and [SPEC-004 (retired)](../specs/004-retrieval-service.md). Fake-store HTTP tests do not establish Redis search. A timeout is not throughput/capacity evidence.
 
 ## Findings and disposition
 
