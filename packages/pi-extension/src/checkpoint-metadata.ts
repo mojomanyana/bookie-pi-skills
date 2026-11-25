@@ -18,7 +18,18 @@ export function createCheckpointMetadata(options: {
     throw new TypeError(
       "Bookie checkpoint metadata requires an actual bounded Pi session identifier.",
     );
-  const now = options.now === undefined ? new Date() : options.now;
+  const { uid, at } = createActivityIdentity(options.now, options.entropy);
+  return {
+    uid,
+    generated: { by: `process:pi:${options.sessionId}`, at },
+    occurred_at: at,
+  };
+}
+
+export function createActivityIdentity(
+  now: Date = new Date(),
+  entropy: Uint8Array = randomBytes(10),
+): { uid: string; at: string } {
   const milliseconds = now instanceof Date ? now.getTime() : NaN;
   // Canonical timestamps use four-digit UTC years; ULID stores a 48-bit timestamp.
   if (
@@ -29,8 +40,6 @@ export function createCheckpointMetadata(options: {
     throw new TypeError(
       "Bookie checkpoint metadata requires a valid UTC date from 1970 through 9999.",
     );
-  const entropy =
-    options.entropy === undefined ? randomBytes(10) : options.entropy;
   if (!(entropy instanceof Uint8Array) || entropy.byteLength !== 10)
     throw new TypeError(
       "Bookie checkpoint metadata requires exactly ten entropy bytes.",
@@ -43,10 +52,5 @@ export function createCheckpointMetadata(options: {
     ulid = alphabet[Number(value & 31n)]! + ulid;
     value >>= 5n;
   }
-  const at = new Date(milliseconds).toISOString();
-  return {
-    uid: `ACT-${ulid}`,
-    generated: { by: `process:pi:${options.sessionId}`, at },
-    occurred_at: at,
-  };
+  return { uid: `ACT-${ulid}`, at: new Date(milliseconds).toISOString() };
 }
