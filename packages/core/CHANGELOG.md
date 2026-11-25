@@ -1,5 +1,9 @@
 # pi-bookie-core release notes
 
+## 1.0.2 - 2026-11-25
+
+- Coordinate the core release with the checkpoint reliability fixes in pi-bookie.
+
 ## [1.0.1] — 2026-11-25
 
 - Updated `README.md` and `packages/core/README.md` to document local `node:sqlite` FTS5, passive recall/distill, and `ecosystem.json`, removing stale references to `bookie_work` and `apps/service`.
