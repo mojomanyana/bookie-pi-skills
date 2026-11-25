@@ -1,6 +1,6 @@
 # pi-bookie release notes
 
-## 1.0.2 - 2026-11-25
+## [1.0.2] - 2026-11-25
 
 - Retain user decisions from string and text-block messages.
 - Reject cancelled or failed distillations and honor the configured fast model.
