@@ -205,16 +205,3 @@ export * from "./task-history.js";
 export * from "./task-history-files.js";
 export * from "./task-history-bundle.js";
 export * from "./sqlite-index.js";
-export * from "./work-map-model.js";
-export {
-  describeWorkMap,
-  validateWorkMap,
-  renderWorkMapBody,
-  parseWorkMapBody,
-  workTaskRevision,
-  readWorkMap,
-  projectWorkMap,
-  isWorkOwnerReference,
-  isWorkEffectTarget,
-  effectTargetReference,
-} from "./work-map.js";
