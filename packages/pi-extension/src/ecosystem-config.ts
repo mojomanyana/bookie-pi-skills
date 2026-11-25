@@ -19,6 +19,10 @@ export interface EcosystemConfig {
   };
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 export function ecosystemConfigPath(env = process.env): string {
   const dir =
     env.PI_CODING_AGENT_DIR?.trim() || join(homedir(), ".pi", "agent");
@@ -27,7 +31,8 @@ export function ecosystemConfigPath(env = process.env): string {
 
 /**
  * Returns `undefined` when `ecosystem.json` does not exist, and throws on
- * invalid/unreadable JSON so callers can fail closed on damaged configs.
+ * invalid/unreadable JSON or invalid nested sections consumed by Bookie so
+ * callers can fail closed on damaged configs.
  */
 export function readEcosystemConfig(
   env = process.env,
@@ -35,8 +40,47 @@ export function readEcosystemConfig(
   const file = ecosystemConfigPath(env);
   if (!existsSync(file)) return undefined;
   const parsed = JSON.parse(readFileSync(file, "utf8")) as unknown;
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+  if (!isPlainObject(parsed)) {
     throw new Error(`Invalid ecosystem config object in ${file}`);
+  }
+  if ("models" in parsed) {
+    if (!isPlainObject(parsed.models)) {
+      throw new Error(`Expected an object for models in ${file}`);
+    }
+    for (const tier of ["fast", "work", "strong"]) {
+      if (tier in parsed.models && typeof parsed.models[tier] !== "string") {
+        throw new Error(`Expected a string for models.${tier} in ${file}`);
+      }
+    }
+  }
+  if ("modelFallbacks" in parsed) {
+    if (!isPlainObject(parsed.modelFallbacks)) {
+      throw new Error(`Expected an object for modelFallbacks in ${file}`);
+    }
+    for (const tier of ["fast", "work", "strong"]) {
+      if (!(tier in parsed.modelFallbacks)) continue;
+      const list = parsed.modelFallbacks[tier];
+      if (
+        !Array.isArray(list) ||
+        !list.every(
+          (item) => typeof item === "string" && item.trim().length > 0,
+        )
+      ) {
+        throw new Error(
+          `Expected an array of non-empty strings for modelFallbacks.${tier} in ${file}`,
+        );
+      }
+    }
+  }
+  if ("bookie" in parsed) {
+    if (!isPlainObject(parsed.bookie)) {
+      throw new Error(`Expected an object for bookie in ${file}`);
+    }
+    for (const flag of ["autoRecall", "autoDistill"]) {
+      if (flag in parsed.bookie && typeof parsed.bookie[flag] !== "boolean") {
+        throw new Error(`Expected a boolean for bookie.${flag} in ${file}`);
+      }
+    }
   }
   return parsed as EcosystemConfig;
 }

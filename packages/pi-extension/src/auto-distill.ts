@@ -8,7 +8,6 @@ import type {
 import { containsDetectedSecret } from "pi-bookie-core";
 import { createActivityIdentity } from "./checkpoint-metadata.js";
 import {
-  loadEcosystemConfig,
   readEcosystemConfig,
   resolveFastModelCandidates,
   type EcosystemConfig,
@@ -24,6 +23,8 @@ interface DistillationMessage {
 
 interface StreamModelRegistry {
   find?(provider: string, id: string): unknown;
+  hasConfiguredAuth?(model: unknown): boolean;
+  getAvailable?(): ReadonlyArray<{ provider?: string; id?: string }>;
   streamSimple?(
     model: unknown,
     context: {
@@ -39,6 +40,23 @@ interface StreamModelRegistry {
   };
 }
 
+function isModelAuthenticated(
+  registry: StreamModelRegistry | undefined,
+  model: unknown,
+  provider: string,
+  modelId: string,
+): boolean {
+  if (typeof registry?.hasConfiguredAuth === "function") {
+    return Boolean(registry.hasConfiguredAuth(model));
+  }
+  if (typeof registry?.getAvailable === "function") {
+    return registry
+      .getAvailable()
+      .some((m) => m?.provider === provider && m?.id === modelId);
+  }
+  return true;
+}
+
 function findFastModel(
   registry: StreamModelRegistry | undefined,
   spec: string,
@@ -47,7 +65,12 @@ function findFastModel(
   if (separator < 1) return undefined;
   const provider = spec.slice(0, separator).trim();
   const modelId = spec.slice(separator + 1).trim();
-  return modelId ? registry?.find?.(provider, modelId) : undefined;
+  if (!modelId) return undefined;
+  const found = registry?.find?.(provider, modelId);
+  if (!found) return undefined;
+  return isModelAuthenticated(registry, found, provider, modelId)
+    ? found
+    : undefined;
 }
 
 function messageText(content: unknown): string {
@@ -254,11 +277,14 @@ export function registerAutoDistill(
   disclosure: ReturnType<typeof createDisclosureAuthority>,
 ): void {
   pi.on("session_before_compact", async (event, ctx) => {
-    if (
-      process.env.PI_BOOKIE_AUTO_DISTILL === "0" ||
-      loadEcosystemConfig(process.env).bookie?.autoDistill === false
-    )
+    if (process.env.PI_BOOKIE_AUTO_DISTILL === "0") return;
+    let ecoConfig: EcosystemConfig | undefined;
+    try {
+      ecoConfig = readEcosystemConfig(process.env);
+    } catch {
       return;
+    }
+    if (ecoConfig?.bookie?.autoDistill === false) return;
     if (!authority.canManage() || !disclosure.canManage()) return;
     try {
       const selected = await managed.get(ctx).catch(() => undefined);
