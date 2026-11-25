@@ -1,6 +1,6 @@
 # pi-bookie-core release notes
 
-## 1.0.2 - 2026-11-25
+## [1.0.2] - 2026-11-25
 
 - Coordinate the core release with the checkpoint reliability fixes in pi-bookie.
 
