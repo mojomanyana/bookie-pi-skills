@@ -1,5 +1,9 @@
 # pi-bookie-core release notes
 
+## [1.0.3] - 2026-11-25
+
+- Removed unused `work-map` modules, retired retrieval-service protocol schema, and obsolete SPEC-004 prose (~2,500+ LOC).
+
 ## [1.0.2] - 2026-11-25
 
 - Coordinate the core release with the checkpoint reliability fixes in pi-bookie.
