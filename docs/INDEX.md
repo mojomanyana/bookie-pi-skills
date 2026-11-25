@@ -46,7 +46,7 @@ This page is the stable entry point for product and engineering context.
 1. [Canonical ledger](specs/001-canonical-ledger.md)
 2. [Core library and CLI](specs/002-core-and-cli.md)
 3. [Pi extension](specs/003-pi-extension.md)
-4. [Retrieval service](specs/004-retrieval-service.md)
+4. [Retrieval service (retired)](specs/004-retrieval-service.md)
 5. [Export adapters](specs/005-export-adapters.md)
 
 ## Examples and checks
@@ -70,7 +70,6 @@ This page is the stable entry point for product and engineering context.
 - [Core filesystem search and inspect](../packages/core/src/filesystem-query.ts) and [tests](../packages/core/test/filesystem-query.test.mjs)
 - [Core canonical JSONL export](../packages/core/src/canonical-export.ts), [record schema](../schemas/export/1.0/canonical-record.schema.json), and [tests](../packages/core/test/canonical-export.test.mjs)
 - [Core concept mutation](../packages/core/src/concept-mutation.ts) and [tests](../packages/core/test/concept-mutation.test.mjs)
-- [Service protocol v1 schema](../schemas/service/v1/protocol.schema.json) and [contract tests](../test/service-design-contract.test.mjs)
 - [Example vault](../examples/vault/)
 - [Repository contract tests](../test/repository.test.mjs)
 

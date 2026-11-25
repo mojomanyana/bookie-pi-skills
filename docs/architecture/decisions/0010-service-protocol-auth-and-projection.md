@@ -15,7 +15,7 @@ An exact Git object ID is not by itself approval to index historical content. Ca
 
 ### Runtime and protocol
 
-Use the maintained Fastify major compatible with the Node 24 baseline. Fastify owns HTTP parsing, strict route-schema validation, lifecycle hooks, and the static error handler; core continues to own canonical parsing and validation. Every JSON body and response is validated against the versioned JSON Schema at [`schemas/service/v1/protocol.schema.json`](../../../schemas/service/v1/protocol.schema.json). Unknown properties fail, JSON is the only accepted request media type, and compressed request bodies are disabled initially.
+Use the maintained Fastify major compatible with the Node 24 baseline. Fastify owns HTTP parsing, strict route-schema validation, lifecycle hooks, and the static error handler; core continues to own canonical parsing and validation. Every JSON body and response was validated against the retired `schemas/service/v1/protocol.schema.json` (removed in v1.0 when `apps/service` was replaced by local `node:sqlite` FTS5). Unknown properties fail, JSON is the only accepted request media type, and compressed request bodies are disabled initially.
 
 The service exposes the routes in [SPEC-004](../../specs/004-retrieval-service.md#version-1-http-contract). It adds explicit rebuild cancellation and compare-and-set activation routes so disconnect, cutover, and rollback behavior are unambiguous. Breaking field or semantic changes use `/v2` and a new schema; additive optional responses require a separately accepted compatibility rule because version 1 responses are strict.
 
