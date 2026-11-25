@@ -1,5 +1,9 @@
 # pi-bookie release notes
 
+## [1.0.3] - 2026-11-25
+
+- Removed orphaned `retained-handoff.ts` and stale `bookie_work` reference in `bookie-continuity/SKILL.md`.
+
 ## [1.0.2] - 2026-11-25
 
 - Retain user decisions from string and text-block messages.
