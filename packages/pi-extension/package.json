@@ -2,6 +2,11 @@
   "name": "pi-bookie",
   "version": "1.0.1",
   "private": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mojomanyana/bookie-pi-skills.git",
+    "directory": "packages/pi-extension"
+  },
   "type": "module",
   "keywords": [
     "pi-package"
