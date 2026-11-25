@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { loadConcept } from "pi-bookie-core";
+import { getSchemaValidators } from "../../core/dist/vault-manifest.js";
 import { distillSessionCheckpoint } from "../dist/auto-distill.js";
 
 test("distillSessionCheckpoint writes an internal OKF note using PI_ECO_MODEL_FAST and blocks secrets", async () => {
@@ -66,6 +68,14 @@ test("distillSessionCheckpoint writes an internal OKF note using PI_ECO_MODEL_FA
     assert.match(written, /"sensitivity":"internal"/);
     assert.match(written, /"type":"Activity"/);
     assert.match(written, /Rate limiter concurrency fix/);
+    const note = loadConcept(readFileSync(ok.path), { file: ok.path });
+    assert.equal(note.ok, true);
+    const validate = (await getSchemaValidators()).byType.get("Activity");
+    assert.equal(
+      validate(note.concept.frontmatter),
+      true,
+      JSON.stringify(validate.errors),
+    );
 
     const blocked = await distillSessionCheckpoint(
       makeCtx(
