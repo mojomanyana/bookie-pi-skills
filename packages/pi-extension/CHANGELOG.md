@@ -1,5 +1,11 @@
 # pi-bookie release notes
 
+## [1.0.2] - 2026-11-25
+
+- Retain user decisions from string and text-block messages.
+- Reject cancelled or failed distillations and honor the configured fast model.
+- Save distinct checkpoints with canonical activity IDs and exclusive file creation.
+
 ## [1.0.1] — 2026-11-25
 
 - Updated `README.md` and `packages/pi-extension/README.md` to reflect `1.0.1` SQLite FTS5 passive recall, `/bookie-distill`, `ecosystem.json`, and remove stale JEV / `bookie_work` references.

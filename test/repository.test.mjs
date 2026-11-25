@@ -370,6 +370,10 @@ test("toolchain, workspaces, and lockfile versions stay aligned", () => {
   );
 
   const names = [];
+  const coreVersion = JSON.parse(
+    readFileSync(resolve(root, "packages/core/package.json"), "utf8"),
+  ).version;
+  assert.match(coreVersion, /^\d+\.\d+\.\d+$/);
   for (const workspacePath of workspacePaths) {
     const manifest = JSON.parse(
       readFileSync(resolve(root, workspacePath, "package.json"), "utf8"),
@@ -379,12 +383,12 @@ test("toolchain, workspaces, and lockfile versions stay aligned", () => {
       "packages/core": {
         name: "pi-bookie-core",
         public: true,
-        version: "1.0.1",
+        version: coreVersion,
       },
       "packages/pi-extension": {
         name: "pi-bookie",
         public: true,
-        version: "1.0.1",
+        version: coreVersion,
       },
       "packages/cli": { name: "@bookie/cli", public: false, version: "0.0.0" },
     }[workspacePath];
@@ -403,7 +407,7 @@ test("toolchain, workspaces, and lockfile versions stay aligned", () => {
       link: true,
     });
     if (workspacePath !== "packages/core") {
-      assert.equal(manifest.dependencies["pi-bookie-core"], "1.0.1");
+      assert.equal(manifest.dependencies["pi-bookie-core"], coreVersion);
       assert.equal(manifest.dependencies["@bookie/core"], undefined);
     }
     if (release.public) {
