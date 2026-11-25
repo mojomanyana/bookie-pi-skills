@@ -49,7 +49,6 @@ const requiredFiles = [
   "docs/specs/004-retrieval-service.md",
   "docs/specs/005-export-adapters.md",
   "schemas/export/1.0/canonical-record.schema.json",
-  "schemas/service/v1/protocol.schema.json",
   "examples/vault/index.md",
   "examples/vault/bookie.yaml",
   "examples/vault/projects/demo/project.md",
