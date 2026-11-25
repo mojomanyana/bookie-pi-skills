@@ -8,7 +8,9 @@ Pi can call `bookie_remember` to retain a short project note and `bookie_search`
 
 In `1.0`, `pi-bookie` also provides passive `<project_memory>` Turn-1 auto-recall (powered by `pi-bookie-core`'s local `node:sqlite` FTS5 index), canonical OKF `/bookie-distill` + pre-compaction auto-distillation, contextual deferred tool activation, and shared configuration via `~/.pi/agent/ecosystem.json` (`models.fast`, `bookie.autoRecall`, `bookie.autoDistill`).
 
-Distributable Pi package for Bookie tools. Canonical behavior belongs in `pi-bookie-core`; follow [SPEC-003](../../docs/specs/003-pi-extension.md) and the Pi-specific constraints in [AGENTS.md](../../AGENTS.md#pi-implementation-constraints).
+For distillation, `PI_ECO_MODEL_FAST` overrides `models.fast`. An unavailable configured model skips the checkpoint. With neither setting, Bookie uses the current session model.
+
+Distributable Pi package for Bookie tools. Canonical behavior belongs in `pi-bookie-core`; follow [SPEC-003](https://github.com/mojomanyana/bookie-pi-skills/blob/main/docs/specs/003-pi-extension.md) and the Pi-specific constraints in [AGENTS.md](https://github.com/mojomanyana/bookie-pi-skills/blob/main/AGENTS.md#pi-implementation-constraints).
 
 Saved dashboard answers are separate project notes. Memory previews show **Answered: your choice** after checking the original question and its answer. Ask Pi using a few words from the topic or answer; it can read the matching record and report the verified question/answer even if the older question note still says it was open. An unavailable preview is not an unanswered question. Routine choices do not depend on a selected work map or task list.
 
@@ -47,7 +49,7 @@ BK-013 through BK-015 expose five local tools:
 - `bookie_write` creates or amends one concept from a bounded JSON request file through policy-bearing core APIs and Pi's complete file-mutation queue.
 - `bookie_checkpoint` prepares a sensitivity-filtered Activity from structured fragments and either writes after trusted UI approval or applicable session-scoped capture permission or stages the prepared snapshot for approval before compaction.
 
-Excluded write successes serialize an explicit `redacted: true` variant without source/previous hashes, identities or source sizes; included and policy-neutral contracts retain their required hashes. Consumers must narrow that variant before reading hashes. Rollback disables affected writes, never restores fingerprint leakage ([BK-027](../../docs/planning/evidence/BK-027.md)).
+Excluded write successes serialize an explicit `redacted: true` variant without source/previous hashes, identities or source sizes; included and policy-neutral contracts retain their required hashes. Consumers must narrow that variant before reading hashes. Rollback disables affected writes, never restores fingerprint leakage ([BK-027](https://github.com/mojomanyana/bookie-pi-skills/blob/main/docs/planning/evidence/BK-027.md)).
 
 Routine handoffs can attach up to six observed sources in one `bookie_remember` call. Use `includeEvidence` with `research`, `decision` or `validation`. A unique receipt in the current request is selected directly. When multiple receipts match, select the applicable offered `evidenceCallIds`; previous requests require an explicit selection. The note contains bounded references, observed tool status and any missing category. A successful shell call alone establishes no product outcome. Plain summaries retain their 2,000-character limit. Source-backed summaries allow up to 4,000 characters. A registered Scout brief stays with Scout and can be paged under the current project and body disclosure grant.
 
@@ -57,11 +59,9 @@ Run `/bookie-capture` in Pi to select an existing canonical vault and Project an
 
 Cooperating Bookie writers hold `.bookie-write.lock` over revision checks and publication. Contention waits at most five seconds and supports cancellation. A terminated owner can leave a lock; it is never stolen automatically. Before manual recovery, stop all writers and establish that the recorded owner is no longer running, then remove only the selected vault's retained lock. General filesystem editors remain outside this cooperation guarantee.
 
-Request files open nonblocking/no-follow, then must be stable, singly linked regular files. The 2,000,000-byte endpoint is accepted; one extra byte, malformed UTF-8/JSON, FIFO/substitution, directory, symlink or hardlink fails statically. Request abort reasons are not echoed. Failed immediate/staged checkpoint reads release the session slot before returning ([BK-028](../../docs/planning/evidence/BK-028.md)).
+Request files open nonblocking/no-follow, then must be stable, singly linked regular files. The 2,000,000-byte endpoint is accepted; one extra byte, malformed UTF-8/JSON, FIFO/substitution, directory, symlink or hardlink fails statically. Request abort reasons are not echoed. Failed immediate/staged checkpoint reads release the session slot before returning ([BK-028](https://github.com/mojomanyana/bookie-pi-skills/blob/main/docs/planning/evidence/BK-028.md)).
 
-The public package is `pi-bookie`, licensed under MIT. It declares the exact
-runtime dependency `pi-bookie-core: 1.0.1`, installed automatically.
-Install it with `pi install npm:pi-bookie@1.0.1`.
+The public MIT-licensed package `pi-bookie` installs its matching `pi-bookie-core` dependency automatically. Install it with `pi install npm:pi-bookie`.
 
 From a built repository checkout, load the package temporarily with:
 
@@ -77,9 +77,9 @@ pi install ./packages/pi-extension
 
 Both the root Git manifest and local subpackage load `src/index.ts` through Pi's TypeScript loader, which maps Pi imports to the actual host (including its mutation queue). Do not load `dist/index.js` directly as a Pi entry: native compiled ESM may bypass host mapping when development dependencies are present. Pi packages are `*` host peers, never production dependencies; the development/typecheck baseline remains Pi 0.85.1, not the globally installed 1.4.0 API.
 
-Git `prepare` builds core JavaScript, declarations and schema assets only; Pi loads the extension TypeScript itself. This works with production installs that suppress host peer installation (`npm install --omit=dev --legacy-peer-deps`). Development builds still compile/typecheck the complete extension and retain `dist` declarations. Clean relocated root/local installation and independent real-host-loader create/amend/checkpoint interlocks are default tests. See [BK-026 evidence](../../docs/planning/evidence/BK-026.md).
+Git `prepare` builds core JavaScript, declarations and schema assets only; Pi loads the extension TypeScript itself. This works with production installs that suppress host peer installation (`npm install --omit=dev --legacy-peer-deps`). Development builds still compile/typecheck the complete extension and retain `dist` declarations. Clean relocated root/local installation and independent real-host-loader create/amend/checkpoint interlocks are default tests. See [BK-026 evidence](https://github.com/mojomanyana/bookie-pi-skills/blob/main/docs/planning/evidence/BK-026.md).
 
-BK-030 has local required-check evidence on the Pi 0.85.1 development baseline and seven additional model-free real-loader cases on an existing Pi 1.4.0 host. These qualify package loading and shared create/amend/checkpoint queues, not a full interactive/provider run. See [BK-030 evidence](../../docs/planning/evidence/BK-030.md). The implementation subsequently shipped in public 0.1.0 through PR #42; those historical checks retain their original scope.
+BK-030 has local required-check evidence on the Pi 0.85.1 development baseline and seven additional model-free real-loader cases on an existing Pi 1.4.0 host. These qualify package loading and shared create/amend/checkpoint queues, not a full interactive/provider run. See [BK-030 evidence](https://github.com/mojomanyana/bookie-pi-skills/blob/main/docs/planning/evidence/BK-030.md). The implementation subsequently shipped in public 0.1.0 through PR #42; those historical checks retain their original scope.
 
 ### Session disclosure and optional producer references
 
