@@ -4,7 +4,9 @@ To install Bookie alongside the dashboard and other Pi tools, follow the [Pi eco
 
 **Start with an empty folder.** Open the folder as a trusted Pi project. With Pi Daddy Auto on, Bookie provides private memory for that folder without a setup command, Git repository, or project files. Tell Pi a decision in your own words. For example: “I'll choose the theme for our community workshop. Ask me for it, then remember my answer.” In a new Pi session in the same folder ask “What workshop theme did I choose?” A different folder has its own memory.
 
-Pi can call `bookie_remember` to retain a short project note and `bookie_search` or `bookie_read` without a vault path to recall it. Auto covers routine project notes at meaningful boundaries. It does not import old vaults, record whole conversations, publish notes, or enable JEV. Bookie checks the current model destination before returning note contents. Turning off Pi Daddy Auto ends this automatic access; it does not erase saved notes. With Pi Daddy absent or Auto off, explicit Bookie project selection remains available as before.
+Pi can call `bookie_remember` to retain a short project note and `bookie_search` or `bookie_read` without a vault path to recall it. Auto covers routine project notes at meaningful boundaries. It does not import old vaults, record whole conversations, or publish notes. Bookie checks the current model destination before returning note contents. Turning off Pi Daddy Auto ends this automatic access; it does not erase saved notes. With Pi Daddy absent or Auto off, explicit Bookie project selection remains available as before.
+
+In `1.0`, `pi-bookie` also provides passive `<project_memory>` Turn-1 auto-recall (powered by `pi-bookie-core`'s local `node:sqlite` FTS5 index), canonical OKF `/bookie-distill` + pre-compaction auto-distillation, contextual deferred tool activation, and shared configuration via `~/.pi/agent/ecosystem.json` (`models.fast`, `bookie.autoRecall`, `bookie.autoDistill`).
 
 Distributable Pi package for Bookie tools. Canonical behavior belongs in `pi-bookie-core`; follow [SPEC-003](../../docs/specs/003-pi-extension.md) and the Pi-specific constraints in [AGENTS.md](../../AGENTS.md#pi-implementation-constraints).
 
@@ -58,11 +60,8 @@ Cooperating Bookie writers hold `.bookie-write.lock` over revision checks and pu
 Request files open nonblocking/no-follow, then must be stable, singly linked regular files. The 2,000,000-byte endpoint is accepted; one extra byte, malformed UTF-8/JSON, FIFO/substitution, directory, symlink or hardlink fails statically. Request abort reasons are not echoed. Failed immediate/staged checkpoint reads release the session slot before returning ([BK-028](../../docs/planning/evidence/BK-028.md)).
 
 The public package is `pi-bookie`, licensed under MIT. It declares the exact
-runtime dependency `pi-bookie-core: 0.1.0`, installed automatically.
-Install it with `pi install npm:pi-bookie`. Historical private
-names and earlier qualification records remain historical. Avoid loading an old
-private Bookie entry alongside the new one; tool names, vault formats and trusted
-permission setup have not changed.
+runtime dependency `pi-bookie-core: 1.0.1`, installed automatically.
+Install it with `pi install npm:pi-bookie@1.0.1`.
 
 From a built repository checkout, load the package temporarily with:
 
@@ -81,7 +80,6 @@ Both the root Git manifest and local subpackage load `src/index.ts` through Pi's
 Git `prepare` builds core JavaScript, declarations and schema assets only; Pi loads the extension TypeScript itself. This works with production installs that suppress host peer installation (`npm install --omit=dev --legacy-peer-deps`). Development builds still compile/typecheck the complete extension and retain `dist` declarations. Clean relocated root/local installation and independent real-host-loader create/amend/checkpoint interlocks are default tests. See [BK-026 evidence](../../docs/planning/evidence/BK-026.md).
 
 BK-030 has local required-check evidence on the Pi 0.85.1 development baseline and seven additional model-free real-loader cases on an existing Pi 1.4.0 host. These qualify package loading and shared create/amend/checkpoint queues, not a full interactive/provider run. See [BK-030 evidence](../../docs/planning/evidence/BK-030.md). The implementation subsequently shipped in public 0.1.0 through PR #42; those historical checks retain their original scope.
-
 
 ### Session disclosure and optional producer references
 
@@ -116,7 +114,6 @@ Legacy `bookie_read`/`bookie_search` results already sent during the same live s
 Mutation request.path is a vault-relative Markdown path such as projects/demo/task.md; Bookie read selectors and frontmatter project/relation references retain their separate /projects/... form. Keep the existing validators and use the returned fixed guidance to correct the request explicitly. For a Task, bookie.state is one of proposed, ready, in_progress, blocked, done or cancelled; lifecycle status is a separate field. Checkpoint Activity and fragment sensitivity labels must be declared by the selected vault, and the Activity class cannot be excluded. Do not relabel content merely to make a write pass.
 
 Selected path, state and checkpoint-sensitivity failures now return bounded static hints. Other schema errors remain code-only; protected values, arbitrary validator messages and private source bodies are withheld. A changed disclosure grant still withholds feedback, and a possibly completed mutation still warns against blind retry. This repair is included in public 0.1.0; source-level tests alone are not installed-package or publication qualification.
-
 
 ## Selected canonical export
 
