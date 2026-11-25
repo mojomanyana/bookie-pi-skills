@@ -1,4 +1,3 @@
-import { randomBytes } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -7,10 +6,16 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { containsDetectedSecret } from "pi-bookie-core";
+import { createActivityIdentity } from "./checkpoint-metadata.js";
 import { loadEcosystemConfig } from "./ecosystem-config.js";
 import type { createManagedMemory } from "./managed-memory.js";
 import type { createCaptureAuthority } from "./capture-authority.js";
 import type { createDisclosureAuthority } from "./disclosure-authority.js";
+
+interface DistillationMessage {
+  content?: Array<{ type?: string; text?: string }>;
+  stopReason?: string;
+}
 
 interface StreamModelRegistry {
   find?(provider: string, id: string): unknown;
@@ -25,29 +30,34 @@ interface StreamModelRegistry {
     },
     options?: { signal?: AbortSignal; reasoning?: string },
   ): {
-    result(): Promise<{ content?: Array<{ type?: string; text?: string }> }>;
+    result(): Promise<DistillationMessage>;
   };
 }
 
-function selectFastModel(
+function findFastModel(
   registry: StreamModelRegistry | undefined,
-  fallback: unknown,
+  spec: string,
 ): unknown {
-  const spec =
-    process.env.PI_ECO_MODEL_FAST?.trim() ||
-    loadEcosystemConfig(process.env).models?.fast?.trim();
-  if (spec && typeof registry?.find === "function") {
-    const sep = spec.includes("/") ? "/" : ":";
-    const idx = spec.indexOf(sep);
-    if (idx > 0) {
-      const found = registry.find(
-        spec.slice(0, idx).trim(),
-        spec.slice(idx + 1).trim(),
-      );
-      if (found) return found;
-    }
-  }
-  return fallback;
+  const separator = spec.search(/[/:]/);
+  if (separator < 1) return undefined;
+  const provider = spec.slice(0, separator).trim();
+  const modelId = spec.slice(separator + 1).trim();
+  return modelId ? registry?.find?.(provider, modelId) : undefined;
+}
+
+function messageText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter(
+      (b): b is { type: string; text: string } =>
+        typeof b === "object" &&
+        b !== null &&
+        (b as { type?: unknown }).type === "text" &&
+        typeof (b as { text?: unknown }).text === "string",
+    )
+    .map((b) => b.text)
+    .join(" ");
 }
 
 function collectBranchDigest(ctx: ExtensionContext): string {
@@ -64,19 +74,7 @@ function collectBranchDigest(ctx: ExtensionContext): string {
     if (row.type !== "message" || !row.message) continue;
     const role = row.message.role;
     if (role !== "user" && role !== "assistant") continue;
-    const blocks = Array.isArray(row.message.content)
-      ? row.message.content
-      : [];
-    const text = blocks
-      .filter(
-        (b): b is { type: string; text: string } =>
-          typeof b === "object" &&
-          b !== null &&
-          (b as { type?: unknown }).type === "text" &&
-          typeof (b as { text?: unknown }).text === "string",
-      )
-      .map((b) => b.text)
-      .join(" ")
+    const text = messageText(row.message.content)
       .replace(/\s+/g, " ")
       .trim()
       .slice(0, 500);
@@ -100,6 +98,7 @@ export async function distillSessionCheckpoint(
   vaultRoot: string,
   signal?: AbortSignal,
 ): Promise<{ saved: boolean; path?: string; reason?: string }> {
+  if (signal?.aborted) return { saved: false, reason: "cancelled" };
   const digest = collectBranchDigest(ctx);
   if (digest.length < 40)
     return { saved: false, reason: "insufficient-history" };
@@ -109,7 +108,11 @@ export async function distillSessionCheckpoint(
   const registry = (ctx as unknown as { modelRegistry?: StreamModelRegistry })
     .modelRegistry;
   const fallback = (ctx as unknown as { model?: unknown }).model;
-  const model = selectFastModel(registry, fallback);
+  const fast =
+    process.env.PI_ECO_MODEL_FAST?.trim() ||
+    loadEcosystemConfig(process.env).models?.fast?.trim();
+  const model = fast ? findFastModel(registry, fast) : fallback;
+  if (fast && !model) return { saved: false, reason: "fast-model-unavailable" };
   if (!model || typeof registry?.streamSimple !== "function") {
     return { saved: false, reason: "model-unavailable" };
   }
@@ -120,20 +123,36 @@ export async function distillSessionCheckpoint(
     "",
     digest,
   ].join("\n");
-  const stream = registry.streamSimple(
-    model,
-    {
-      messages: [
-        {
-          role: "user",
-          content: [{ type: "text", text: prompt }],
-          timestamp: Date.now(),
-        },
-      ],
-    },
-    { ...(signal ? { signal } : {}), reasoning: "off" },
-  );
-  const message = await stream.result();
+  let message: DistillationMessage;
+  try {
+    const stream = registry.streamSimple(
+      model,
+      {
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "text", text: prompt }],
+            timestamp: Date.now(),
+          },
+        ],
+      },
+      { ...(signal ? { signal } : {}), reasoning: "off" },
+    );
+    message = await stream.result();
+  } catch {
+    return {
+      saved: false,
+      reason: signal?.aborted ? "cancelled" : "model-error",
+    };
+  }
+  if (signal?.aborted || message?.stopReason === "aborted") {
+    return { saved: false, reason: "cancelled" };
+  }
+  if (message?.stopReason === "error")
+    return { saved: false, reason: "model-error" };
+  if (message?.stopReason && message.stopReason !== "stop") {
+    return { saved: false, reason: "incomplete-distillation" };
+  }
   const raw = (message?.content ?? [])
     .filter((c) => c?.type === "text" && typeof c.text === "string")
     .map((c) => c.text!)
@@ -159,8 +178,7 @@ export async function distillSessionCheckpoint(
       ? parsed.summary.trim().slice(0, 1800)
       : "";
   if (!title || !summary) return { saved: false, reason: "empty-fields" };
-  const nowIso = new Date().toISOString();
-  const actUid = `ACT-${randomBytes(8).toString("hex")}`;
+  const { uid: actUid, at: nowIso } = createActivityIdentity();
   // Emit canonical OKF Activity frontmatter so both queryVaultFts (auto-recall) and
   // recallVault (bookie_search / Daddy Dashboard) index and surface distilled checkpoints.
   const frontmatter = JSON.stringify({
@@ -194,15 +212,15 @@ export async function distillSessionCheckpoint(
   const canonical = realpathSync(vaultRoot);
   const activitiesDir = join(canonical, "projects", "workspace", "activities");
   await mkdir(activitiesDir, { recursive: true, mode: 0o700 });
-  const stamp = nowIso.replace(/[:.]/g, "-");
-  const target = join(activitiesDir, `auto-${stamp}-${slugTitle(title)}.md`);
-  await writeFile(target, body, { encoding: "utf8", mode: 0o600 });
+  if (signal?.aborted) return { saved: false, reason: "cancelled" };
+  const target = join(activitiesDir, `auto-${actUid}-${slugTitle(title)}.md`);
+  await writeFile(target, body, { encoding: "utf8", mode: 0o600, flag: "wx" });
   return { saved: true, path: target };
 }
 
 /**
  * Automatic cheap-model checkpoint distillation on `session_before_compact` + manual `/bookie-distill`.
- * Uses PI_ECO_MODEL_FAST (or current model at reasoning=off) with fail-closed secret detection.
+ * Uses the configured fast model, or the current model at reasoning=off when no fast tier is configured.
  * Opt out with PI_BOOKIE_AUTO_DISTILL=0.
  */
 export function registerAutoDistill(
@@ -228,12 +246,16 @@ export function registerAutoDistill(
           "Bookie auto-distilled checkpoint before compaction.",
           "info",
         );
+      } else if (ctx.hasUI && res.reason === "fast-model-unavailable") {
+        ctx.ui.notify(
+          "Bookie skipped the checkpoint because the configured fast model is unavailable.",
+          "warning",
+        );
       }
     } catch {
       /* Auto-distill never blocks compaction. */
     }
   });
-
   pi.registerCommand("bookie-distill", {
     description:
       "Distill a concise, secret-scanned project memory checkpoint using PI_ECO_MODEL_FAST",
