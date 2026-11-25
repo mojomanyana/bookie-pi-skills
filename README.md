@@ -18,10 +18,10 @@ Automatic memory belongs to the exact folder, so after a move or rename Bookie s
 
 ## Current status
 
-| Area | Available now | Remaining work |
-| --- | --- | --- |
-| Canonical core | Lossless Markdown/YAML, validation, conflict-safe mutation, Evidence capture, local search/inspect and exact-commit JSONL export. | Verified through BK-011. |
-| CLI and Pi | Read/query CLI; Pi read, search, validate, approved writes, curated checkpoints and bounded selected canonical JSONL export. | CLI filesystem-writing commands are deferred by ADR-0008. |
+| Area             | Available now                                                                                                                                                                          | Remaining work                                                                                                                         |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Canonical core   | Lossless Markdown/YAML, validation, conflict-safe mutation, Evidence capture, local search/inspect and exact-commit JSONL export.                                                      | Verified through BK-011.                                                                                                               |
+| CLI and Pi       | Read/query CLI; Pi read, search, validate, approved writes, curated checkpoints and bounded selected canonical JSONL export.                                                           | CLI filesystem-writing commands are deferred by ADR-0008.                                                                              |
 | Shared retrieval | Merged authenticated HTTP contract, projection, ingestion, source preflight, Fenced candidate storage, owned rebuild admission/lifecycle and qualified immutable local runtime images. | BK-017 S8 stored-stream completion, lexical search/context, evaluation/activation, production startup/Compose and scale qualification. |
 
 The canonical profile is verified. Shared retrieval is still incomplete: S5 private trusted recipe/builder verification and S6 fenced input claims/output attachment are delivered. S7's private owned controller and optional existing-v1 rebuild/status/cancel routes are delivered in [PR #36](https://github.com/mojomanyana/bookie-pi-skills/pull/36), with final integrated approval and matching merged-main CI. Completion/serving and production deployment/scale qualification remain pending. [PR #28](https://github.com/mojomanyana/bookie-pi-skills/pull/28) merged at `2026-10-10T00:12:09Z` as `4774ce18f47a5e979ab1d09365a2b2377af26458`; matching PR and merged-main CI succeeded. BK-025 is Done; BK-017 remains Ready/partial and SPEC-004 In progress. Delivery reconciliation merged in [PR #29](https://github.com/mojomanyana/bookie-pi-skills/pull/29); its merged-main CI passed. This service status does not negate the separate public local-ledger packages; no production shared-retrieval qualification is claimed. See the [backlog](docs/planning/backlog.md) for acceptance and the [handoff](docs/planning/next-session.md) for development status. Shared-code and build improvements are recorded in [BK-025](docs/planning/evidence/BK-025.md).
@@ -111,18 +111,15 @@ Bookie is operational recordkeeping, not financial accounting, real-time collabo
 
 Bookie code and documentation are licensed under [MIT](LICENSE); see [ADR-0014](docs/architecture/decisions/0014-mit-project-license.md). Third-party dependencies retain their own licenses. The local-ledger packages are published; this license does not complete the separate service release.
 
+### SQLite FTS5 Passive Recall & Auto-Distill (v1.0)
 
-### Scoped work maps (released BK-033)
+`pi-bookie-core` embeds a fail-closed local `node:sqlite` FTS5 index (`sqlite-index.ts`) supporting both YAML and JSON frontmatter across project OKF markdown vaults — with zero external database or service processes.
 
-Bookie can retain a bounded, versioned work map inside an ordinary canonical Document. `bookie_work` with `action: schema` explains the actual authoring contract without shell access or private vault reads. `/bookie-work` selects the current Project/plan/task scope; `bookie_work` returns only that scope's exact inputs, output contracts, prerequisites and current owner observations. It does not dispatch work or infer acceptance from a Task label. Optional Daddy ownership and Principal review references remain independently checked.
+- **Passive `<project_memory>` Auto-Recall (`auto-recall.ts`):** automatically surfaces top relevant project notes at Turn 1 without burning extra tool calls.
+- **Canonical OKF Auto-Distill (`auto-distill.ts` & `/bookie-distill`):** distills durable decisions and lessons on session compaction or on demand via `/bookie-distill`, routed through your fast model tier.
+- **Contextual Deferred Tools:** Bookie's tools remain deferred on Turn 1 unless memory work is invoked, keeping baseline token overhead minimal.
+- **Single Config (`~/.pi/agent/ecosystem.json`):** configure `models.fast` and `bookie.{autoRecall,autoDistill}` once alongside `pi-daddy`, `principal-pi-skills`, `pi-scout-research`, and `skill-harness` (env vars override when set).
 
-With a compatible Pi Daddy coordinator, the selected work map can link finished handoffs once with your session permission. The dashboard names the saved work ready for review. Use `/bookie-work review` to open it, then record your review decision for the exact output.
+### Local checkpoint reliability
 
-For a non-engineering role, exact canonical outputs and an operator-confirmed canonical Decision provide a review path without Principal. `/bookie-work accept` confirms that exact output for the current session; `/bookie-work reconcile` records an exact operator-confirmed receipt for a settled external attempt, using recovery-only ownership when necessary. Reload preserves a compact active-branch selection hint, not permissions, judgments or ownership. See [SPEC-003's operational flow](docs/specs/003-pi-extension.md#bk-033-operational-use-and-boundaries) for setup, receipt-only amendments, resource bounds and limitations. This work-map implementation is released in 0.1.0; bounded continuation evidence does not establish general guidance quality.
-
-BK-035 is a released recall repair: canonical observations distinguish ordered control history from producer metadata, and stale remembered outputs can no longer indefinitely withhold later fresh reads. Whole-store validation, producer-body permission and selected task intent remain separate checks. See [implementation evidence](docs/planning/evidence/BK-035.md) and [0.1.0 delivery](docs/planning/evidence/public-delivery-0.1.0.md); release does not establish a measured general memory-quality gain.
-
-
-### Local checkpoint reliability candidate
-
-The 0.1.2 maintenance release (BK-040) clarifies checkpoint errors before a write, preserves safe failure history, and adds an explicit host-side metadata helper. Core validation and capture/disclosure permissions remain unchanged. See [the checkpoint recipe](packages/pi-extension/skills/bookie-continuity/references/checkpoint-recipe.md) and [verified public delivery](docs/planning/evidence/public-delivery-0.1.2.md).
+Bookie validates checkpoint errors before writes, preserves safe failure history, and exposes explicit host-side metadata helpers. See [the checkpoint recipe](packages/pi-extension/skills/bookie-continuity/references/checkpoint-recipe.md).

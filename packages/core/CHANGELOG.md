@@ -1,5 +1,9 @@
 # pi-bookie-core release notes
 
+## [1.0.1] — 2026-11-25
+
+- Updated `README.md` and `packages/core/README.md` to document local `node:sqlite` FTS5, passive recall/distill, and `ecosystem.json`, removing stale references to `bookie_work` and `apps/service`.
+
 ## [1.0.0] — 2026-11-24
 
 - v1.0.0 major release: local-first OKF canonical core + zero-dependency Node 24 SQLite FTS5 hybrid index (`queryVaultFts`) with fail-closed sensitivity and secret controls.

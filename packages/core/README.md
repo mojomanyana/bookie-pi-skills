@@ -6,11 +6,7 @@ It must not depend on Pi, Redis, an HTTP framework, or a concrete embedding prov
 
 ## Package identity
 
-The public package is `pi-bookie-core` under MIT. Version 0.3.0 adds confirmable lexical suggestions. `pi-bookie` installs it
-automatically through an exact dependency; direct Node consumers use
-`import { validateVault } from "pi-bookie-core"`. Earlier private archives used
-`@bookie/core`; their hashes and qualification remain historical. Existing API and vault formats are
-unchanged; see [ADR-0015](../../docs/architecture/decisions/0015-public-package-names.md).
+The public package is `pi-bookie-core` under MIT (`1.0.1`). In addition to OKF lossless parsing, validation, safe mutation, and filesystem search, `1.0` includes a fail-closed built-in `node:sqlite` FTS5 index (`sqlite-index.ts`) supporting both YAML and JSON frontmatter. `pi-bookie` installs it automatically through an exact dependency; direct Node consumers use `import { validateVault } from "pi-bookie-core"`.
 
 ## Lossless concept loading
 
@@ -38,7 +34,7 @@ This does not validate a vault or read-only mount, authenticate clients, approve
 
 `readApprovedSourceManifest(root, { sourceRef, approvedRef, rollbackWindow, vaultUid, signal? })` proves approved history, then reads only that commit's bounded ordinary `bookie.yaml` blob. It checks blob size/hash, strict UTF-8/YAML (65,536 bytes/depth 64), the profile schema, and expected vault UID. Success returns frozen `sourceCommit`, `approvedTip`, `objectFormat`, repository-relative `vaultScope`, and `manifest: { vaultUid, profile, hash, sensitivityClasses }`. Relative paths and mutable URL/request inputs are captured before asynchronous work. Failures are static `source-not-approved` or `manifest-unavailable`; malformed requests throw static `TypeError`, cancellation rejects `AbortError`.
 
-This is **metadata only**: it does not read concept/resource contents, validate the complete vault, return corpus counts/build IDs, grant indexing permission, or prove read-only mounts. Scope/manifest identity must not be logged or exposed as new HTTP fields. The service's merged isolated source preflight (retired `apps/service`) now adds its deployment guard before source Git reads and a deadline-controlled process; controller admission/capacity and durable claims remain pending. Neither Git/network writes nor Redis/provider calls are introduced.
+This is **metadata only**: it does not read concept/resource contents, validate the complete vault, return corpus counts/build IDs, grant indexing permission, or prove read-only mounts. Neither Git/network writes nor external service/provider calls are introduced.
 
 After building, try the synthetic success/error/boundary tests:
 
@@ -89,7 +85,6 @@ Each line contains stable identity, canonical path, exact concept-blob hash, com
 Declared excluded records are validated but omitted. Missing/undeclared sensitivity or any included canonical field that exposes an excluded UID or path fails before output with static redaction. Policy also checks decoded Markdown headings and link destinations so entity decoding or inline formatting cannot introduce excluded identities or detected secrets into a later projection; canonical Markdown bytes remain unchanged. Secret detection is optional but defaults to `secretPolicy: "reject-detected"`; fixed local high-confidence signatures fail with static `EXPORT-SECRET` before output. The explicit `"allow-unchecked"` policy skips only that heuristic, is reported in the result, and never weakens sensitivity rules. Invalid, incomplete, or oversized snapshots likewise invoke the sink zero times. Once output starts, cancellation or a sink failure can leave a caller-owned prefix; discard it. File callers must stage privately and publish only after success.
 
 The package declares Node `>=24`; `npm pack` builds code, declarations, and canonical schema assets from a clean source checkout. `npm run benchmark:vault --workspace pi-bookie-core -- 50000`, `npm run benchmark:query --workspace pi-bookie-core -- 50000`, and `npm run benchmark:export --workspace pi-bookie-core -- 50000` reproduce the bounded scale probes. Append `mixed` to the export benchmark to alternate included and excluded records at the same scale.
-
 
 `prepareCanonicalExport(root, {project, selectors, commit, maxBytes?}, {binding, signal?})`
 returns bounded complete selected canonical JSONL using `exportCanonicalJsonl`
