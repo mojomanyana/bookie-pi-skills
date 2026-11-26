@@ -38,7 +38,7 @@ The 0.4.0 Pi package and its exact `pi-bookie-core@0.2.0` dependency add normali
 
 ## Confirmable lexical recall (released in 0.5.0)
 
-BK-048 adds explicit managed lexical candidates after approximate requests miss the strict all-word search. Suggestions retain exact source references, require user confirmation and exact reading, and never become a saved decision automatically. Existing strict/recent/exact modes and permissions remain unchanged. See [ADR-0018](docs/architecture/decisions/0018-confirmable-lexical-candidates.md) and [local verification](docs/planning/evidence/BK-048.md). [Public delivery](docs/planning/evidence/public-delivery-0.5.0.md) records the compatible core 0.3.0 dependency, green CI and verified registry archives. JEV is not activated.
+BK-048 adds explicit managed lexical candidates after approximate requests miss the strict all-word search. Suggestions retain exact source references, require user confirmation and exact reading, and never become a saved decision automatically. Existing strict/recent/exact modes and permissions remain unchanged. See [ADR-0018](docs/architecture/decisions/0018-confirmable-lexical-candidates.md) and [local verification](docs/planning/evidence/BK-048.md). [Public delivery](docs/planning/evidence/public-delivery-0.5.0.md) records the compatible core 0.3.0 dependency, green CI and verified registry archives.
 
 ## Local ecosystem foundation (released in 0.1.0)
 

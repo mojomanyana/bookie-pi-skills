@@ -7,7 +7,11 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { containsDetectedSecret } from "pi-bookie-core";
 import { createActivityIdentity } from "./checkpoint-metadata.js";
-import { loadEcosystemConfig } from "./ecosystem-config.js";
+import {
+  readEcosystemConfig,
+  resolveFastModelCandidates,
+  type EcosystemConfig,
+} from "./ecosystem-config.js";
 import type { createManagedMemory } from "./managed-memory.js";
 import type { createCaptureAuthority } from "./capture-authority.js";
 import type { createDisclosureAuthority } from "./disclosure-authority.js";
@@ -19,6 +23,8 @@ interface DistillationMessage {
 
 interface StreamModelRegistry {
   find?(provider: string, id: string): unknown;
+  hasConfiguredAuth?(model: unknown): boolean;
+  getAvailable?(): ReadonlyArray<{ provider?: string; id?: string }>;
   streamSimple?(
     model: unknown,
     context: {
@@ -34,6 +40,23 @@ interface StreamModelRegistry {
   };
 }
 
+function isModelAuthenticated(
+  registry: StreamModelRegistry | undefined,
+  model: unknown,
+  provider: string,
+  modelId: string,
+): boolean {
+  if (typeof registry?.hasConfiguredAuth === "function") {
+    return Boolean(registry.hasConfiguredAuth(model));
+  }
+  if (typeof registry?.getAvailable === "function") {
+    return registry
+      .getAvailable()
+      .some((m) => m?.provider === provider && m?.id === modelId);
+  }
+  return true;
+}
+
 function findFastModel(
   registry: StreamModelRegistry | undefined,
   spec: string,
@@ -42,7 +65,12 @@ function findFastModel(
   if (separator < 1) return undefined;
   const provider = spec.slice(0, separator).trim();
   const modelId = spec.slice(separator + 1).trim();
-  return modelId ? registry?.find?.(provider, modelId) : undefined;
+  if (!modelId) return undefined;
+  const found = registry?.find?.(provider, modelId);
+  if (!found) return undefined;
+  return isModelAuthenticated(registry, found, provider, modelId)
+    ? found
+    : undefined;
 }
 
 function messageText(content: unknown): string {
@@ -108,11 +136,30 @@ export async function distillSessionCheckpoint(
   const registry = (ctx as unknown as { modelRegistry?: StreamModelRegistry })
     .modelRegistry;
   const fallback = (ctx as unknown as { model?: unknown }).model;
-  const fast =
-    process.env.PI_ECO_MODEL_FAST?.trim() ||
-    loadEcosystemConfig(process.env).models?.fast?.trim();
-  const model = fast ? findFastModel(registry, fast) : fallback;
-  if (fast && !model) return { saved: false, reason: "fast-model-unavailable" };
+  let ecoConfig: EcosystemConfig | undefined;
+  try {
+    ecoConfig = readEcosystemConfig(process.env);
+  } catch {
+    return { saved: false, reason: "invalid-ecosystem-config" };
+  }
+  const candidates = resolveFastModelCandidates(process.env, ecoConfig ?? {});
+  let model: unknown;
+  if (candidates.length === 0) {
+    model = fallback;
+  } else {
+    for (const candidate of candidates) {
+      if (candidate === "session") {
+        model = fallback;
+        break;
+      }
+      const found = findFastModel(registry, candidate);
+      if (found) {
+        model = found;
+        break;
+      }
+    }
+    if (!model) return { saved: false, reason: "fast-model-unavailable" };
+  }
   if (!model || typeof registry?.streamSimple !== "function") {
     return { saved: false, reason: "model-unavailable" };
   }
@@ -230,11 +277,14 @@ export function registerAutoDistill(
   disclosure: ReturnType<typeof createDisclosureAuthority>,
 ): void {
   pi.on("session_before_compact", async (event, ctx) => {
-    if (
-      process.env.PI_BOOKIE_AUTO_DISTILL === "0" ||
-      loadEcosystemConfig(process.env).bookie?.autoDistill === false
-    )
+    if (process.env.PI_BOOKIE_AUTO_DISTILL === "0") return;
+    let ecoConfig: EcosystemConfig | undefined;
+    try {
+      ecoConfig = readEcosystemConfig(process.env);
+    } catch {
       return;
+    }
+    if (ecoConfig?.bookie?.autoDistill === false) return;
     if (!authority.canManage() || !disclosure.canManage()) return;
     try {
       const selected = await managed.get(ctx).catch(() => undefined);

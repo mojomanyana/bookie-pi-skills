@@ -26,7 +26,7 @@ Traversal never accepts symlinks, multiply linked files, or a platform without n
 
 ## Approved Git history
 
-`resolveApprovedGitCommit(root, { sourceRef, approvedRef, rollbackWindow, signal? })` is the history-only primitive used by [SPEC-004](../../docs/specs/004-retrieval-service.md#bk-017-approved-history-ingestion-slice). Deployment supplies a full local `refs/...` name and 0–1,024 first-parent edges; zero admits only the once-resolved tip. The requested commit must be a full lowercase object ID. Each traversed raw commit is bounded to 1 MiB and hash-verified; literal first parents, not replacement/graft/shallow revision-walker state, prove ancestry. Missing objects never trigger a fetch. Success returns `sourceCommit` and `approvedTip`; failure is static `source-not-approved`, invalid configuration throws static `TypeError`, and cancellation rejects `AbortError`.
+`resolveApprovedGitCommit(root, { sourceRef, approvedRef, rollbackWindow, signal? })` is the history-only primitive documented in [BK-017 approved-history ingestion evidence](../../docs/planning/evidence/BK-017.md#continuation-approved-history-ingestion--2026-09-15). Deployment supplies a full local `refs/...` name and 0–1,024 first-parent edges; zero admits only the once-resolved tip. The requested commit must be a full lowercase object ID. Each traversed raw commit is bounded to 1 MiB and hash-verified; literal first parents, not replacement/graft/shallow revision-walker state, prove ancestry. Missing objects never trigger a fetch. Success returns `sourceCommit` and `approvedTip`; failure is static `source-not-approved`, invalid configuration throws static `TypeError`, and cancellation rejects `AbortError`.
 
 This does not validate a vault or read-only mount, authenticate clients, approve sensitivity/provider input, or authorize activation. The caller owns the deadline and must re-evaluate approval at activation. The service's isolated-ingestion wrapper adds full canonical/policy validation without changing portable core APIs.
 
@@ -42,7 +42,7 @@ After building, try the synthetic success/error/boundary tests:
 node --test packages/core/test/approved-source-manifest.test.mjs
 ```
 
-See [SPEC-004](../../docs/specs/004-retrieval-service.md#bk-017-approved-source-manifest-slice) for the precise boundary and deferred work.
+See [SPEC-002 metadata-only source preflight](../../docs/specs/002-core-and-cli.md#bk-017-metadata-only-source-preflight) and [ADR-0011](../../docs/architecture/decisions/0011-bounded-rebuild-admission.md#2-bounded-admission-before-any-expensive-corpus-preparation) for the precise boundary and admission contract.
 
 ## Safe concept mutation
 
