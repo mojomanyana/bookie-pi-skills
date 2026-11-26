@@ -1,5 +1,9 @@
 # pi-bookie-core release notes
 
+## [1.0.4] - 2026-11-25
+
+- Repaired retired SPEC-004 documentation anchors in `packages/core/README.md` and `docs/specs/002-core-and-cli.md`.
+
 ## [1.0.3] - 2026-11-25
 
 - Removed unused `work-map` modules, retired retrieval-service protocol schema, and obsolete SPEC-004 prose (~2,500+ LOC).
