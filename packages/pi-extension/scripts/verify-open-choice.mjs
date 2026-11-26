@@ -1,4 +1,4 @@
-// node scripts/verify-open-choice.mjs <Pi 1.4+ install>/node_modules [pi-daddy package directory]
+// node scripts/verify-open-choice.mjs <Pi 1.6.1+ install>/node_modules [pi-daddy 1.1.3+ package directory]
 // A local scripted provider, real packaged extensions and the same runtime transition as /new.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
