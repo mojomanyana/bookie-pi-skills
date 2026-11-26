@@ -1,5 +1,10 @@
 # pi-bookie release notes
 
+## [1.0.4] - 2026-11-25
+
+- Strictly validate nested `ecosystem.json` fields (`models`, `modelFallbacks`, `bookie`) and fail closed on invalid configs.
+- Honor `modelFallbacks.fast`, comma-separated `PI_ECO_MODEL_FAST`, and skip catalogued models whose provider lacks configured auth.
+
 ## [1.0.3] - 2026-11-25
 
 - Removed orphaned `retained-handoff.ts` and stale `bookie_work` reference in `bookie-continuity/SKILL.md`.
