@@ -39,6 +39,7 @@ export function createCaptureAuthority(pi: ExtensionAPI, onManual = () => {}) {
       }
     | undefined;
   let sync: ((ctx: ExtensionContext) => Promise<void>) | undefined;
+  let syncManaged: (() => void) | undefined;
   function reset() {
     allowManaged = true;
     managedSelection = undefined;
@@ -267,6 +268,7 @@ export function createCaptureAuthority(pi: ExtensionAPI, onManual = () => {}) {
           summaries: true,
           sensitivity: "internal",
         };
+        syncManaged?.();
       }
       return true;
     },
@@ -280,8 +282,12 @@ export function createCaptureAuthority(pi: ExtensionAPI, onManual = () => {}) {
     standingCheckpoint,
     reset,
     hasStanding: () => grant?.summaries === true,
-    setReferenceSync: (handler: (ctx: ExtensionContext) => Promise<void>) => {
+    setReferenceSync: (
+      handler: (ctx: ExtensionContext) => Promise<void>,
+      onManaged: () => void,
+    ) => {
       sync = handler;
+      syncManaged = onManaged;
     },
     async referenceGrant(): Promise<ReferenceCaptureGrant | undefined> {
       const selected = grant;

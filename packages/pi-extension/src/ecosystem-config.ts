@@ -16,6 +16,7 @@ export interface EcosystemConfig {
   readonly bookie?: {
     readonly autoRecall?: boolean;
     readonly autoDistill?: boolean;
+    readonly autoSyncReviews?: boolean;
   };
 }
 
@@ -76,7 +77,7 @@ export function readEcosystemConfig(
     if (!isPlainObject(parsed.bookie)) {
       throw new Error(`Expected an object for bookie in ${file}`);
     }
-    for (const flag of ["autoRecall", "autoDistill"]) {
+    for (const flag of ["autoRecall", "autoDistill", "autoSyncReviews"]) {
       if (flag in parsed.bookie && typeof parsed.bookie[flag] !== "boolean") {
         throw new Error(`Expected a boolean for bookie.${flag} in ${file}`);
       }

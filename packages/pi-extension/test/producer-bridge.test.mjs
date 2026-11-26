@@ -9,6 +9,12 @@ import { labelFixture } from "./disclosure-fixture.mjs";
 async function setup(t) {
   const dir = await mkdtemp(join(tmpdir(), "bookie-producer-")),
     vault = join(dir, "vault");
+  const previousProfile = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = join(dir, "profile");
+  t.after(() => {
+    if (previousProfile === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousProfile;
+  });
   await cp(
     resolve(import.meta.dirname, "../../../fixtures/valid-vault"),
     vault,
@@ -118,6 +124,15 @@ test("metadata sync is idempotent, labels references and never retains producer 
   assert.ok(!JSON.stringify(state).includes("PRIVATE FINAL"));
   assert.ok(f.requests.every((r) => ["list", "read"].includes(r.action)));
   assert.match(f.notices.at(-1), /0 registered, 2 reused/);
+});
+test("enabling review sync catches up missed references without dispatch or a manual first scan", async (t) => {
+  const f = await setup(t);
+  f.events.get("bookie:review-sync-settings:v1")({ action: "changed" });
+  await f.sync(); // queued after automatic registration; both use the same vault
+  assert.match(f.notices.at(-2), /2 registered, 0 reused/);
+  assert.match(f.notices.at(-1), /0 registered, 2 reused/);
+  assert.equal((await readRecallState(f.vault)).state.registrations.length, 2);
+  assert.ok(f.requests.every((r) => ["list", "read"].includes(r.action)));
 });
 test("failed mid-page registration retries from a fresh scan without skipping the missing record", async (t) => {
   const f = await setup(t);
