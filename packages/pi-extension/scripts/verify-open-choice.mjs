@@ -1,4 +1,4 @@
-// node scripts/verify-open-choice.mjs <Pi 1.4+ install>/node_modules [pi-daddy package directory]
+// node scripts/verify-open-choice.mjs <Pi 1.6.1+ install>/node_modules [pi-daddy 1.1.3+ package directory]
 // A local scripted provider, real packaged extensions and the same runtime transition as /new.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -102,7 +102,6 @@ await mkdir(agentDir);
 process.chdir(cwd);
 process.env.PI_CODING_AGENT_DIR = agentDir;
 process.env.PI_DADDY_AUTO_MODE = "1";
-process.env.PI_DADDY_HERDR = "0";
 process.env.PI_DADDY_ACTIVITY_TIMELINE = "off";
 let fetches = 0;
 globalThis.fetch = async () => {

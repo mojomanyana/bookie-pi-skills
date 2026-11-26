@@ -1,4 +1,4 @@
-// Run with Node 24 and an installation of Pi 1.4+ and pi-daddy 0.54+.
+// Run with Node 24 and an installation of Pi 1.6.1+ and pi-daddy 1.1.3+.
 // node verify-workshop-recall.mjs <installation>/node_modules [offline | scout | auto-toggle | --subscription]
 // The default uses a local provider. --subscription uses openai-codex/gpt-6.1-sol
 // through Pi with synthetic data. Scout uses a fixed, offline v1 tool result.
@@ -144,7 +144,6 @@ process.chdir(cwd);
 process.env.PI_CODING_AGENT_DIR = agentDir;
 if (toggle) delete process.env.PI_DADDY_AUTO_MODE;
 else process.env.PI_DADDY_AUTO_MODE = "1";
-process.env.PI_DADDY_HERDR = "0";
 process.env.PI_DADDY_ACTIVITY_TIMELINE = "off";
 const piPackage = join(modules, "@earendil-works/pi-coding-agent/package.json");
 // A fresh npm install can hoist a different pi-ai version for a peer package.
