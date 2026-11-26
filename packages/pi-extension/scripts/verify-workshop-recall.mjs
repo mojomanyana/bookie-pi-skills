@@ -144,7 +144,6 @@ process.chdir(cwd);
 process.env.PI_CODING_AGENT_DIR = agentDir;
 if (toggle) delete process.env.PI_DADDY_AUTO_MODE;
 else process.env.PI_DADDY_AUTO_MODE = "1";
-process.env.PI_DADDY_HERDR = "0";
 process.env.PI_DADDY_ACTIVITY_TIMELINE = "off";
 const piPackage = join(modules, "@earendil-works/pi-coding-agent/package.json");
 // A fresh npm install can hoist a different pi-ai version for a peer package.

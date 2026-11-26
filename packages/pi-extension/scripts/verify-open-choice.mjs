@@ -102,7 +102,6 @@ await mkdir(agentDir);
 process.chdir(cwd);
 process.env.PI_CODING_AGENT_DIR = agentDir;
 process.env.PI_DADDY_AUTO_MODE = "1";
-process.env.PI_DADDY_HERDR = "0";
 process.env.PI_DADDY_ACTIVITY_TIMELINE = "off";
 let fetches = 0;
 globalThis.fetch = async () => {
