@@ -3,6 +3,7 @@ import { registerAutoRecall } from "./auto-recall.js";
 import { registerAutoDistill } from "./auto-distill.js";
 import { registerReattachCommand } from "./reattach.js";
 import { rememberTool } from "./remember.js";
+import { proposeMemoryTool } from "./memory-proposals.js";
 import { registerTaskHistory } from "./task-history.js";
 import { wrapUntrustedSource } from "./untrusted-text.js";
 import { createBookieContextFilter } from "./context-filter.js";
@@ -46,8 +47,8 @@ import {
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
-import { open } from "node:fs/promises";
+import { constants, type BigIntStats } from "node:fs";
+import { lstat, open, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 
 const MAX_READ_CONTENT_BYTES = 40_000;
@@ -173,24 +174,40 @@ async function readWriteRequest(
   signal: AbortSignal | undefined,
 ): Promise<WriteRequestSnapshot> {
   checkRequestCancellation(signal);
-  if (
-    constants.O_NOFOLLOW === undefined ||
-    constants.O_NONBLOCK === undefined
-  ) {
+  const posixFlags =
+    constants.O_NOFOLLOW !== undefined && constants.O_NONBLOCK !== undefined;
+  if (!posixFlags && process.platform !== "win32") {
     throw new Error("Bookie write request file is invalid.");
   }
   const absolutePath = vaultRoot(path, cwd);
   let handle: Awaited<ReturnType<typeof open>> | undefined;
+  let preLstat: BigIntStats | undefined;
+  let preRealPath: string | undefined;
   try {
-    handle = await open(
-      absolutePath,
-      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-    );
+    if (posixFlags) {
+      handle = await open(
+        absolutePath,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      );
+    } else {
+      preLstat = await lstat(absolutePath, { bigint: true });
+      if (
+        preLstat.isSymbolicLink() ||
+        !preLstat.isFile() ||
+        preLstat.nlink !== 1n
+      ) {
+        throw new Error("unsafe request file");
+      }
+      preRealPath = await realpath(absolutePath);
+      handle = await open(absolutePath, constants.O_RDONLY);
+    }
     const before = await handle.stat({ bigint: true });
     if (
       !before.isFile() ||
       before.nlink !== 1n ||
-      before.size > BigInt(MAX_WRITE_REQUEST_BYTES)
+      before.size > BigInt(MAX_WRITE_REQUEST_BYTES) ||
+      (preLstat !== undefined &&
+        (before.dev !== preLstat.dev || before.ino !== preLstat.ino))
     ) {
       throw new Error("unsafe request file");
     }
@@ -224,6 +241,22 @@ async function readWriteRequest(
       BigInt(bytes.byteLength) !== before.size
     ) {
       throw new Error("changed request file");
+    }
+    if (preLstat !== undefined && preRealPath !== undefined) {
+      const postLstat = await lstat(absolutePath, { bigint: true });
+      if (
+        postLstat.isSymbolicLink() ||
+        !postLstat.isFile() ||
+        postLstat.nlink !== 1n ||
+        postLstat.dev !== preLstat.dev ||
+        postLstat.ino !== preLstat.ino ||
+        postLstat.size !== preLstat.size ||
+        postLstat.mtimeNs !== preLstat.mtimeNs ||
+        postLstat.ctimeNs !== preLstat.ctimeNs ||
+        (await realpath(absolutePath)) !== preRealPath
+      ) {
+        throw new Error("changed request file");
+      }
     }
     const source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     return {
@@ -863,36 +896,41 @@ export default function registerBookie(pi: ExtensionAPI): void {
   );
   registerAutoRecall(pi, managed, disclosure);
   registerAutoDistill(pi, managed, authority, disclosure);
-  // Contextual deferred tool activation: 0 Turn-1 bytes on ordinary coding tasks,
-  // auto-activated when project memory is enabled or the prompt asks for Bookie/checkpoints/recall.
-  const BOOKIE_TRIGGER_RE =
-    /\b(bookie|checkpoint|remember|recall|project\s+memory|vault)\b/i;
-  pi.on("before_agent_start", (event: unknown) => {
+  // Expose eligible Bookie tools from Turn 1 in both Standard and Ambitious modes.
+  // Workspace trust, disclosure authority, and approvals remain enforced at call time.
+  const BOOKIE_TURN1_TOOLS = [
+    "bookie_search",
+    "bookie_remember",
+    "bookie_read",
+    "bookie_checkpoint",
+    "bookie_reference_read",
+    "bookie_task_history",
+    "bookie_propose_memory",
+  ];
+  const activateBookieTools = () => {
+    if (process.env.PI_BOOKIE_DEFER_TOOLS === "1") return;
     const surface = pi as unknown as {
       getActiveTools?: () => string[];
       setActiveTools?: (names: string[]) => void;
+      getAllTools?: () => Array<{ name: string }>;
     };
     if (!surface.getActiveTools || !surface.setActiveTools) return;
-    const prompt =
-      typeof (event as { prompt?: unknown })?.prompt === "string"
-        ? (event as { prompt: string }).prompt
-        : "";
-    if (!disclosure.canManage() && !BOOKIE_TRIGGER_RE.test(prompt)) return;
     const active = new Set(surface.getActiveTools());
+    const registered = surface.getAllTools
+      ? new Set(surface.getAllTools().map((t) => t.name))
+      : new Set(BOOKIE_TURN1_TOOLS);
     let changed = false;
-    for (const name of [
-      "bookie_search",
-      "bookie_remember",
-      "bookie_read",
-      "bookie_checkpoint",
-    ]) {
-      if (!active.has(name)) {
+    for (const name of BOOKIE_TURN1_TOOLS) {
+      if (registered.has(name) && !active.has(name)) {
         active.add(name);
         changed = true;
       }
     }
     if (changed) surface.setActiveTools([...active]);
-  });
+  };
+  pi.on("session_start", activateBookieTools);
+  pi.on("before_agent_start", activateBookieTools);
+  pi.registerTool(defer(proposeMemoryTool(pi, managed, authority, disclosure)));
   pi.registerTool(
     defer(
       rememberTool(

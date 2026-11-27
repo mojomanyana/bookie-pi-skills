@@ -20,6 +20,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
@@ -166,6 +167,7 @@ test("extension registers the BK-013 read-only tool contracts", () => {
       "bookie_write",
       "bookie_checkpoint",
       "bookie_task_history",
+      "bookie_propose_memory",
       "bookie_remember",
     ],
   );
@@ -414,9 +416,11 @@ test("real host loader shares create, amend and checkpoint queues through both p
   t.diagnostic(
     `Pi host ${JSON.parse(await readFile(join(hostRoot, "package.json"), "utf8")).version}`,
   );
-  const host = await import(join(hostRoot, "dist/index.js"));
+  const host = await import(
+    pathToFileURL(join(hostRoot, "dist/index.js")).href
+  );
   const { discoverAndLoadExtensions } = await import(
-    join(hostRoot, "dist/core/extensions/loader.js")
+    pathToFileURL(join(hostRoot, "dist/core/extensions/loader.js")).href
   );
   for (const entry of [repositoryRoot, packageRoot]) {
     for (const action of ["create", "amend", "checkpoint"]) {
@@ -566,8 +570,23 @@ test("real host loader shares create, amend and checkpoint queues through both p
 test("local and Git package manifests expose the built extension", async (t) => {
   const home = await mkdtemp(join(tmpdir(), "bookie-pi-home-"));
   t.after(() => rm(home, { recursive: true, force: true }));
-  const env = { HOME: home, PATH: process.env.PATH };
-  execFileSync("pi", ["install", packageRoot], { env, stdio: "pipe" });
+  const env = {
+    HOME: home,
+    USERPROFILE: home,
+    PATH: process.env.PATH,
+    ...(process.platform === "win32"
+      ? { ComSpec: process.env.ComSpec, SystemRoot: process.env.SystemRoot }
+      : {}),
+  };
+  execFileSync(
+    process.platform === "win32" ? "pi.cmd" : "pi",
+    ["install", packageRoot],
+    {
+      env,
+      stdio: "pipe",
+      ...(process.platform === "win32" ? { shell: true } : {}),
+    },
+  );
   const settings = JSON.parse(
     await readFile(join(home, ".pi/agent/settings.json"), "utf8"),
   );
@@ -607,12 +626,17 @@ test("local and Git package manifests expose the built extension", async (t) => 
       );
     },
   });
-  execFileSync("npm", ["install", "--omit=dev", "--legacy-peer-deps"], {
-    cwd: checkout,
-    env,
-    stdio: "pipe",
-    timeout: 180_000,
-  });
+  execFileSync(
+    process.platform === "win32" ? "npm.cmd" : "npm",
+    ["install", "--omit=dev", "--legacy-peer-deps"],
+    {
+      cwd: checkout,
+      env,
+      stdio: "pipe",
+      timeout: 180_000,
+      ...(process.platform === "win32" ? { shell: true } : {}),
+    },
+  );
   const builtExtension = join(checkout, "packages/pi-extension/src/index.ts");
   await readFile(builtExtension);
   await readFile(join(checkout, "packages/core/dist/index.js"));
@@ -622,11 +646,11 @@ test("local and Git package manifests expose the built extension", async (t) => 
       "packages/core/dist/schemas/profile/1.0/bookie-config.schema.json",
     ),
   );
+  const hostPath = process.env.BOOKIE_PI_TEST_HOST
+    ? resolve(process.env.BOOKIE_PI_TEST_HOST)
+    : join(repositoryRoot, "node_modules/@earendil-works/pi-coding-agent");
   const { discoverAndLoadExtensions } = await import(
-    join(
-      repositoryRoot,
-      "node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js",
-    )
+    pathToFileURL(join(hostPath, "dist/core/extensions/loader.js")).href
   );
   const loaded = await discoverAndLoadExtensions(
     [checkout],
@@ -661,6 +685,7 @@ test("local and Git package manifests expose the built extension", async (t) => 
       "bookie_write",
       "bookie_checkpoint",
       "bookie_task_history",
+      "bookie_propose_memory",
       "bookie_remember",
     ],
   );
@@ -987,126 +1012,246 @@ test("write rejects malformed and secret request files without publication", asy
   });
 });
 
-test("request FIFOs and substitutions fail promptly and release checkpoint reservations", async (t) => {
-  for (const surface of ["write", "now", "before-compaction"]) {
-    for (const substitute of [false, true]) {
-      for (const abort of [false, true]) {
-        await t.test(
-          `${surface}: ${substitute ? "regular-to-FIFO" : "FIFO"}, abort=${abort}`,
-          async (t) => {
-            const vault = await temporaryVault(t);
-            const requestPath = join(resolve(vault, ".."), "unsafe.json");
-            const request = checkpointRequest();
-            if (substitute)
-              await writeFile(requestPath, JSON.stringify(request));
-            else execFileSync("mkfifo", [requestPath]);
-            const extension = registeredExtension();
-            const tool = toolNamed(
-              extension.tools,
-              surface === "write" ? "bookie_write" : "bookie_checkpoint",
-            );
-            const opening = Promise.withResolvers();
-            const controller = new AbortController();
-            const originalOpen = fsPromises.open;
-            t.mock.method(fsPromises, "open", async (path, ...args) => {
-              if (path === requestPath) {
-                if (substitute) {
-                  await rm(requestPath);
-                  execFileSync("mkfifo", [requestPath]);
-                }
-                opening.resolve();
-              }
-              return originalOpen(path, ...args);
-            });
-            syncBuiltinESMExports();
-            const params =
-              surface === "write"
-                ? { vault, requestPath, action: "create" }
-                : {
-                    vault,
-                    requestPath,
-                    timing: surface,
-                  };
-            const pending = tool
-              .execute(
-                "fifo",
-                params,
-                controller.signal,
-                undefined,
-                context(vault),
-              )
-              .then(
-                (value) => ({ value }),
-                (error) => ({ error }),
-              );
-            let timer;
-            try {
-              await opening.promise;
-              if (abort) controller.abort(new Error("PRIVATE-ABORT-REASON"));
-              const result = await Promise.race([
-                pending,
-                new Promise((resolve) => {
-                  timer = setTimeout(() => resolve({ timedOut: true }), 500);
-                }),
-              ]);
-              assert.equal(
-                result.timedOut,
-                undefined,
-                "request open must settle without a FIFO writer",
-              );
-              assert.equal(result.value, undefined);
-              assert.equal(result.error.name, abort ? "AbortError" : "Error");
-              if (!abort)
-                assert.equal(
-                  result.error.message,
-                  "Bookie write request file is invalid.",
-                );
-              assert.equal(result.error.message.includes("PRIVATE"), false);
-              await assert.rejects(readFile(join(vault, request.path)), {
-                code: "ENOENT",
-              });
-            } finally {
-              clearTimeout(timer);
-              // Unblock the old blocking-open implementation on regression, without hiding the failure.
-              const rescue = await originalOpen(
-                requestPath,
-                constants.O_RDWR | constants.O_NONBLOCK,
-              );
-              await rescue.close();
-              await pending;
-              t.mock.restoreAll();
-              syncBuiltinESMExports();
-            }
-            const valid = join(resolve(vault, ".."), "valid-checkpoint.json");
-            await writeFile(valid, JSON.stringify(request));
-            const result = await toolNamed(
-              extension.tools,
-              "bookie_checkpoint",
-            ).execute(
-              "after-fifo",
-              {
-                vault,
-                requestPath: valid,
-                timing: "now",
-              },
-              undefined,
-              undefined,
-              context(vault),
-            );
-            assert.equal(
-              JSON.parse(textResult(result)).result.status,
-              "created",
-            );
-            assert.match(
-              await readFile(join(vault, request.path), "utf8"),
-              /Included outcome/u,
-            );
-          },
-        );
-      }
+const SUPPORTS_POSIX_FIFO =
+  process.platform !== "win32" &&
+  constants.O_NOFOLLOW !== undefined &&
+  constants.O_NONBLOCK !== undefined;
+
+test("early tool rejection before mocked open settles promptly without hanging", async (t) => {
+  const vault = await temporaryVault(t);
+  const requestPath = join(resolve(vault, ".."), "never-opened.json");
+  await writeFile(requestPath, JSON.stringify(checkpointRequest()));
+  const extension = registeredExtension();
+  const tool = toolNamed(extension.tools, "bookie_checkpoint");
+  const opening = Promise.withResolvers();
+  let openReached = false;
+  const originalOpen = fsPromises.open;
+  t.mock.method(fsPromises, "open", async (path, ...args) => {
+    if (path === requestPath) {
+      openReached = true;
+      opening.resolve({ opened: true });
     }
+    return originalOpen(path, ...args);
+  });
+  syncBuiltinESMExports();
+  const unauthorizedCtx = {
+    ...modelContext(vault),
+    hasUI: false,
+    ui: undefined,
+  };
+  let timer;
+  try {
+    const pending = tool
+      .execute(
+        "early-reject",
+        { vault, requestPath, timing: "now" },
+        undefined,
+        undefined,
+        unauthorizedCtx,
+      )
+      .then(
+        (value) => ({ settled: true, value }),
+        (error) => ({ settled: true, error }),
+      );
+    const outcome = await Promise.race([
+      opening.promise,
+      pending,
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve({ timedOut: true }), 500);
+      }),
+    ]);
+    assert.equal(
+      outcome.timedOut,
+      undefined,
+      "early rejection must never hang waiting for mocked open",
+    );
+    assert.equal(
+      outcome.opened,
+      undefined,
+      "mocked open should not be reached when authorization fails first",
+    );
+    assert.equal(outcome.settled, true);
+    assert.ok(outcome.error instanceof Error);
+    assert.equal(openReached, false);
+  } finally {
+    clearTimeout(timer);
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
   }
 });
+
+test(
+  "request FIFOs and substitutions fail promptly and release checkpoint reservations",
+  {
+    skip:
+      !SUPPORTS_POSIX_FIFO &&
+      "POSIX FIFOs (mkfifo / O_NONBLOCK) are unavailable on this platform",
+  },
+  async (t) => {
+    for (const surface of ["write", "now", "before-compaction"]) {
+      for (const substitute of [false, true]) {
+        for (const abort of [false, true]) {
+          await t.test(
+            `${surface}: ${substitute ? "regular-to-FIFO" : "FIFO"}, abort=${abort}`,
+            async (t) => {
+              const vault = await temporaryVault(t);
+              const requestPath = join(resolve(vault, ".."), "unsafe.json");
+              const request = checkpointRequest();
+              if (substitute)
+                await writeFile(requestPath, JSON.stringify(request));
+              else execFileSync("mkfifo", [requestPath]);
+              const extension = registeredExtension();
+              const tool = toolNamed(
+                extension.tools,
+                surface === "write" ? "bookie_write" : "bookie_checkpoint",
+              );
+              const opening = Promise.withResolvers();
+              const controller = new AbortController();
+              const originalOpen = fsPromises.open;
+              t.mock.method(fsPromises, "open", async (path, ...args) => {
+                if (path === requestPath) {
+                  if (substitute) {
+                    await rm(requestPath);
+                    execFileSync("mkfifo", [requestPath]);
+                  }
+                  opening.resolve({ opened: true });
+                }
+                return originalOpen(path, ...args);
+              });
+              syncBuiltinESMExports();
+              const params =
+                surface === "write"
+                  ? { vault, requestPath, action: "create" }
+                  : {
+                      vault,
+                      requestPath,
+                      timing: surface,
+                    };
+              const pending = tool
+                .execute(
+                  "fifo",
+                  params,
+                  controller.signal,
+                  undefined,
+                  context(vault),
+                )
+                .then(
+                  (value) => ({ settled: true, value }),
+                  (error) => ({ settled: true, error }),
+                );
+              let openTimer;
+              let settleTimer;
+              try {
+                const first = await Promise.race([
+                  opening.promise,
+                  pending,
+                  new Promise((resolve) => {
+                    openTimer = setTimeout(
+                      () => resolve({ timedOut: true }),
+                      500,
+                    );
+                  }),
+                ]);
+                assert.equal(
+                  first.timedOut,
+                  undefined,
+                  "request open must start or reject promptly without hanging",
+                );
+                if (first.settled) {
+                  assert.fail(
+                    `tool settled before mocked open was reached: ${first.error?.message ?? JSON.stringify(first.value)}`,
+                  );
+                }
+                if (abort) controller.abort(new Error("PRIVATE-ABORT-REASON"));
+                const result = await Promise.race([
+                  pending,
+                  new Promise((resolve) => {
+                    settleTimer = setTimeout(
+                      () => resolve({ timedOut: true }),
+                      500,
+                    );
+                  }),
+                ]);
+                assert.equal(
+                  result.timedOut,
+                  undefined,
+                  "request open must settle without a FIFO writer",
+                );
+                assert.equal(result.value, undefined);
+                assert.equal(result.error.name, abort ? "AbortError" : "Error");
+                if (!abort)
+                  assert.equal(
+                    result.error.message,
+                    "Bookie write request file is invalid.",
+                  );
+                assert.equal(result.error.message.includes("PRIVATE"), false);
+                await assert.rejects(readFile(join(vault, request.path)), {
+                  code: "ENOENT",
+                });
+              } finally {
+                clearTimeout(openTimer);
+                clearTimeout(settleTimer);
+                // Unblock the old blocking-open implementation on regression, bounded cleanly.
+                let rescueTimer;
+                try {
+                  const rescue = await Promise.race([
+                    originalOpen(
+                      requestPath,
+                      constants.O_RDWR | constants.O_NONBLOCK,
+                    ).catch(() => undefined),
+                    new Promise((resolve) => {
+                      rescueTimer = setTimeout(() => resolve(undefined), 500);
+                    }),
+                  ]);
+                  await rescue?.close().catch(() => undefined);
+                } finally {
+                  clearTimeout(rescueTimer);
+                }
+                let cleanupTimer;
+                try {
+                  await Promise.race([
+                    pending,
+                    new Promise((resolve) => {
+                      cleanupTimer = setTimeout(() => resolve(undefined), 500);
+                    }),
+                  ]);
+                } finally {
+                  clearTimeout(cleanupTimer);
+                }
+                t.mock.restoreAll();
+                syncBuiltinESMExports();
+              }
+              const valid = join(resolve(vault, ".."), "valid-checkpoint.json");
+              await writeFile(valid, JSON.stringify(request));
+              const result = await toolNamed(
+                extension.tools,
+                "bookie_checkpoint",
+              ).execute(
+                "after-fifo",
+                {
+                  vault,
+                  requestPath: valid,
+                  timing: "now",
+                },
+                undefined,
+                undefined,
+                context(vault),
+              );
+              assert.equal(
+                JSON.parse(textResult(result)).result.status,
+                "created",
+              );
+              assert.match(
+                await readFile(join(vault, request.path), "utf8"),
+                /Included outcome/u,
+              );
+            },
+          );
+        }
+      }
+    }
+  },
+);
 
 test("request final-stat, close and approval cancellation keep static aborts", async (t) => {
   for (const point of ["stat", "close", "approval-return", "approval-reject"]) {
@@ -1521,7 +1666,11 @@ test("checkpoint preview and Activity omit excluded context before approval", as
   assert.match(declinedMessage, /Included outcome\./u);
   assert.equal(declinedMessage.includes(externalPathSecret), false);
   assert.equal(declinedMessage.includes(requestPath), false);
-  assert.equal(declinedMessage.includes(vault), true);
+  assert.equal(
+    declinedMessage.includes(vault) ||
+      declinedMessage.includes(JSON.stringify(vault).slice(1, -1)),
+    true,
+  );
   for (const value of Object.values(excluded)) {
     assert.equal(declinedMessage.includes(value), false);
   }

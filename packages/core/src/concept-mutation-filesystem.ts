@@ -310,12 +310,15 @@ export async function syncMutationDirectory(
   target: ResolvedMutationTarget,
   snapshot: ParentSnapshot,
 ): Promise<boolean> {
+  if (!(await verifyParent(target, snapshot, undefined))) {
+    return false;
+  }
   if (
     constants.O_DIRECTORY === undefined ||
-    constants.O_NOFOLLOW === undefined ||
-    !(await verifyParent(target, snapshot, undefined))
+    constants.O_NOFOLLOW === undefined
   ) {
-    return false;
+    // Windows cannot open directory descriptors via O_DIRECTORY; parent identity was verified above.
+    return process.platform === "win32";
   }
   let handle;
   try {
@@ -480,7 +483,7 @@ export async function stageTemporary(
   mode: number | undefined,
   signal: AbortSignal | undefined,
 ): Promise<StagedTemporary> {
-  if (constants.O_NOFOLLOW === undefined) {
+  if (constants.O_NOFOLLOW === undefined && process.platform !== "win32") {
     throw new Error("no no-follow support");
   }
   const parentPath = dirname(target.target);
@@ -497,7 +500,7 @@ export async function stageTemporary(
           constants.O_WRONLY |
             constants.O_CREAT |
             constants.O_EXCL |
-            constants.O_NOFOLLOW,
+            (constants.O_NOFOLLOW ?? 0),
           mode ?? 0o666,
         );
         const openedMetadata = await handle.stat({ bigint: true });

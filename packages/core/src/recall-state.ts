@@ -324,13 +324,14 @@ async function writeExclusive(
   name: string,
   bytes: Buffer,
 ): Promise<void> {
-  if (typeof constants.O_NOFOLLOW !== "number") throw Error("Unavailable");
+  if (typeof constants.O_NOFOLLOW !== "number" && process.platform !== "win32")
+    throw Error("Unavailable");
   const handle = await open(
     join(root, name),
     constants.O_CREAT |
       constants.O_EXCL |
       constants.O_WRONLY |
-      constants.O_NOFOLLOW,
+      (constants.O_NOFOLLOW ?? 0),
     0o600,
   );
   try {
@@ -365,11 +366,13 @@ async function publishState(
     if (!(await verify())) return recallFailure("stale");
     if (!(await authority(options))) return recallFailure("authority");
     await rename(join(root, temporary), join(root, RECALL_STATE_FILE));
-    const dir = await open(root, constants.O_RDONLY);
-    try {
-      await dir.sync();
-    } finally {
-      await dir.close();
+    if (process.platform !== "win32") {
+      const dir = await open(root, constants.O_RDONLY);
+      try {
+        await dir.sync();
+      } finally {
+        await dir.close();
+      }
     }
     return { ok: true, revision: computeConceptSourceHash(bytes) };
   } finally {

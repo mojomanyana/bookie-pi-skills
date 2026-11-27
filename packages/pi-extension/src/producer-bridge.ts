@@ -284,6 +284,17 @@ export function registerProducerBridge(
       },
     );
     if (!result.ok) throw Error("Bookie reference registration refused.");
+    if (result.outcome === "registered") {
+      try {
+        pi.events?.emit?.("pi-daddy:ecosystem-activity:v1", {
+          producer: "bookie",
+          kind: "review-captured",
+          detail: `Bookie · captured review (${value.executionId.slice(0, 12)})`,
+        });
+      } catch {
+        /* Optional activity stream cannot fail reference registration. */
+      }
+    }
     return result.outcome;
   }
   function enabled() {

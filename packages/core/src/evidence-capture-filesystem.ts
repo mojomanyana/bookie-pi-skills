@@ -94,7 +94,10 @@ async function captureSource(
   | { readonly ok: false; readonly reason: "target" | "bounds" | "io" }
 > {
   const path = resolveSourcePath(source);
-  if (path === undefined || constants.O_NOFOLLOW === undefined) {
+  if (
+    path === undefined ||
+    (constants.O_NOFOLLOW === undefined && process.platform !== "win32")
+  ) {
     return { ok: false, reason: "target" };
   }
   try {
@@ -179,8 +182,12 @@ async function hashStagedResource(
   try {
     throwIfAborted(signal);
     const pathMetadata = await lstat(path, { bigint: true });
-    if (!sameCompleteIdentity(expected, pathMetadata)) return undefined;
-    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    if (
+      pathMetadata.isSymbolicLink() ||
+      !sameCompleteIdentity(expected, pathMetadata)
+    )
+      return undefined;
+    handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     const before = await handle.stat({ bigint: true });
     if (!sameCompleteIdentity(expected, before)) return undefined;
     const hash = createHash("sha256");
@@ -235,7 +242,7 @@ export async function stageEvidenceResource(
   try {
     sourceHandle = await open(
       sourceSnapshot.path,
-      constants.O_RDONLY | constants.O_NOFOLLOW,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
     );
     const openedSource = await sourceHandle.stat({ bigint: true });
     if (
@@ -258,7 +265,7 @@ export async function stageEvidenceResource(
           constants.O_WRONLY |
             constants.O_CREAT |
             constants.O_EXCL |
-            constants.O_NOFOLLOW,
+            (constants.O_NOFOLLOW ?? 0),
           0o666,
         );
         temporaryMetadata = await targetHandle.stat({ bigint: true });
@@ -383,15 +390,25 @@ export async function scanStagedEvidenceResource(
   staged: StagedEvidenceResource,
   signal: AbortSignal | undefined,
 ): Promise<"clear" | "detected" | "io"> {
-  if (constants.O_NOFOLLOW === undefined) return "io";
+  if (constants.O_NOFOLLOW === undefined && process.platform !== "win32")
+    return "io";
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   let outcome: "clear" | "detected" | "io" = "io";
   let caught: unknown;
   try {
     throwIfAborted(signal);
+    if (constants.O_NOFOLLOW === undefined) {
+      const pre = await lstat(staged.temporary.path, { bigint: true });
+      if (
+        pre.isSymbolicLink() ||
+        !sameCompleteIdentity(staged.temporary.metadata, pre)
+      ) {
+        return "io";
+      }
+    }
     handle = await open(
       staged.temporary.path,
-      constants.O_RDONLY | constants.O_NOFOLLOW,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
     );
     const before = await handle.stat({ bigint: true });
     if (sameCompleteIdentity(staged.temporary.metadata, before)) {

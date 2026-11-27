@@ -208,21 +208,110 @@ async function verifySafePath(
   }
 }
 
+interface OpenedSafeFile {
+  readonly handle: Awaited<ReturnType<typeof open>>;
+  readonly preLstat?: BigIntStats;
+  readonly preRealPath?: string;
+}
+
+async function openSafeRegularFile(
+  path: string,
+  signal: AbortSignal | undefined,
+): Promise<
+  | { readonly ok: true; readonly opened: OpenedSafeFile }
+  | { readonly ok: false; readonly reason: "io" | "unsafe" }
+> {
+  throwIfAborted(signal);
+  if (constants.O_NOFOLLOW !== undefined) {
+    try {
+      const handle = await open(
+        path,
+        constants.O_RDONLY | constants.O_NOFOLLOW,
+      );
+      return { ok: true, opened: { handle } };
+    } catch {
+      return { ok: false, reason: "io" };
+    }
+  }
+  // Windows lacks POSIX O_NOFOLLOW; enforce symlink rejection and file-identity pinning
+  // before open, immediately on the opened handle, and again after reading.
+  if (process.platform !== "win32") {
+    return { ok: false, reason: "unsafe" };
+  }
+  let preLstat: BigIntStats;
+  let preRealPath: string;
+  try {
+    preLstat = await lstat(path, { bigint: true });
+    if (
+      preLstat.isSymbolicLink() ||
+      !preLstat.isFile() ||
+      preLstat.nlink !== 1n
+    ) {
+      return { ok: false, reason: "unsafe" };
+    }
+    preRealPath = await realpath(path);
+  } catch {
+    throwIfAborted(signal);
+    return { ok: false, reason: "io" };
+  }
+  let handle: Awaited<ReturnType<typeof open>>;
+  try {
+    handle = await open(path, constants.O_RDONLY);
+  } catch {
+    return { ok: false, reason: "io" };
+  }
+  try {
+    const openedStat = await handle.stat({ bigint: true });
+    if (
+      !openedStat.isFile() ||
+      openedStat.nlink !== 1n ||
+      openedStat.dev !== preLstat.dev ||
+      openedStat.ino !== preLstat.ino
+    ) {
+      await handle.close();
+      return { ok: false, reason: "unsafe" };
+    }
+    return { ok: true, opened: { handle, preLstat, preRealPath } };
+  } catch {
+    await handle.close().catch(() => undefined);
+    throwIfAborted(signal);
+    return { ok: false, reason: "io" };
+  }
+}
+
+async function verifyOpenedSafeFileAfterRead(
+  path: string,
+  opened: OpenedSafeFile,
+  signal: AbortSignal | undefined,
+): Promise<boolean> {
+  if (!opened.preLstat || opened.preRealPath === undefined) return true;
+  try {
+    throwIfAborted(signal);
+    const postLstat = await lstat(path, { bigint: true });
+    if (
+      postLstat.isSymbolicLink() ||
+      !postLstat.isFile() ||
+      postLstat.nlink !== 1n ||
+      !samePathIdentity(opened.preLstat, postLstat)
+    ) {
+      return false;
+    }
+    return (await realpath(path)) === opened.preRealPath;
+  } catch {
+    throwIfAborted(signal);
+    return false;
+  }
+}
+
 async function readBoundedFile(
   path: string,
   maximumBytes: number,
   signal: AbortSignal | undefined,
 ): Promise<BoundedReadResult> {
-  throwIfAborted(signal);
-  let handle;
-  if (constants.O_NOFOLLOW === undefined) {
-    return { ok: false, reason: "unsafe" };
-  }
-  try {
-    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-  } catch {
-    return { ok: false, reason: "io" };
-  }
+  const openedResult = await openSafeRegularFile(path, signal);
+  if (!openedResult.ok) return openedResult;
+  const { opened } = openedResult;
+  const { handle } = opened;
 
   try {
     const before = await handle.stat();
@@ -259,7 +348,8 @@ async function readBoundedFile(
       before.ino !== after.ino ||
       before.size !== after.size ||
       before.mtimeMs !== after.mtimeMs ||
-      before.ctimeMs !== after.ctimeMs
+      before.ctimeMs !== after.ctimeMs ||
+      !(await verifyOpenedSafeFileAfterRead(path, opened, signal))
     ) {
       return { ok: false, reason: "unsafe" };
     }
@@ -284,17 +374,13 @@ async function hashBoundedFile(
   maximumBytes: number,
   signal: AbortSignal | undefined,
 ): Promise<BoundedHashResult> {
-  throwIfAborted(signal);
-  let handle;
   let total = 0;
-  if (constants.O_NOFOLLOW === undefined) {
-    return { ok: false, reason: "unsafe", bytesRead: total };
+  const openedResult = await openSafeRegularFile(path, signal);
+  if (!openedResult.ok) {
+    return { ok: false, reason: openedResult.reason, bytesRead: total };
   }
-  try {
-    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-  } catch {
-    return { ok: false, reason: "io", bytesRead: total };
-  }
+  const { opened } = openedResult;
+  const { handle } = opened;
 
   try {
     const before = await handle.stat();
@@ -336,7 +422,8 @@ async function hashBoundedFile(
       before.size !== after.size ||
       before.mtimeMs !== after.mtimeMs ||
       before.ctimeMs !== after.ctimeMs ||
-      total !== after.size
+      total !== after.size ||
+      !(await verifyOpenedSafeFileAfterRead(path, opened, signal))
     ) {
       return { ok: false, reason: "unsafe", bytesRead: total };
     }

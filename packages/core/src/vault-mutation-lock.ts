@@ -23,7 +23,8 @@ export async function withVaultMutationLock<T>(
   signal: AbortSignal | undefined,
   work: () => Promise<T>,
 ): Promise<T> {
-  if (constants.O_NOFOLLOW === undefined) throw new VaultMutationLocked();
+  if (constants.O_NOFOLLOW === undefined && process.platform !== "win32")
+    throw new VaultMutationLocked();
   const path = join(root, ".bookie-write.lock");
   const deadline = performance.now() + 5_000;
   let handle;
@@ -35,7 +36,7 @@ export async function withVaultMutationLock<T>(
         constants.O_WRONLY |
           constants.O_CREAT |
           constants.O_EXCL |
-          constants.O_NOFOLLOW,
+          (constants.O_NOFOLLOW ?? 0),
         0o600,
       );
     } catch (error) {
