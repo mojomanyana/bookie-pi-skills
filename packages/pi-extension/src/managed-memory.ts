@@ -33,6 +33,7 @@ type Owner = {
   sessionId: string;
   cwd: string;
   isCurrent(): boolean;
+  isAutoEnabled?: () => boolean;
 };
 const object = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null;
@@ -523,5 +524,42 @@ export function createManagedMemory(pi: ExtensionAPI) {
     slot = undefined;
     hide();
   }
-  return { get, install, hide, refreshDashboard, forget, enableStandalone };
+  function isAutoEnabled(ctx: ExtensionContext): boolean {
+    if (
+      !active ||
+      !ctx?.hasUI ||
+      !ctx.isProjectTrusted?.() ||
+      active.cwd !== ctx.cwd ||
+      !ctx.sessionManager?.getSessionId?.() ||
+      active.sessionManager?.getSessionId?.() !==
+        ctx.sessionManager.getSessionId()
+    )
+      return false;
+    let lease: Owner | undefined;
+    if (slot && ownerMatches(slot.owner, ctx)) {
+      lease = slot.owner;
+    } else {
+      pi.events?.emit?.("pi-daddy:request-project-memory-owner-v1", {
+        version: 1,
+        cwd: ctx.cwd,
+        sessionId: ctx.sessionManager.getSessionId(),
+        reply(value: unknown) {
+          if (ownerMatches(value, ctx)) lease = value;
+        },
+      });
+    }
+    if (!lease || !ownerMatches(lease, ctx)) return false;
+    return typeof lease.isAutoEnabled === "function"
+      ? lease.isAutoEnabled() === true
+      : false;
+  }
+  return {
+    get,
+    install,
+    hide,
+    refreshDashboard,
+    forget,
+    enableStandalone,
+    isAutoEnabled,
+  };
 }

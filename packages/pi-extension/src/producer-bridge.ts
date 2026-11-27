@@ -242,6 +242,7 @@ export function registerProducerBridge(
     reference: unknown,
     instance: string,
     guard?: () => Promise<void>,
+    emitActivity = false,
   ) {
     const selectedEpoch = epoch,
       currentOwner = await owner(ctx);
@@ -284,7 +285,7 @@ export function registerProducerBridge(
       },
     );
     if (!result.ok) throw Error("Bookie reference registration refused.");
-    if (result.outcome === "registered") {
+    if (emitActivity && result.outcome === "registered") {
       try {
         pi.events?.emit?.("pi-daddy:ecosystem-activity:v1", {
           producer: "bookie",
@@ -353,6 +354,7 @@ export function registerProducerBridge(
           ref,
           result.producerInstance,
           guard,
+          true,
         );
         if (outcome === "registered") registered++;
         else reused++;
@@ -482,6 +484,7 @@ export function registerProducerBridge(
           if (context !== ctx || !enabled())
             throw Error("Automatic capture stopped.");
         },
+        true,
       );
     }).catch(() => {
       if (context !== ctx) return;

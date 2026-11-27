@@ -15,7 +15,10 @@ import {
 } from "pi-bookie-core";
 import { prepareManagedActivity } from "./managed-activity.js";
 import type { createManagedMemory } from "./managed-memory.js";
-import type { createDisclosureAuthority } from "./disclosure-authority.js";
+import {
+  DISCLOSURE_WITHHELD,
+  type createDisclosureAuthority,
+} from "./disclosure-authority.js";
 import type { createCaptureAuthority } from "./capture-authority.js";
 
 export interface MemoryProposal {
@@ -24,6 +27,8 @@ export interface MemoryProposal {
   readonly kind: "finding" | "decision";
   readonly verified: boolean;
   readonly specialist?: string;
+  readonly source?: "specialist" | "coordinator";
+  readonly coordinatorAccepted?: boolean;
   readonly evidence?: string;
 }
 
@@ -111,6 +116,17 @@ function validProposal(input: MemoryProposal): boolean {
   )
     return false;
   if (
+    input.source !== undefined &&
+    input.source !== "specialist" &&
+    input.source !== "coordinator"
+  )
+    return false;
+  if (
+    input.coordinatorAccepted !== undefined &&
+    typeof input.coordinatorAccepted !== "boolean"
+  )
+    return false;
+  if (
     input.evidence !== undefined &&
     (typeof input.evidence !== "string" || input.evidence.length > 1000)
   )
@@ -131,10 +147,12 @@ export function proposeMemoryTool(
     name: "bookie_propose_memory",
     label: "Bookie propose memory",
     description:
-      "Propose a bounded untrusted finding or explicit user decision for Bookie project memory. " +
-      "The coordinator reconciles duplicates and conflicts. With Auto on, verified findings " +
-      "and explicit user decisions save automatically; with Auto off, the operator is asked " +
-      "before writing a durable note.",
+      "Propose a bounded untrusted finding or explicit user decision for Bookie project memory, " +
+      "or accept a reconciled proposal from the coordinator for durable storage. " +
+      "Specialist proposals are reconciled only and never auto-written until the coordinator " +
+      "accepts and verifies them. With Daddy Auto on at write time, coordinator-verified " +
+      "findings and explicit user decisions save automatically; with Daddy Auto off (even " +
+      "when Bookie memory is enabled), operator confirmation is required.",
     parameters: Type.Object(
       {
         title: Type.String({
@@ -161,6 +179,18 @@ export function proposeMemoryTool(
             description: "Specialist role proposing this note, if delegated.",
           }),
         ),
+        source: Type.Optional(
+          Type.Enum(["specialist", "coordinator"], {
+            description:
+              "Origin of the call. Child-proxied calls are pinned to specialist and cannot self-accept.",
+          }),
+        ),
+        coordinatorAccepted: Type.Optional(
+          Type.Boolean({
+            description:
+              "Set true only by the coordinator after reviewing and accepting a specialist proposal for durable storage.",
+          }),
+        ),
         evidence: Type.Optional(
           Type.String({
             maxLength: 1000,
@@ -172,6 +202,27 @@ export function proposeMemoryTool(
       { additionalProperties: false },
     ),
     async execute(_id, params: MemoryProposal, signal, _onUpdate, ctx) {
+      // Fail closed on absent model disclosure authority BEFORE validating, reading, or mutating.
+      const selected = await managed.get(ctx);
+      if (
+        !selected ||
+        !capture.selectManaged(selected) ||
+        !disclosure.canManage()
+      ) {
+        throw Error(DISCLOSURE_WITHHELD);
+      }
+      const ticket = await disclosure.capture(
+        selected.vault.root,
+        ctx,
+        "canonical",
+      );
+      const guard = async () => {
+        await ticket.assertCurrent();
+        await capture.assertManaged(selected);
+        signal?.throwIfAborted();
+      };
+      await guard();
+
       if (!validProposal(params)) {
         return {
           isError: true,
@@ -184,39 +235,6 @@ export function proposeMemoryTool(
           details: { status: "rejected" },
         };
       }
-      const selected = await managed.get(ctx);
-      const managedReady = Boolean(
-        selected && capture.selectManaged(selected) && disclosure.canManage(),
-      );
-      if (!selected || !disclosure.canManage()) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({
-                status: "needs-approval",
-                needsDecision: true,
-                reason:
-                  "Bookie workspace memory is off or unavailable; ask the operator before writing a durable note.",
-                proposal: params,
-              }),
-            },
-          ],
-          details: { status: "needs-approval", needsDecision: true },
-        };
-      }
-
-      const ticket = await disclosure.capture(
-        selected.vault.root,
-        ctx,
-        "canonical",
-      );
-      const guard = async () => {
-        await ticket.assertCurrent();
-        await capture.assertManaged(selected);
-        signal?.throwIfAborted();
-      };
-      await guard();
 
       // Reconcile against existing canonical project notes for duplicates/conflicts.
       const found = await searchVault(
@@ -291,9 +309,51 @@ export function proposeMemoryTool(
         };
       }
 
-      // With Auto on (managedReady) and verified finding/decision, persist automatically.
-      // Otherwise ask before writing a durable note.
-      let approvedToWrite = managedReady && params.verified;
+      // Separate specialist proposals from coordinator acceptance for durable storage.
+      // A specialist's `verified: true` flag is uncorroborated on its own and never triggers
+      // durable storage until the coordinator explicitly accepts and verifies it.
+      const isSpecialistProposal =
+        params.source === "specialist" ||
+        (params.specialist !== undefined &&
+          params.coordinatorAccepted !== true);
+      if (isSpecialistProposal) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                status: "proposed",
+                accepted: false,
+                needsCoordinatorAcceptance: true,
+                uncorroboratedSpecialistFlag: params.verified === true,
+                proposal: {
+                  title: params.title,
+                  summary: params.summary,
+                  kind: params.kind,
+                  verified: params.verified,
+                  ...(params.specialist
+                    ? { specialist: params.specialist }
+                    : {}),
+                  ...(params.evidence ? { evidence: params.evidence } : {}),
+                },
+                message:
+                  "Specialist proposal reconciled and returned for coordinator review; durable storage requires coordinator acceptance.",
+              }),
+            },
+          ],
+          details: {
+            status: "proposed",
+            accepted: false,
+            needsCoordinatorAcceptance: true,
+            uncorroboratedSpecialistFlag: params.verified === true,
+          },
+        };
+      }
+
+      // Use actual live Daddy Auto authority at write time (independent of Bookie memory being on).
+      const daddyAutoEnabled = managed.isAutoEnabled(ctx);
+      let approvedToWrite = daddyAutoEnabled && params.verified === true;
+      let requiredAutoCheckAtWrite = approvedToWrite;
       if (!approvedToWrite) {
         const ui = ctx as ExtensionContext & {
           hasUI?: boolean;
@@ -315,13 +375,15 @@ export function proposeMemoryTool(
                   text: JSON.stringify({
                     status: "declined",
                     needsDecision: false,
+                    daddyAutoEnabled,
                     message: "Operator declined saving the proposed note.",
                   }),
                 },
               ],
-              details: { status: "declined" },
+              details: { status: "declined", daddyAutoEnabled },
             };
           }
+          requiredAutoCheckAtWrite = false;
         } else {
           return {
             content: [
@@ -330,18 +392,31 @@ export function proposeMemoryTool(
                 text: JSON.stringify({
                   status: "needs-approval",
                   needsDecision: true,
+                  daddyAutoEnabled,
                   proposal: params,
                   message:
-                    "Unverified or Auto-off memory proposal requires explicit approval before saving.",
+                    "Daddy Auto is off or finding is unverified; operator confirmation is required before writing durable memory.",
                 }),
               },
             ],
-            details: { status: "needs-approval", needsDecision: true },
+            details: {
+              status: "needs-approval",
+              needsDecision: true,
+              daddyAutoEnabled,
+            },
           };
         }
       }
 
-      await guard();
+      const writeGuard = async () => {
+        await guard();
+        if (requiredAutoCheckAtWrite && !managed.isAutoEnabled(ctx)) {
+          throw Error(
+            "Daddy Auto authority was disabled before write; confirmation is required.",
+          );
+        }
+      };
+      await writeGuard();
       const digest = createHash("sha256")
         .update(
           JSON.stringify([
@@ -383,10 +458,10 @@ export function proposeMemoryTool(
       const savedStatus = await withFileMutationQueue(
         resolve(ticket.root, path.slice(1)),
         async () => {
-          await guard();
+          await writeGuard();
           const result = await createCheckpointWithPolicy(
             prepared.publication,
-            { assertAuthority: guard, ...(signal ? { signal } : {}) },
+            { assertAuthority: writeGuard, ...(signal ? { signal } : {}) },
           );
           if (!result.ok) {
             if (

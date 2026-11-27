@@ -915,18 +915,22 @@ export default function registerBookie(pi: ExtensionAPI): void {
       getAllTools?: () => Array<{ name: string }>;
     };
     if (!surface.getActiveTools || !surface.setActiveTools) return;
-    const active = new Set(surface.getActiveTools());
-    const registered = surface.getAllTools
-      ? new Set(surface.getAllTools().map((t) => t.name))
-      : new Set(BOOKIE_TURN1_TOOLS);
-    let changed = false;
-    for (const name of BOOKIE_TURN1_TOOLS) {
-      if (registered.has(name) && !active.has(name)) {
-        active.add(name);
-        changed = true;
+    try {
+      const active = new Set(surface.getActiveTools());
+      const registered = surface.getAllTools
+        ? new Set(surface.getAllTools().map((t) => t.name))
+        : new Set(BOOKIE_TURN1_TOOLS);
+      let changed = false;
+      for (const name of BOOKIE_TURN1_TOOLS) {
+        if (registered.has(name) && !active.has(name)) {
+          active.add(name);
+          changed = true;
+        }
       }
+      if (changed) surface.setActiveTools([...active]);
+    } catch {
+      // Extension runtime actions may not be initialized in loader-only test harnesses.
     }
-    if (changed) surface.setActiveTools([...active]);
   };
   pi.on("session_start", activateBookieTools);
   pi.on("before_agent_start", activateBookieTools);
