@@ -50,6 +50,7 @@ export function requestProducer(
         );
       }
     }, 1500);
+    timer.unref?.();
     try {
       pi.events?.emit?.(channel, {
         version: 1,
@@ -286,13 +287,21 @@ export function registerProducerBridge(
     return result.outcome;
   }
   function enabled() {
-    return readEcosystemConfig()?.bookie?.autoSyncReviews !== false;
+    try {
+      return readEcosystemConfig()?.bookie?.autoSyncReviews !== false;
+    } catch {
+      return false;
+    }
   }
-  async function sync(ctx: ExtensionContext, guard?: () => Promise<void>) {
+  async function sync(
+    ctx: ExtensionContext,
+    guard?: () => Promise<void>,
+    seenCursors?: Set<string>,
+  ) {
     await guard?.();
     const grant = await capture.referenceGrant();
     if (!grant) {
-      if (guard) return;
+      if (guard) return false;
       throw Error("Select producer reference capture first.");
     }
     const selectedEpoch = epoch,
@@ -357,6 +366,11 @@ export function registerProducerBridge(
       cursor = typeof result.cursor === "string" ? result.cursor : undefined;
       if (!complete && typeof cursor !== "string")
         throw Error("Producer cursor unavailable.");
+      if (!complete && cursor && seenCursors) {
+        if (seenCursors.has(cursor))
+          throw Error("Producer cursor repeated without advancing.");
+        seenCursors.add(cursor);
+      }
       continuation = complete ? undefined : { key, cursor: cursor! };
     }
     await grant.assertCurrent();
@@ -368,21 +382,30 @@ export function registerProducerBridge(
       );
     return !complete;
   }
+  const MAX_AUTO_BATCHES = 16;
   let generation = 0;
+  let pendingManagedSync = false;
   function schedule() {
     const ctx = context,
       run = ++generation;
-    if (!ctx) return;
+    if (!ctx) {
+      pendingManagedSync = true;
+      return;
+    }
+    pendingManagedSync = false;
+    if (!enabled()) return;
     const current = () => context === ctx && run === generation && enabled();
     const guard = async () => {
       if (!current()) throw Error("Automatic sync stopped.");
     };
+    const seenCursors = new Set<string>();
     void (async () => {
-      while (current() && (await serial(() => sync(ctx, guard)))) {
+      for (let batch = 0; batch < MAX_AUTO_BATCHES && current(); batch++) {
+        if (!(await serial(() => sync(ctx, guard, seenCursors)))) break;
         await new Promise<void>((resolve) => setImmediate(resolve));
       }
     })().catch(() => {
-      if (context === ctx && run === generation) {
+      if (current()) {
         continuation = undefined;
         try {
           ctx.ui.notify(
@@ -450,18 +473,37 @@ export function registerProducerBridge(
         },
       );
     }).catch(() => {
+      if (context !== ctx) return;
       // A missed hint is recoverable by enumerating the selected owner's durable records.
-      if (context === ctx) schedule();
+      if (enabled()) {
+        schedule();
+        return;
+      }
+      try {
+        ctx.ui.notify(
+          "Bookie reference capture incomplete; use /bookie-capture sync to retry without dispatch.",
+          "warning",
+        );
+      } catch {
+        /* Optional notification cannot reject producer completion. */
+      }
     });
   });
   const bind = (_event: unknown, ctx: ExtensionContext) => {
     epoch++;
+    generation++;
     continuation = undefined;
     context = ctx;
+    if (pendingManagedSync) {
+      pendingManagedSync = false;
+      schedule();
+    }
   };
   pi.on("session_start", bind);
   pi.on("session_shutdown", () => {
     epoch++;
+    generation++;
+    pendingManagedSync = false;
     continuation = undefined;
     context = undefined;
   });
@@ -523,6 +565,8 @@ export function registerProducerBridge(
     },
     close() {
       epoch++;
+      generation++;
+      pendingManagedSync = false;
       continuation = undefined;
       context = undefined;
       unsubscribe?.();

@@ -139,3 +139,86 @@ test("an unbound discovery copy cannot hide the active producer; authorization r
   assert.equal((await query("owner-unavailable")).ok, true);
   await assert.rejects(query("authority"), (e) => e.code === "authority");
 });
+
+test("malformed ecosystem.json fails closed without throwing and mid-sync opt-out emits no false warning", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "bookie-auto-sync-edge-"));
+  const previous = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = dir;
+  t.after(async () => {
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previous;
+    await rm(dir, { recursive: true, force: true });
+  });
+  await writeFile(join(dir, "ecosystem.json"), "{broken json");
+  const hooks = new Map(),
+    events = new Map(),
+    notices = [];
+  const pi = {
+    on: (key, fn) => hooks.set(key, fn),
+    events: {
+      on: (key, fn) => events.set(key, fn),
+      emit: (key, value) => events.get(key)?.(value),
+    },
+  };
+  const ctx = {
+    cwd: dir,
+    sessionManager: { getSessionId: () => "owner" },
+    ui: { notify: (msg, level) => notices.push({ msg, level }) },
+  };
+  let activate, manual;
+  registerProducerBridge(pi, {
+    hasStanding: () => true,
+    setReferenceSync(fn, start) {
+      manual = fn;
+      activate = start;
+    },
+    async referenceGrant() {
+      return {
+        assertCurrent: async () => {},
+        project: {},
+        sensitivity: "internal",
+      };
+    },
+  });
+  // Malformed ecosystem.json must not throw on bind/activate/settings/READY.
+  assert.doesNotThrow(() => hooks.get("session_start")({}, ctx));
+  assert.doesNotThrow(() => activate());
+  assert.doesNotThrow(() =>
+    pi.events.emit("bookie:review-sync-settings:v1", { action: "changed" }),
+  );
+  // Now write valid config, start sync, and toggle autoSyncReviews off mid-page: zero warning notices.
+  await writeFile(
+    join(dir, "ecosystem.json"),
+    JSON.stringify({ bookie: { autoSyncReviews: true } }),
+  );
+  let resolvePage;
+  events.set("pi-daddy:operation-artifacts:v1", (r) => {
+    resolvePage = () =>
+      r.reply({
+        ...r,
+        ok: true,
+        producerInstance: "fixture",
+        references: [],
+        scanned: 1,
+        uncertain: 0,
+        issues: 0,
+        complete: false,
+        cursor: "c1",
+      });
+  });
+  notices.length = 0;
+  activate();
+  await new Promise((r) => setImmediate(r));
+  await writeFile(
+    join(dir, "ecosystem.json"),
+    JSON.stringify({ bookie: { autoSyncReviews: false } }),
+  );
+  resolvePage?.();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(
+    notices.some((n) => n.level === "warning"),
+    false,
+    "disabling autoSyncReviews mid-sync must not warn as a failure",
+  );
+  assert.equal(typeof manual, "function");
+});
