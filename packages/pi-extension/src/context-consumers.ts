@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { realpath } from "node:fs/promises";
-import { StringEnum, Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import {
   defineTool,
   type ExtensionAPI,
@@ -753,7 +753,7 @@ export function registerContextConsumers(
           source: Type.Optional(
             Type.Object(
               {
-                mode: StringEnum(["working-tree", "committed"]),
+                mode: Type.Enum(["working-tree", "committed"]),
                 commit: Type.Optional(Type.String()),
               },
               { additionalProperties: false },
@@ -792,7 +792,7 @@ export function registerContextConsumers(
               maxItems: 16,
             }),
           ),
-          action: Type.Optional(StringEnum(["read", "revalidate"])),
+          action: Type.Optional(Type.Enum(["read", "revalidate"])),
           maxBytes: Type.Optional(Type.Integer({ minimum: 1, maximum: 24000 })),
         },
         { additionalProperties: false },
@@ -832,7 +832,7 @@ export function registerContextConsumers(
       parameters: Type.Object(
         {
           registrationId: Type.String(),
-          part: StringEnum(["manifest", "final", "partial", "brief"]),
+          part: Type.Enum(["manifest", "final", "partial", "brief"]),
           offset: Type.Optional(
             Type.Integer({
               minimum: 0,

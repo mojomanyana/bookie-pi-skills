@@ -35,7 +35,7 @@ import {
   type FilesystemSearchFilters,
   type PreparedCheckpointPublication,
 } from "pi-bookie-core";
-import { StringEnum, Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
@@ -393,7 +393,7 @@ function createCheckpointTool(
           }),
         ),
         requestPath: Type.String({ minLength: 1 }),
-        timing: StringEnum(["now", "before-compaction"] as const),
+        timing: Type.Enum(["now", "before-compaction"]),
       },
       { additionalProperties: false },
     ),
@@ -510,7 +510,7 @@ const readTool = defineTool({
             "Omit for the current project. Supply a path only for a vault the user explicitly selected, never a guessed project or working directory.",
         }),
       ),
-      selector: StringEnum(["path", "uid"] as const),
+      selector: Type.Enum(["path", "uid"]),
       value: Type.String({ minLength: 1 }),
     },
     { additionalProperties: false },
@@ -554,7 +554,7 @@ const searchTool = defineTool({
       ),
       query: Type.Optional(Type.String({ minLength: 1 })),
       mode: Type.Optional(
-        StringEnum(["search", "recent", "exact", "candidates"]),
+        Type.Enum(["search", "recent", "exact", "candidates"]),
       ),
       limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
       type: Type.Optional(Type.String({ minLength: 1 })),
@@ -616,7 +616,7 @@ function createWriteTool(authority: CaptureAuthority) {
             description: "Omit to use the session’s selected Bookie project.",
           }),
         ),
-        action: StringEnum(["create", "amend"] as const),
+        action: Type.Enum(["create", "amend"]),
         requestPath: Type.String({ minLength: 1 }),
       },
       { additionalProperties: false },

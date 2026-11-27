@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import { createHash } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { posix, resolve } from "node:path";
-import { StringEnum, Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import {
   type ExtensionContext,
   defineTool,
@@ -501,7 +501,7 @@ export function rememberTool(
             "Write the outcome in a short paragraph. Limit 2000 characters, or 4000 when selecting evidence for this checkpoint. Keep source bodies in their owner's store.",
         }),
         includeEvidence: Type.Optional(
-          Type.Array(StringEnum(evidenceKinds), {
+          Type.Array(Type.Enum([...evidenceKinds]), {
             minItems: 1,
             maxItems: 3,
             uniqueItems: true,

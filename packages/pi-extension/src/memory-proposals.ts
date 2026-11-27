@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { posix, resolve } from "node:path";
-import { StringEnum, Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import {
   defineTool,
   withFileMutationQueue,
@@ -147,7 +147,7 @@ export function proposeMemoryTool(
           maxLength: 2000,
           description: "Concise verified finding or explicit user decision.",
         }),
-        kind: StringEnum(["finding", "decision"], {
+        kind: Type.Enum(["finding", "decision"], {
           description: "Whether this is a verified finding or user decision.",
         }),
         verified: Type.Boolean({

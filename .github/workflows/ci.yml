@@ -33,6 +33,6 @@ jobs:
       - run: npm ci
       - run: npm run build
       - name: Install isolated pinned Pi host and released Daddy
-        run: npm install --prefix "$RUNNER_TEMP/bookie-pi-161" --no-save --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent@1.6.1 pi-daddy@1.1.3
+        run: npm install --prefix "$RUNNER_TEMP/bookie-pi-161" --no-save --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent@1.6.1 pi-daddy@1.2.0
       - name: Exercise choices and fresh-session recall with a local scripted provider
         run: node packages/pi-extension/scripts/verify-open-choice.mjs "$RUNNER_TEMP/bookie-pi-161/node_modules" "$RUNNER_TEMP/bookie-pi-161/node_modules/pi-daddy" --answer --inventory
