@@ -14,6 +14,7 @@ import type {
   createCaptureAuthority,
   ReferenceCaptureGrant,
 } from "./capture-authority.js";
+import { readEcosystemConfig } from "./ecosystem-config.js";
 const EVENT = "pi-daddy:operation-artifacts:v1",
   READY = "pi-daddy:operation-artifact-ready:v1";
 const object = (v: unknown): v is Record<string, unknown> =>
@@ -40,12 +41,16 @@ export function requestProducer(
   return new Promise((resolve, reject) => {
     const requestId = randomUUID();
     let done = false;
+    let unbound = false;
     const timer = setTimeout(() => {
       if (!done) {
         done = true;
-        reject(new ProducerReadError("unavailable"));
+        reject(
+          new ProducerReadError(unbound ? "owner-unavailable" : "unavailable"),
+        );
       }
     }, 1500);
+    timer.unref?.();
     try {
       pi.events?.emit?.(channel, {
         version: 1,
@@ -54,14 +59,25 @@ export function requestProducer(
         ...args,
         reply: (reply: unknown) => {
           if (done) return;
-          done = true;
-          clearTimeout(timer);
           const identityMatches =
             object(reply) &&
             reply.version === 1 &&
             reply.requestId === requestId &&
             reply.sessionId === owner.sessionId &&
             reply.cwd === owner.cwd;
+          // Older trust-pass copies can answer before the selected Daddy instance.
+          // Only an explicit lack of ownership is provisional; all other refusals are final.
+          if (
+            identityMatches &&
+            channel === EVENT &&
+            reply.ok === false &&
+            reply.code === "owner-unavailable"
+          ) {
+            unbound = true;
+            return;
+          }
+          done = true;
+          clearTimeout(timer);
           if (
             identityMatches &&
             channel === "scout:resolve:v1" &&
@@ -270,82 +286,165 @@ export function registerProducerBridge(
     if (!result.ok) throw Error("Bookie reference registration refused.");
     return result.outcome;
   }
-  capture.setReferenceSync((ctx) =>
-    serial(async () => {
-      context = ctx;
-      const grant = await capture.referenceGrant();
-      if (!grant) throw Error("Select producer reference capture first.");
-      const selectedEpoch = epoch,
-        currentOwner = await owner(ctx),
-        key = JSON.stringify([
-          epoch,
-          currentOwner,
-          grant.project,
-          grant.sensitivity,
-        ]);
-      let cursor = continuation?.key === key ? continuation.cursor : undefined,
-        registered = 0,
-        reused = 0,
-        uncertain = 0,
-        issues = 0,
-        complete = false;
-      // At most 8 pages / 256 directory entries per explicit command. Repeat sync for idempotent recovery.
-      for (let page = 0; page < 8 && !complete; page++) {
-        await grant.assertCurrent();
-        if (epoch !== selectedEpoch || context !== ctx)
-          throw Error("Capture owner changed.");
-        const result = await requestProducer(pi, currentOwner, {
-          action: "list",
-          limit: 32,
-          ...(cursor ? { cursor } : {}),
-        });
-        if (
-          !Array.isArray(result.references) ||
-          result.references.length > 32 ||
-          typeof result.producerInstance !== "string"
-        )
-          throw Error("Producer page invalid.");
-        for (const ref of result.references) {
-          const outcome = await register(
-            grant,
-            ctx,
-            ref,
-            result.producerInstance,
-          );
-          if (outcome === "registered") registered++;
-          else reused++;
-        }
-        if (
-          !Number.isSafeInteger(result.uncertain) ||
-          !Number.isSafeInteger(result.issues) ||
-          typeof result.uncertain !== "number" ||
-          typeof result.issues !== "number" ||
-          result.uncertain < 0 ||
-          result.issues < 0
-        )
-          throw Error("Invalid producer page counts.");
-        uncertain += result.uncertain;
-        issues += result.issues;
-        complete = result.complete === true;
-        cursor = typeof result.cursor === "string" ? result.cursor : undefined;
-        if (!complete && typeof cursor !== "string")
-          throw Error("Producer cursor unavailable.");
-        continuation = complete ? undefined : { key, cursor: cursor! };
-      }
+  function enabled() {
+    try {
+      return readEcosystemConfig()?.bookie?.autoSyncReviews !== false;
+    } catch {
+      return false;
+    }
+  }
+  async function sync(
+    ctx: ExtensionContext,
+    guard?: () => Promise<void>,
+    seenCursors?: Set<string>,
+  ) {
+    await guard?.();
+    const grant = await capture.referenceGrant();
+    if (!grant) {
+      if (guard) return false;
+      throw Error("Select producer reference capture first.");
+    }
+    const selectedEpoch = epoch,
+      currentOwner = await owner(ctx),
+      key = JSON.stringify([
+        epoch,
+        currentOwner,
+        grant.project,
+        grant.sensitivity,
+      ]);
+    let cursor = continuation?.key === key ? continuation.cursor : undefined,
+      registered = 0,
+      reused = 0,
+      uncertain = 0,
+      issues = 0,
+      complete = false;
+    // Bound each serial batch so new results and manual requests can run between batches.
+    for (let page = 0; page < 8 && !complete; page++) {
+      await guard?.();
       await grant.assertCurrent();
+      if (epoch !== selectedEpoch || context !== ctx)
+        throw Error("Capture owner changed.");
+      const result = await requestProducer(pi, currentOwner, {
+        action: "list",
+        limit: 32,
+        ...(cursor ? { cursor } : {}),
+      });
+      if (
+        !Array.isArray(result.references) ||
+        result.references.length > 32 ||
+        typeof result.producerInstance !== "string"
+      )
+        throw Error("Producer page invalid.");
+      for (const ref of result.references) {
+        const outcome = await register(
+          grant,
+          ctx,
+          ref,
+          result.producerInstance,
+          guard,
+        );
+        if (outcome === "registered") registered++;
+        else reused++;
+      }
+      if (
+        !Number.isSafeInteger(result.uncertain) ||
+        !Number.isSafeInteger(result.issues) ||
+        typeof result.uncertain !== "number" ||
+        typeof result.issues !== "number" ||
+        result.uncertain < 0 ||
+        result.issues < 0
+      )
+        throw Error("Invalid producer page counts.");
+      uncertain += result.uncertain;
+      issues += result.issues;
+      complete = result.complete === true;
+      if (
+        !complete &&
+        (!Number.isSafeInteger(result.scanned) || Number(result.scanned) < 1)
+      )
+        throw Error("Producer scan did not advance.");
+      cursor = typeof result.cursor === "string" ? result.cursor : undefined;
+      if (!complete && typeof cursor !== "string")
+        throw Error("Producer cursor unavailable.");
+      if (!complete && cursor && seenCursors) {
+        if (seenCursors.has(cursor))
+          throw Error("Producer cursor repeated without advancing.");
+        seenCursors.add(cursor);
+      }
+      continuation = complete ? undefined : { key, cursor: cursor! };
+    }
+    await grant.assertCurrent();
+    await guard?.();
+    if (!guard || registered || reused || issues || uncertain || !complete)
       ctx.ui.notify(
-        `Bookie producer sync ${complete && issues === 0 ? "complete" : "partial"}: ${registered} registered, ${reused} reused, ${uncertain} unfinished admissions, ${issues} unavailable entries. No children launched.`,
+        `Bookie ${guard ? "automatic review" : "producer"} sync ${complete && issues === 0 ? "complete" : "partial"}: ${registered} registered, ${reused} reused, ${uncertain} unfinished admissions, ${issues} unavailable entries. No children launched.`,
         "info",
       );
-    }).catch((error) => {
-      continuation = undefined;
-      throw error;
-    }),
+    return !complete;
+  }
+  const MAX_AUTO_BATCHES = 16;
+  let generation = 0;
+  let pendingManagedSync = false;
+  function schedule() {
+    const ctx = context,
+      run = ++generation;
+    if (!ctx) {
+      pendingManagedSync = true;
+      return;
+    }
+    pendingManagedSync = false;
+    if (!enabled()) return;
+    const current = () => context === ctx && run === generation && enabled();
+    const guard = async () => {
+      if (!current()) throw Error("Automatic sync stopped.");
+    };
+    const seenCursors = new Set<string>();
+    void (async () => {
+      for (let batch = 0; batch < MAX_AUTO_BATCHES && current(); batch++) {
+        if (!(await serial(() => sync(ctx, guard, seenCursors)))) break;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+    })().catch(() => {
+      if (current()) {
+        continuation = undefined;
+        try {
+          ctx.ui.notify(
+            "Bookie could not finish automatic review sync. Check capture settings or use /bookie-capture sync.",
+            "warning",
+          );
+        } catch {
+          /* The session UI may have closed. */
+        }
+      }
+    });
+  }
+  capture.setReferenceSync(async (ctx) => {
+    const selectedEpoch = epoch;
+    await serial(async () => {
+      if (epoch !== selectedEpoch) throw Error("Capture owner changed.");
+      context = ctx;
+      try {
+        await sync(ctx);
+      } catch (error) {
+        continuation = undefined;
+        throw error;
+      }
+    });
+  }, schedule);
+  const unsubscribeSettings = pi.events?.on?.(
+    "bookie:review-sync-settings:v1",
+    (input: unknown) => {
+      if (!context || !object(input)) return;
+      if (input.action === "status" && typeof input.report === "function")
+        input.report();
+      if (input.action === "changed") schedule();
+    },
   );
   const unsubscribe = pi.events?.on?.(READY, (hint: unknown) => {
     const ctx = context;
     if (!ctx || !object(hint) || hint.version !== 1) return;
     void serial(async () => {
+      if (context !== ctx || !enabled()) return;
       const grant = await capture.referenceGrant();
       if (!grant) return;
       const currentOwner = await owner(ctx);
@@ -363,8 +462,23 @@ export function registerProducerBridge(
       });
       if (typeof reply.producerInstance !== "string")
         throw Error("Invalid producer identity.");
-      await register(grant, ctx, hint.reference, reply.producerInstance);
+      await register(
+        grant,
+        ctx,
+        hint.reference,
+        reply.producerInstance,
+        async () => {
+          if (context !== ctx || !enabled())
+            throw Error("Automatic capture stopped.");
+        },
+      );
     }).catch(() => {
+      if (context !== ctx) return;
+      // A missed hint is recoverable by enumerating the selected owner's durable records.
+      if (enabled()) {
+        schedule();
+        return;
+      }
       try {
         ctx.ui.notify(
           "Bookie reference capture incomplete; use /bookie-capture sync to retry without dispatch.",
@@ -377,12 +491,19 @@ export function registerProducerBridge(
   });
   const bind = (_event: unknown, ctx: ExtensionContext) => {
     epoch++;
+    generation++;
     continuation = undefined;
     context = ctx;
+    if (pendingManagedSync) {
+      pendingManagedSync = false;
+      schedule();
+    }
   };
   pi.on("session_start", bind);
   pi.on("session_shutdown", () => {
     epoch++;
+    generation++;
+    pendingManagedSync = false;
     continuation = undefined;
     context = undefined;
   });
@@ -444,9 +565,12 @@ export function registerProducerBridge(
     },
     close() {
       epoch++;
+      generation++;
+      pendingManagedSync = false;
       continuation = undefined;
       context = undefined;
       unsubscribe?.();
+      unsubscribeSettings?.();
     },
   };
 }

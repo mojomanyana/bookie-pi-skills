@@ -1,6 +1,8 @@
 # ADR-0016 · Automatic memory for the current workspace
 Accepted for this implementation by the operator's request for Pi Daddy Auto to activate Bookie in a fresh project.
 
+An active managed capture grant also enables automatic registration of this session's retained producer references. On grant acquisition, Bookie reconciles missed references through the same authorized, idempotent path used by manual sync. The profile setting `bookie.autoSyncReviews` defaults to true. False disables automatic reconciliation and new-result hints. Manual sync still requires a current capture grant.
+
 An interactive, trusted parent with Pi Daddy Auto enabled can open one dedicated, initially empty Bookie vault for its current workspace. The verified Auto owner is standing permission for routine project summaries and public/internal memory disclosure to the bound current model. This adds a narrow alternative to the manual selections in ADR-0012 and ADR-0013. Existing user vaults, other folders, producer bodies, general writes, sharing and training keep their separate controls. The extension neither scans for an existing vault nor imports conversation history.
 
 The optional same-process owner binds the session, workspace and current Auto generation. A delegation, generic environment setting or model argument cannot supply it. Recheck ownership on use and inside canonical mutation. Session teardown, untrusting the project, and turning off Auto invalidate outstanding authority. Manual selection or revocation takes precedence in its respective channel. A newly selected model needs a fresh destination binding. Standalone Pi can still select a vault manually.

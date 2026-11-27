@@ -10,6 +10,8 @@ The local ledger foundation, BK-030–037, is released in `pi-bookie` and `pi-bo
 
 ### Project memory with Pi Daddy Auto
 
+When Daddy Auto gives Bookie access to a trusted workspace, Bookie checks the current session for saved delegation results on startup, resume, and when Auto turns on. It registers missing references locally and reuses existing records. The dashboard setting **Bookie automatic review capture** controls this check and capture of new result references. It defaults to on. Turn it off to sync explicitly with `/bookie-capture sync` while capture is authorized.
+
 Start Pi in the folder for your project and describe a choice to remember. In a trusted parent session with Auto enabled, Bookie creates its private workspace memory on first use, saves short project notes, and can retrieve them in a later session opened in that folder. The extension keeps these records in Pi's user directory. Standalone Bookie retains manual vault and destination selection. See [automatic project memory](docs/architecture/decisions/0016-managed-project-auto.md).
 
 ### Moving or renaming a project folder (unreleased)
