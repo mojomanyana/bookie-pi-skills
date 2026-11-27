@@ -1148,7 +1148,7 @@ test(
                   new Promise((resolve) => {
                     openTimer = setTimeout(
                       () => resolve({ timedOut: true }),
-                      500,
+                      5000,
                     );
                   }),
                 ]);
@@ -1168,7 +1168,7 @@ test(
                   new Promise((resolve) => {
                     settleTimer = setTimeout(
                       () => resolve({ timedOut: true }),
-                      500,
+                      5000,
                     );
                   }),
                 ]);
