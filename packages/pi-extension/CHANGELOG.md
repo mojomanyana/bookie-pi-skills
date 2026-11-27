@@ -1,5 +1,9 @@
 # pi-bookie release notes
 
+## [1.1.0] - 2026-11-27
+
+- Automatically register retained review results when workspace memory is available, including after resume. Settings can disable background sync, and manual sync remains available.
+
 ## [1.0.4] - 2026-11-25
 
 - Strictly validate nested `ecosystem.json` fields (`models`, `modelFallbacks`, `bookie`) and fail closed on invalid configs.

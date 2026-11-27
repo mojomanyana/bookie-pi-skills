@@ -1,5 +1,9 @@
 # pi-bookie-core release notes
 
+## [1.1.0] - 2026-11-27
+
+- Companion release for pi-bookie 1.1.0 and automatic capture of completed reviews.
+
 ## [1.0.4] - 2026-11-25
 
 - Repaired retired SPEC-004 documentation anchors in `packages/core/README.md` and `docs/specs/002-core-and-cli.md`.
