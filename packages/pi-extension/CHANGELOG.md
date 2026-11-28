@@ -1,5 +1,9 @@
 # pi-bookie release notes
 
+## [1.2.0] - 2026-11-28
+
+- Turn-1 Bookie tools, specialist memory proposals with reconciliation, and Windows-safe bounded FS + FIFO test hang fix.
+
 ## [1.1.0] - 2026-11-27
 
 - Automatically register retained review results when workspace memory is available, including after resume. Settings can disable background sync, and manual sync remains available.

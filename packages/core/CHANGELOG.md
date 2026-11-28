@@ -1,5 +1,9 @@
 # pi-bookie-core release notes
 
+## [1.2.0] - 2026-11-28
+
+- Companion release for pi-bookie 1.2.0: Turn-1 Bookie tools, memory proposals, and bounded FS.
+
 ## [1.1.0] - 2026-11-27
 
 - Companion release for pi-bookie 1.1.0 and automatic capture of completed reviews.
